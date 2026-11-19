@@ -12,7 +12,7 @@ GPU 공개 가격을 수집·적재하고, 그 데이터를 AI Agent로 조회�
 
 - **가상환경·의존성 파일은 컴포넌트마다 따로 둔다.** Airflow는 constraints로 패키지 버전을 고정하므로 다른 컴포넌트 의존성과 섞지 않는다.
 - **컴포넌트끼리 코드를 import하지 않는다.** 이후 추가할 Agent도 collector와 DB로만 연결하고, 읽기 전용 계정으로 조회용 View만 읽는다.
-- **스키마는 `collector/sql`이 소유한다.**
+- **스키마는 collector가 소유한다(`collector/src/gpu_collector/sql/`).**
 - **비밀값은 컴포넌트별 `.env`에 둔다.** 저장소에는 `.env.example`(이름만)만 커밋한다. 배포 환경에서는 Kubernetes Secret 등으로 주입하고 이미지에 넣지 않는다.
 
 ## 로컬 개발 환경
