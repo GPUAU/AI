@@ -11,6 +11,7 @@
 | `src/gpu_collector/erd/{aws,azure,verda,nebius}/` | 사업자별 매일 수집(`collect.py`)·과거 이력 백필(`history.py`) |
 | `src/gpu_collector/` | 공통 모듈: HTTP 조회(`fetch`), 파일 캐시(`download`), 비밀값(`env`), AWS 가격 파일 파서(`aws_offer`, `aws_savings`) |
 | `tests/erd/` | 사업자별·스키마 테스트. `support.py`가 임시 DB를 만들고 지운다 |
+| `scripts/migrate_data.sh` | 예전 스키마 DB의 데이터를 현재 스키마 DB로 옮기기 |
 | `.env.example` | 환경 변수 이름 예시 |
 
 ## 수집 대상
@@ -49,6 +50,33 @@ python -m gpu_collector.erd report --model B300   # 최신 가격과 대상별 �
 
 - 종료 코드: 성공 0, 실패 1. 요약 JSON을 표준 출력에 쓴다.
 - AWS 과거 가격 파일은 `CACHE_DIR`(기본 `./var/cache`)에 받는다. 처리한 과거 파일은 지운다(`--keep-files`면 남김).
+
+## 공용 덤프로 로컬 DB 채우기
+
+기존 적재 데이터는 팀 내부에서 덤프 파일로 공유한다. 덤프 파일은 저장소에 커밋하지 않는다(Azure 원시 데이터 재배포 금지).
+
+| 덤프 | 내용 | sha256 |
+| --- | --- | --- |
+| `gpu_erd_20261119.sql.gz` | 현재 스키마(상품·오퍼 UNIQUE 포함). AWS 2023-07~, Azure 2025-10~, Verda 2026-08~, Nebius 2026-05~ 과거 이력과 2026-11-19까지 매일 수집분(실행 21건) | `9849c2b054da749083148842b967d20302c5ed3b0e14d2ffcdb2aa43a0fb89ba` |
+
+```bash
+shasum -a 256 gpu_erd_20261119.sql.gz                        # 위 값과 같은지 확인
+psql "postgresql://postgres:postgres@127.0.0.1:5435/postgres" -c "CREATE DATABASE gpu_erd"   # 비어 있는 DB
+gunzip -c gpu_erd_20261119.sql.gz | psql -v ON_ERROR_STOP=1 "$DATABASE_URL"
+```
+
+- 2026-11-19 이전에 공유한 덤프는 제약 보강 전 스키마라 쓰지 않는다.
+- 이미 `gpu_erd`가 있으면 `DROP DATABASE gpu_erd WITH (FORCE)` 후 다시 만든다.
+
+### 예전 스키마 DB를 현재 스키마로 옮기기
+
+예전 스키마로 쌓인 DB가 있으면 데이터만 현재 스키마 DB로 옮긴다. 대상은 비어 있는 DB여야 한다.
+
+```bash
+scripts/migrate_data.sh <원본 DB URL> <대상 DB URL>
+```
+
+DDL만 적용한 뒤 기준 정보까지 원본 ID 그대로 옮기고(seed는 적용하지 않음), 테이블 건수와 identity 시퀀스를 원본과 비교한다.
 
 ## 테스트
 
