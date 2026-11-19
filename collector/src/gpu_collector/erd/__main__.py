@@ -1,24 +1,34 @@
-"""ERD 초안 스키마 명령.
+"""ERD 스키마 수집·적재 명령.
 
   python -m gpu_collector.erd init                     DDL(빈 DB일 때만) + 기준 정보(sql/seed.sql) 적용
-  python -m gpu_collector.erd collect aws [--only aws_ec2_price_list,aws_savings_plans_price_list,aws_ec2_spot_api]
+  python -m gpu_collector.erd collect aws [--date 2026-11-20] [--only aws_ec2_pricing_api,aws_savings_plans_api,aws_ec2_spot_api]
                                           [--trigger manual|scheduled|retry]
   python -m gpu_collector.erd backfill aws --since 2023-07 [--until 2026-11] [--only ...] [--regions ...] [--spot-days 90]
                                           [--keep-files] [--workers 3]
                                                        공식 과거 자료 적재(가격 파일 과거 버전, 스팟 90일)
-  python -m gpu_collector.erd collect azure [--trigger ...]   Azure Retail Prices API (대상 SKU 전 리전)
+  python -m gpu_collector.erd collect azure [--date ...] [--trigger ...]   Azure Retail Prices API (대상 SKU 전 리전)
   python -m gpu_collector.erd backfill azure --since 2025-10 [--until 2026-11] [--every month|week|day] [--keep-files]
                                                        [--no-verify]
                                                        GitHub 일별 스냅샷(집계 출처)으로 Azure 과거 가격 적재
-  python -m gpu_collector.erd collect verda [--trigger ...]   Verda 공개 API (지역별 온디맨드·스팟, 약정 할인율 가정)
+  python -m gpu_collector.erd collect verda [--date ...] [--trigger ...]   Verda 공개 API (지역별 온디맨드·스팟, 약정 할인율 가정)
   python -m gpu_collector.erd backfill verda --since 2026-08 [--until 2026-11] [--no-verify]
                                                        Wayback 저장본(집계 출처)으로 Verda 과거 가격 적재
-  python -m gpu_collector.erd collect nebius [--trigger ...]  Nebius 문서 가격표(온디맨드·약정 상태) + 공개 스팟 API
+  python -m gpu_collector.erd collect nebius [--date ...] [--trigger ...]  Nebius 문서 가격표(온디맨드·약정 상태) + 공개 스팟 API
   python -m gpu_collector.erd backfill nebius [--days 29] [--only spot,docs] [--no-verify]
                                                        스팟 30일 이력(공식 API) + 문서 Wayback 저장본(집계)
   python -m gpu_collector.erd status record            랙스케일·출시 예정 모델 공개 상태 수기 확인 기록(erd/status.py, 월 1회)
   python -m gpu_collector.erd specs aws                 이미 적재한 AWS 상품에 모델 원문·사양 근거(상호연결)를 채운다(1회)
   python -m gpu_collector.erd report [--model B300]    최신 가격과 대상별 마지막 점검 상태
+
+--date: 매일 수집의 수집 기준일(KST, 생략하면 오늘). 같은 기준일에 이미 적재한 묶음은 건너뛴다.
+
+실행 안전장치
+  - 같은 사업자의 collect·backfill·specs는 동시에 하나만 실행한다(DB advisory lock). 이미 실행 중이면 종료 코드 75.
+  - 잠금을 잡은 뒤 같은 사업자의 끝나지 않은(running) 실행을 실패로 닫는다.
+  - SIGTERM을 받으면 지금 묶음을 되돌리고 실행을 실패로 기록한 뒤 끝낸다.
+
+종료 코드: 0 성공, 1 부분 실패·예기치 않은 오류·중단, 2 실패(원천 장애 등, 다시 시도할 만함),
+           3 설정 오류(다시 시도해도 같음), 75 같은 사업자 실행 중.
 
 환경 변수: DATABASE_URL(필수, 적재 대상 DB), CACHE_DIR(선택, 원천 파일 캐시. 기본 ./var/cache).
 AWS 가격 API는 AWS_ACCESS_KEY_ID·AWS_SECRET_ACCESS_KEY 환경 변수가 필요하다.
@@ -26,7 +36,9 @@ AWS 가격 API는 AWS_ACCESS_KEY_ID·AWS_SECRET_ACCESS_KEY 환경 변수가 필�
 import argparse
 import json
 import os
+import signal
 import sys
+from datetime import datetime, timezone
 from importlib import resources
 
 import psycopg
@@ -35,34 +47,52 @@ from .aws import collect as aws, history as aws_history
 from .azure import collect as azure, history as azure_history
 from .verda import collect as verda, history as verda_history
 from .nebius import collect as nebius, history as nebius_history
-from . import status
+from . import runs, status
 
 SQL = resources.files("gpu_collector") / "sql"
 DDL = SQL / "ddl.sql"
 SEED = SQL / "seed.sql"
 
+EXIT_OK, EXIT_PARTIAL, EXIT_FAILED, EXIT_CONFIG, EXIT_LOCKED = 0, 1, 2, 3, 75
+EXIT_BY_STATUS = {"success": EXIT_OK, "partial_failure": EXIT_PARTIAL, "failed": EXIT_FAILED}
+# DB 시간 제한: 접속 10초, 문 하나 10분, 잠금 대기 30초. 네트워크 단절·잠금 대기로 무한히 멈추지 않게 한다.
+CONNECT_TIMEOUT_S = 10
+DB_OPTIONS = "-c statement_timeout=600000 -c lock_timeout=30000"
+COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius}
 
-def database_url():
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        sys.exit("DATABASE_URL 환경 변수가 필요하다")
-    return url
+
+class Terminated(Exception):
+    """SIGTERM을 받음. 수집기의 예외 처리가 묶음을 되돌리고 실행을 실패로 기록한다."""
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_CONFIG, f"{self.prog}: 오류: {message}\n")
 
 
 def cache_dir():
     return os.environ.get("CACHE_DIR", "var/cache")
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(prog="gpu_collector.erd")
-    sub = parser.add_subparsers(dest="command", required=True)
+def date_arg(value):
+    try:
+        return runs.collection_date(value, None)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def parse(argv):
+    parser = Parser(prog="gpu_collector.erd")
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
     sub.add_parser("init")
     c = sub.add_parser("collect")
-    c.add_argument("provider", choices=["aws", "azure", "verda", "nebius"])
-    c.add_argument("--only", help="쉼표로 구분한 data_source.source_name")
+    c.add_argument("provider", choices=sorted(COLLECTORS))
+    c.add_argument("--date", type=date_arg, help="수집 기준일 YYYY-MM-DD(KST, 생략하면 오늘)")
+    c.add_argument("--only", help="쉼표로 구분한 data_source.source_name (aws만)")
     c.add_argument("--trigger", default="manual", choices=["manual", "scheduled", "retry"])
     b = sub.add_parser("backfill")
-    b.add_argument("provider", choices=["aws", "azure", "verda", "nebius"])
+    b.add_argument("provider", choices=sorted(COLLECTORS))
     b.add_argument("--since", help="YYYY-MM부터 (aws·azure·verda 필수)")
     b.add_argument("--days", type=int, default=29, help="Nebius 스팟 이력 일수(최대 29)")
     b.add_argument("--until", help="YYYY-MM까지(생략하면 이번 달)")
@@ -80,69 +110,96 @@ def main(argv=None):
     r = sub.add_parser("report")
     r.add_argument("--model", default="B300")
     args = parser.parse_args(argv)
+    if args.command == "backfill" and args.provider != "nebius" and not args.since:
+        parser.error("--since가 필요하다")
+    return args
 
-    with psycopg.connect(database_url()) as conn:
-        if args.command == "init":
-            print(json.dumps(init(conn), ensure_ascii=False))
-        elif args.command == "status":
-            print(json.dumps(status.record(conn), ensure_ascii=False))
-        elif args.command == "specs":
-            print(json.dumps(aws.attach_specs(conn), ensure_ascii=False))
-        elif args.command == "collect":
-            only = set(args.only.split(",")) if args.only else None
-            if args.provider == "azure":
-                summary = azure.collect(conn, trigger_type=args.trigger)
-            elif args.provider == "verda":
-                summary = verda.collect(conn, trigger_type=args.trigger)
-            elif args.provider == "nebius":
-                summary = nebius.collect(conn, trigger_type=args.trigger)
-            else:
-                summary = aws.collect(conn, trigger_type=args.trigger, only=only,
-                                      cache_dir=cache_dir())
-            print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
-            return 0 if summary["status"] == "success" else 1
-        elif args.command == "backfill" and args.provider == "nebius":
-            summary = nebius_history.backfill(conn, days=args.days, verify=not args.no_verify,
-                                              only=set(args.only.split(",")) if args.only else None)
-            failed = [g for g in summary["groups"] if g["status"] != "success"]
-            print(json.dumps({"run_id": summary["run_id"], "status": summary["status"],
-                              "groups": len(summary["groups"]), "failed": failed}, ensure_ascii=False, indent=2,
-                             default=str))
-            return 0 if summary["status"] == "success" else 1
-        elif args.command == "backfill" and not args.since:
-            parser.error("--since가 필요하다")
-        elif args.command == "backfill" and args.provider == "verda":
-            summary = verda_history.backfill(conn, since=args.since, until=args.until, verify=not args.no_verify)
-            failed = [g for g in summary["groups"] if g["status"] != "success"]
-            print(json.dumps({"run_id": summary["run_id"], "status": summary["status"],
-                              "groups": len(summary["groups"]), "failed": failed}, ensure_ascii=False, indent=2,
-                             default=str))
-            return 0 if summary["status"] == "success" else 1
-        elif args.command == "backfill" and args.provider == "azure":
-            summary = azure_history.backfill(
-                conn, since=args.since, until=args.until, every=args.every,
-                cache_dir=cache_dir(),
-                keep_files=args.keep_files, verify=not args.no_verify)
-            failed = [g for g in summary["groups"] if g["status"] != "success"]
-            print(json.dumps({"run_id": summary["run_id"], "status": summary["status"],
-                              "groups": len(summary["groups"]), "failed": failed}, ensure_ascii=False, indent=2,
-                             default=str))
-            return 0 if summary["status"] == "success" else 1
-        elif args.command == "backfill":
-            summary = aws_history.backfill(
-                conn, since=args.since, until=args.until,
-                only=set(args.only.split(",")) if args.only else None,
-                regions=set(args.regions.split(",")) if args.regions else None, spot_days=args.spot_days,
-                cache_dir=cache_dir(),
-                keep_files=args.keep_files, workers=args.workers)
-            failed = [g for g in summary["groups"] if g["status"] != "success"]
-            print(json.dumps({"run_id": summary["run_id"], "status": summary["status"],
-                              "groups": len(summary["groups"]), "failed": failed}, ensure_ascii=False, indent=2,
-                             default=str))
-            return 0 if summary["status"] == "success" else 1
-        else:
-            report(conn, args.model)
-    return 0
+
+def lock_name(args):
+    """같은 이름끼리 동시에 실행하지 않는다. 사업자의 collect·backfill·specs는 같은 이름을 쓴다."""
+    if args.command in ("collect", "backfill", "specs"):
+        return args.provider
+    if args.command == "status":
+        return "status"
+    return None
+
+
+def main(argv=None):
+    args = parse(argv)
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        print("DATABASE_URL 환경 변수가 필요하다", file=sys.stderr)
+        return EXIT_CONFIG
+    signal.signal(signal.SIGTERM, _terminate)
+    try:
+        conn = psycopg.connect(url, connect_timeout=CONNECT_TIMEOUT_S, options=DB_OPTIONS)
+    except psycopg.OperationalError as error:
+        print(f"DB 접속 실패: {type(error).__name__}", file=sys.stderr)
+        return EXIT_FAILED
+    with conn:
+        name = lock_name(args)
+        abandoned = []
+        if name:
+            if not runs.try_lock(conn, name):
+                print(json.dumps({"status": "locked", "lock": name, "reason": "같은 이름의 실행이 진행 중"},
+                                 ensure_ascii=False))
+                return EXIT_LOCKED
+            abandoned = runs.close_abandoned(conn, name, datetime.now(timezone.utc))
+        try:
+            return run(conn, args, abandoned)
+        except LookupError as error:
+            # 수집 대상·기준 정보가 없음(seed 미적용 등). 다시 시도해도 같다
+            print(f"설정 오류: {error}", file=sys.stderr)
+            return EXIT_CONFIG
+        except Terminated:
+            print("SIGTERM: 실행을 실패로 기록하고 끝냄", file=sys.stderr)
+            return EXIT_PARTIAL
+
+
+def run(conn, args, abandoned):
+    if args.command == "init":
+        print(json.dumps(init(conn), ensure_ascii=False))
+        return EXIT_OK
+    if args.command == "report":
+        report(conn, args.model)
+        return EXIT_OK
+    if args.command == "status":
+        summary = status.record(conn)
+    elif args.command == "specs":
+        summary = aws.attach_specs(conn)
+    elif args.command == "collect":
+        kwargs = {"trigger_type": args.trigger, "date": args.date}
+        if args.provider == "aws":
+            kwargs.update(only=set(args.only.split(",")) if args.only else None, cache_dir=cache_dir())
+        summary = COLLECTORS[args.provider].collect(conn, **kwargs)
+    else:
+        summary = backfill(conn, args)
+        failed = [g for g in summary["groups"] if g["status"] != "success"]
+        summary = {"run_id": summary["run_id"], "status": summary["status"], "groups": len(summary["groups"]),
+                   "failed": failed}
+    if abandoned:
+        summary = {**summary, "closed_abandoned_runs": abandoned}
+    print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+    return EXIT_BY_STATUS.get(summary["status"], EXIT_PARTIAL)
+
+
+def backfill(conn, args):
+    only = set(args.only.split(",")) if args.only else None
+    if args.provider == "nebius":
+        return nebius_history.backfill(conn, days=args.days, verify=not args.no_verify, only=only)
+    if args.provider == "verda":
+        return verda_history.backfill(conn, since=args.since, until=args.until, verify=not args.no_verify)
+    if args.provider == "azure":
+        return azure_history.backfill(conn, since=args.since, until=args.until, every=args.every,
+                                      cache_dir=cache_dir(), keep_files=args.keep_files, verify=not args.no_verify)
+    return aws_history.backfill(conn, since=args.since, until=args.until, only=only,
+                                regions=set(args.regions.split(",")) if args.regions else None,
+                                spot_days=args.spot_days, cache_dir=cache_dir(), keep_files=args.keep_files,
+                                workers=args.workers)
+
+
+def _terminate(signum, frame):
+    raise Terminated()
 
 
 def init(conn):

@@ -166,6 +166,7 @@ class CollectTests(AzureDb):
     def test_price_change_alert_and_missing_offer(self):
         self.collect()
         self.api = [r for r in api_items(spot="30.0") if r["armRegionName"] != "koreacentral"]
+        self.clock[0] += timedelta(days=1)          # 다음 날 수집(같은 날 다시 실행하면 건너뜀)
         self.collect()
         alerts = self.conn.execute("SELECT alert_type FROM collection_alert ORDER BY alert_id").fetchall()
         self.assertEqual(alerts, [("price_spike",)])

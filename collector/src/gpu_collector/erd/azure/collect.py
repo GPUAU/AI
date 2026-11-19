@@ -21,7 +21,7 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
 from ... import fetch
-from .. import db
+from .. import db, runs
 
 PROVIDER = "Azure"
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-azure 1"
@@ -159,9 +159,12 @@ class TargetResult:
 
 # 매일 수집 ----------------------------------------------------------------------
 
-def collect(conn, *, trigger_type="manual", now=None, get_json=fetch.get_json, pause=time.sleep):
-    """Azure 수집 1회(Retail Prices API). 반환: 실행 요약."""
+def collect(conn, *, trigger_type="manual", now=None, date=None, get_json=fetch.get_json, pause=time.sleep):
+    """Azure 수집 1회(Retail Prices API). date: 수집 기준일(KST, 생략하면 오늘). 반환: 실행 요약.
+
+    같은 수집 기준일에 이미 적재했으면 API를 호출하지 않고 건너뛴다."""
     now = now or (lambda: datetime.now(timezone.utc))
+    day = runs.collection_date(date, now)
     provider = db.provider_id(conn, PROVIDER)
     rule = db.rule(conn, RULE_VERSION)
     targets = [t for t in db.enabled_targets(conn, PROVIDER) if t["source_name"] == SOURCE_API]
@@ -169,8 +172,13 @@ def collect(conn, *, trigger_type="manual", now=None, get_json=fetch.get_json, p
         raise LookupError("no enabled Azure collection_target")
     run_id = db.begin_run(conn, now(), trigger_type, COLLECTOR_VERSION)
     conn.commit()
-    context = {"provider": provider, "rule": rule, "run_id": run_id, "now": now,
+    context = {"provider": provider, "rule": rule, "run_id": run_id, "now": now, "date": day,
                "docs": docs_targets(conn), "docs_source": source_id(conn, SOURCE_DOCS)}
+    if runs.group_done(conn, context, targets):
+        outcome = runs.skipped({"source": SOURCE_API})
+        db.finish_run(conn, run_id, now(), "success")
+        conn.commit()
+        return {"run_id": run_id, "date": day, "status": "success", "groups": [outcome]}
     try:
         price_url = api_url(price_filter(targets))
         rows = fetch_rows(price_url, get_json, pause)
@@ -184,7 +192,7 @@ def collect(conn, *, trigger_type="manual", now=None, get_json=fetch.get_json, p
     except EXPECTED_ERRORS as error:
         processing = "validation_failed" if isinstance(error, SourceInvalid) else "collection_failed"
         record_failure(conn, context, targets, processing, f"{type(error).__name__}: {error}",
-                       key=lambda t: f"{run_id}:{t['target_id']}:target")
+                       key=lambda t: runs.failure_key(context, t))
         outcome = {"source": SOURCE_API, "status": processing, "reason": f"{type(error).__name__}: {error}"}
     except Exception as error:
         conn.rollback()
@@ -194,7 +202,7 @@ def collect(conn, *, trigger_type="manual", now=None, get_json=fetch.get_json, p
     status = "success" if outcome["status"] == "success" else "failed"
     db.finish_run(conn, run_id, now(), status, None if status == "success" else outcome["reason"][:2000])
     conn.commit()
-    return {"run_id": run_id, "status": status, "groups": [outcome]}
+    return {"run_id": run_id, "date": day, "status": status, "groups": [outcome]}
 
 
 def price_filter(targets):
@@ -406,7 +414,7 @@ def write_group(conn, context, targets, results, checked_at):
             product_id, previous = db.ensure_product(conn, hit.product)
             offer_id = db.ensure_offer(conn, product_id, hit.offer)
             check_id, created = db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "public",
-                                             "success", True, f"{run_id}:{target['target_id']}:offer:{offer_id}",
+                                             "success", True, runs.offer_key(context, target, offer_id),
                                              product_id=product_id, offer_id=offer_id)
             if not created:
                 raise SourceInvalid(f"duplicate_offer_in_run: offer {offer_id}")
@@ -424,7 +432,7 @@ def write_group(conn, context, targets, results, checked_at):
         found = bool(result.hits) or result.disclosure is not None
         check_id, _ = db.add_check(conn, run_id, target["target_id"], "target", checked_at,
                                    result.disclosure or ("public" if result.hits else "unknown"),
-                                   "success" if found else "not_found", True, f"{run_id}:{target['target_id']}:target",
+                                   "success" if found else "not_found", True, runs.target_key(context, target),
                                    reason=result.reason)
         db.add_evidence(conn, check_id, target["source_id"], "official", result.source_url, result.source_version,
                         {"scope": scope(target), "offers_found": len(result.hits), **result.note}, checked_at)
@@ -434,7 +442,7 @@ def write_group(conn, context, targets, results, checked_at):
             if offer_id in seen:
                 continue
             db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "unknown", "not_found", True,
-                         f"{run_id}:{target['target_id']}:offer:{offer_id}", product_id=product_id, offer_id=offer_id,
+                         runs.offer_key(context, target, offer_id), product_id=product_id, offer_id=offer_id,
                          reason="이전에 확인한 오퍼가 이번 수집 범위에서 발견되지 않음")
             counts["offers_missing"] += 1
     return counts
@@ -482,17 +490,7 @@ def check_spike(conn, context, target, offer_id, check_id, observation_id, check
                      rule_version=SPIKE_RULE, reason=f"실효 단가 {previous[1]} → {current} ({change * 100:+.1f}%)")
 
 
-def record_failure(conn, context, targets, processing, reason, *, key):
-    """작업을 되돌리고 대상별 실패 점검과 알림을 남긴다. 실패를 공개 상태로 바꾸지 않는다."""
-    conn.rollback()
-    run_id, checked_at = context["run_id"], context["now"]()
-    for target in targets:
-        db.add_check(conn, run_id, target["target_id"], "target", checked_at, "unknown", processing, False,
-                     key(target), reason=reason[:1000])
-    first = targets[0]
-    db.add_alert(conn, "collection_failed", checked_at, f"collection_failed:{key(first)}", run_id=run_id,
-                 source_id=first["source_id"], reason=f"{first['source_name']}: {reason}"[:2000])
-    conn.commit()
+record_failure = runs.record_failure
 
 
 # 공통 -------------------------------------------------------------------------

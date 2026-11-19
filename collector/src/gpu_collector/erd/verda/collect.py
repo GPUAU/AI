@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from ... import fetch
-from .. import db
+from .. import db, runs
 
 PROVIDER = "Verda"
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-verda 1"
@@ -111,9 +111,13 @@ class TargetResult:
 
 # 매일 수집 ----------------------------------------------------------------------
 
-def collect(conn, *, trigger_type="manual", now=None, get_json=fetch.get_json, pause=time.sleep):
-    """Verda 수집 1회. 인스턴스(온디맨드·스팟) 다음에 약정(할인율)을 처리한다. 반환: 실행 요약."""
+def collect(conn, *, trigger_type="manual", now=None, date=None, get_json=fetch.get_json, pause=time.sleep):
+    """Verda 수집 1회. 인스턴스(온디맨드·스팟) 다음에 약정(할인율)을 처리한다. date: 수집 기준일(KST, 생략하면 오늘).
+
+    같은 수집 기준일에 이미 적재한 묶음은 건너뛴다. 인스턴스 묶음을 건너뛰고 약정만 다시 적재할 때는
+    그날 적재한 온디맨드 관측을 약정 계산 기준으로 쓴다. 반환: 실행 요약."""
     now = now or (lambda: datetime.now(timezone.utc))
+    day = runs.collection_date(date, now)
     targets = db.enabled_targets(conn, PROVIDER)
     instance_targets = [t for t in targets if t["source_name"] == SOURCE_INSTANCES and t["contract_filter"]]
     detect_targets = [t for t in targets if t["source_name"] == SOURCE_INSTANCES and t["model_name"] in DETECT]
@@ -123,28 +127,36 @@ def collect(conn, *, trigger_type="manual", now=None, get_json=fetch.get_json, p
     run_id = db.begin_run(conn, now(), trigger_type, COLLECTOR_VERSION)
     conn.commit()
     context = {"provider": db.provider_id(conn, PROVIDER), "rule": db.rule(conn, RULE_VERSION), "run_id": run_id,
-               "now": now, "docs": docs_targets(conn), "docs_source": source_id(conn, SOURCE_PAGES)}
+               "now": now, "date": day, "docs": docs_targets(conn), "docs_source": source_id(conn, SOURCE_PAGES)}
     outcomes, bases = [], {}
+    long_term_done = bool(long_term_targets) and runs.group_done(conn, context, long_term_targets)
     try:
-        try:
-            body = get_json(INSTANCE_URL, REQUEST_CONFIG)
-            rows = read_instances(body)
-            clusters = []
-            if detect_targets:
-                pause(SECONDS_BETWEEN_REQUESTS)
-                clusters = get_json(CLUSTER_URL, REQUEST_CONFIG)
-                if not isinstance(clusters, list):
-                    raise SourceInvalid("unexpected_cluster_types_format")
-            checked = now()
-            results = instance_results(instance_targets, rows, INSTANCE_URL, None, "instance-types")
-            results.update(detect_results(detect_targets, body, clusters))
-            counts = write_group(conn, context, instance_targets + detect_targets, results, checked, bases=bases)
-            conn.commit()
-            outcomes.append({"source": SOURCE_INSTANCES, "status": "success", **counts})
-        except EXPECTED_ERRORS as error:
-            bases.clear()
-            outcomes.append(_fail(conn, context, instance_targets + detect_targets, SOURCE_INSTANCES, error))
-        if long_term_targets:
+        if runs.group_done(conn, context, instance_targets + detect_targets):
+            outcomes.append(runs.skipped({"source": SOURCE_INSTANCES}))
+            if long_term_targets and not long_term_done:
+                bases.update(saved_bases(conn, context, instance_targets))
+        else:
+            try:
+                body = get_json(INSTANCE_URL, REQUEST_CONFIG)
+                rows = read_instances(body)
+                clusters = []
+                if detect_targets:
+                    pause(SECONDS_BETWEEN_REQUESTS)
+                    clusters = get_json(CLUSTER_URL, REQUEST_CONFIG)
+                    if not isinstance(clusters, list):
+                        raise SourceInvalid("unexpected_cluster_types_format")
+                checked = now()
+                results = instance_results(instance_targets, rows, INSTANCE_URL, None, "instance-types")
+                results.update(detect_results(detect_targets, body, clusters))
+                counts = write_group(conn, context, instance_targets + detect_targets, results, checked, bases=bases)
+                conn.commit()
+                outcomes.append({"source": SOURCE_INSTANCES, "status": "success", **counts})
+            except EXPECTED_ERRORS as error:
+                bases.clear()
+                outcomes.append(_fail(conn, context, instance_targets + detect_targets, SOURCE_INSTANCES, error))
+        if long_term_done:
+            outcomes.append(runs.skipped({"source": SOURCE_LONG_TERM}))
+        elif long_term_targets:
             try:
                 if not bases:
                     raise SourceInvalid("on_demand_prices_not_available: 같은 실행의 온디맨드 관측이 없어 할인율을 적용할 수 없음")
@@ -162,19 +174,18 @@ def collect(conn, *, trigger_type="manual", now=None, get_json=fetch.get_json, p
         db.finish_run(conn, run_id, now(), "failed", f"unexpected: {type(error).__name__}")
         conn.commit()
         raise
-    ok = sum(1 for outcome in outcomes if outcome["status"] == "success")
-    status = "success" if ok == len(outcomes) else ("failed" if ok == 0 else "partial_failure")
-    failed = [f"{o['source']}: {o['reason']}" for o in outcomes if o["status"] != "success"]
+    status = runs.run_status(outcomes)
+    failed = [f"{o['source']}: {o['reason']}" for o in outcomes if o["status"] not in ("success", "skipped")]
     db.finish_run(conn, run_id, now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": run_id, "status": status, "groups": outcomes}
+    return {"run_id": run_id, "date": day, "status": status, "groups": outcomes}
 
 
 def _fail(conn, context, targets, source, error):
     processing = "validation_failed" if isinstance(error, SourceInvalid) else "collection_failed"
     reason = f"{type(error).__name__}: {error}"
     record_failure(conn, context, targets, processing, reason,
-                   key=lambda t: f"{context['run_id']}:{t['target_id']}:target")
+                   key=lambda t: runs.failure_key(context, t))
     return {"source": source, "status": processing, "reason": reason}
 
 
@@ -384,7 +395,7 @@ def write_group(conn, context, targets, results, checked_at, *, bases=None):
             product_id, previous = db.ensure_product(conn, hit.product)
             offer_id = db.ensure_offer(conn, product_id, hit.offer)
             check_id, created = db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "public",
-                                             "success", True, f"{run_id}:{target['target_id']}:offer:{offer_id}",
+                                             "success", True, runs.offer_key(context, target, offer_id),
                                              product_id=product_id, offer_id=offer_id)
             if not created:
                 raise SourceInvalid(f"duplicate_offer_in_run: offer {offer_id}")
@@ -409,7 +420,7 @@ def write_group(conn, context, targets, results, checked_at, *, bases=None):
         check_id, _ = db.add_check(conn, run_id, target["target_id"], "target", checked_at,
                                    result.disclosure or ("public" if result.hits else "unknown"),
                                    "success" if found else "not_found", True,
-                                   f"{run_id}:{target['target_id']}:target", reason=result.reason)
+                                   runs.target_key(context, target), reason=result.reason)
         db.add_evidence(conn, check_id, target["source_id"], "official", result.source_url, result.source_version,
                         {"scope": scope(target), "offers_found": len(result.hits), **result.note}, checked_at)
         if not found:
@@ -418,7 +429,7 @@ def write_group(conn, context, targets, results, checked_at, *, bases=None):
             if offer_id in seen:
                 continue
             db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "unknown", "not_found", True,
-                         f"{run_id}:{target['target_id']}:offer:{offer_id}", product_id=product_id, offer_id=offer_id,
+                         runs.offer_key(context, target, offer_id), product_id=product_id, offer_id=offer_id,
                          reason="이전에 확인한 오퍼가 이번 수집 범위에서 발견되지 않음")
             counts["offers_missing"] += 1
     return counts
@@ -467,17 +478,31 @@ def check_spike(conn, context, target, offer_id, check_id, observation_id, check
                      rule_version=SPIKE_RULE, reason=f"실효 단가 {previous[1]} → {current} ({change * 100:+.1f}%)")
 
 
-def record_failure(conn, context, targets, processing, reason, *, key):
-    """작업을 되돌리고 대상별 실패 점검과 알림을 남긴다. 실패를 공개 상태로 바꾸지 않는다."""
-    conn.rollback()
-    run_id, checked_at = context["run_id"], context["now"]()
-    for target in targets:
-        db.add_check(conn, run_id, target["target_id"], "target", checked_at, "unknown", processing, False,
-                     key(target), reason=reason[:1000])
-    first = targets[0]
-    db.add_alert(conn, "collection_failed", checked_at, f"collection_failed:{key(first)}", run_id=run_id,
-                 source_id=first["source_id"], reason=f"{first['source_name']}: {reason}"[:2000])
-    conn.commit()
+record_failure = runs.record_failure
+
+
+def saved_bases(conn, context, instance_targets):
+    """이 수집 기준일에 이미 적재한 온디맨드 관측을 약정 계산 기준(bases)으로 읽는다. write_group이 모으는 값과 같다."""
+    columns = db.PRODUCT_IDENTITY + db.CONFIG_FIELDS
+    bases = {}
+    for target in instance_targets:
+        if target["contract_filter"] != "on_demand":
+            continue
+        rows = conn.execute(
+            f"""SELECT p.product_id, ob.observation_id, pc.amount, {", ".join("p." + name for name in columns)}
+                FROM collection_check c
+                JOIN price_observation ob ON ob.check_id = c.check_id
+                JOIN offer o ON o.offer_id = ob.offer_id AND o.contract_type = 'on_demand'
+                JOIN product p ON p.product_id = o.product_id
+                JOIN price_component pc ON pc.observation_id = ob.observation_id AND pc.component_type = 'hourly_rate'
+                WHERE c.deduplication_key LIKE %s
+                ORDER BY ob.observation_id""", (runs.offer_key_prefix(context, target) + "%",)).fetchall()
+        for product_id, observation_id, hourly, *values in rows:
+            product = dict(zip(columns, values))
+            bases[product_id] = {"model": target["model_name"], "product": product, "observation_id": observation_id,
+                                 "hourly": hourly, "instance_type": product["original_product_name"],
+                                 "location": product["region_code"]}
+    return bases
 
 
 # 공통 -------------------------------------------------------------------------
