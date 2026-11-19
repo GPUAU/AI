@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import psycopg
 
@@ -82,22 +83,19 @@ The platform is only available in the `eu-north1` [region](/overview/regions).
 """
 
 
-def spot_item(platform, region, value, sku):
+def series_item(platform, region, sku, points):
     return {"skuId": sku, "productTitle": f"Preemptible {platform}", "region": region,
-            "computeInstance": {"platform": platform}, "price": {"value": value, "currency": "usd", "unitTitle": "GPU hour"},
-            "effectiveTime": "2026-11-18T07:36:00Z"}
+            "computeInstance": {"platform": platform}, "currency": "usd", "unitTitle": "GPU hour",
+            "points": [{"timestamp": ts, "value": v} for ts, v in points]}
 
 
-SPOT = [spot_item("gpu-b300-sxm", "uk-south1", "6.95", "sku-b300-uk"),
-        spot_item("gpu-b300-sxm", "us-north1", "3.10", "sku-b300-us"),
-        spot_item("gpu-h100-sxm", "eu-north1", "1.70", "sku-h100"),
-        spot_item("gpu-rtx6000", "us-central1", "0.80", "sku-rtx")]
+SERIES_OTHERS = [series_item("gpu-h100-sxm", "eu-north1", "sku-h100", [("2026-11-17T10:00:00Z", "1.70")]),
+                 series_item("gpu-rtx6000", "us-central1", "sku-rtx", [("2026-11-17T10:00:00Z", "0.80")])]
 
 
-def series(points):
-    return {"items": [{"skuId": "sku-b300-uk", "productTitle": "Preemptible NVIDIA® B300 NVLink", "region": "uk-south1",
-                       "computeInstance": {"platform": "gpu-b300-sxm"}, "currency": "usd", "unitTitle": "GPU hour",
-                       "points": [{"timestamp": ts, "value": v} for ts, v in points]}]}
+def series(points, others=()):
+    """B300 uk-south1 시계열 + 다른 SKU 항목."""
+    return {"items": [series_item("gpu-b300-sxm", "uk-south1", "sku-b300-uk", points), *others]}
 
 
 class NebiusDb(unittest.TestCase):
@@ -109,8 +107,7 @@ class NebiusDb(unittest.TestCase):
         self.conn.commit()
         self.clock = [T0]
         self.doc = CURRENT
-        self.spot = SPOT
-        self.series = series([("2026-11-17T10:00:00Z", "5.0"), ("2026-11-17T11:00:00Z", "5.2")])
+        self.series = series([("2026-11-17T10:00:00Z", "5.0"), ("2026-11-17T11:00:00Z", "5.2")], SERIES_OTHERS)
         self.captures = {"20260930084721": CAPTURE_SEP}
 
     def tearDown(self):
@@ -127,9 +124,7 @@ class NebiusDb(unittest.TestCase):
         return self.captures[url.split("/web/")[1][:14]]
 
     def get_json(self, url, config):
-        if url.startswith(nebius.SPOT_URL + "?"):
-            return {"items": self.spot}
-        if url.startswith(nebius_history.SERIES_URL):
+        if url.startswith(nebius.SERIES_URL + "?"):
             return self.series
         if "cdx/search" in url:
             return [["timestamp", "original", "digest"]] + [
@@ -211,7 +206,8 @@ class CollectTests(NebiusDb):
         self.assertEqual(summary["status"], "success")
         self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "eu-west2", "on_demand"), [Decimal("9.50")])
         self.assertEqual(self.prices("gpu-b300-sxm 1gpu-24vcpu-346gb", "us-north1", "on_demand"), [Decimal("9.50")])
-        self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "uk-south1", "spot"), [Decimal("6.95")])
+        self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "uk-south1", "spot"),
+                         [Decimal("5.0"), Decimal("5.2")])
         self.assertEqual(self.prices("gpu-h100-sxm 8gpu-128vcpu-1600gb", "eu-north1", "spot"), [Decimal("1.70")])
         product = self.conn.execute(
             """SELECT gpu_count, vram_gb_per_gpu, vcpu_count, country_code, interconnect_status, inter_node_network
@@ -243,7 +239,8 @@ class CollectTests(NebiusDb):
         self.doc = "<html>maintenance</html>"
         summary = self.collect()
         self.assertEqual(summary["status"], "partial_failure")
-        self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "uk-south1", "spot"), [Decimal("6.95")])
+        self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "uk-south1", "spot"),
+                         [Decimal("5.0"), Decimal("5.2")])
 
 
 class BackfillTests(NebiusDb):
@@ -274,6 +271,69 @@ class BackfillTests(NebiusDb):
         products = self.conn.execute("SELECT count(*) FROM product").fetchone()[0]
         self.collect()
         self.assertEqual(self.conn.execute("SELECT count(*) FROM product").fetchone()[0], products)
+        # 백필이 적재한 시계열 기록(5.0·5.2)은 매일 수집이 다시 넣지 않는다. 4.30은 9월 문서 저장본의 고정 선점형 가격
+        self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "uk-south1", "spot"),
+                         [Decimal("4.30"), Decimal("5.0"), Decimal("5.2")])
+
+
+
+class DailySeriesTests(NebiusDb):
+    def series_requests(self):
+        return [url for url in self.requested if url.startswith(nebius.SERIES_URL)]
+
+    def setUp(self):
+        super().setUp()
+        self.requested = []
+        original = self.get_json
+
+        def tracking(url, config):
+            self.requested.append(url)
+            return original(url, config)
+        self.get_json = tracking
+
+    def start_of(self, url):
+        return parse_qs(urlparse(url).query)["filters.startTime"][0]
+
+    def test_first_run_reads_last_day(self):
+        self.collect()
+        self.assertEqual(self.start_of(self.series_requests()[-1]), "2026-11-17T09:00:00Z")   # T0 − 1일
+
+    def test_next_run_starts_at_last_point_and_adds_only_new(self):
+        self.collect()
+        self.clock[0] += timedelta(days=1)
+        self.series = series([("2026-11-17T10:00:00Z", "5.0"), ("2026-11-17T11:00:00Z", "5.2"),
+                              ("2026-11-17T12:00:00Z", "5.6"), ("2026-11-18T12:00:00Z", "6.1")], SERIES_OTHERS)
+        summary = self.collect()
+        self.assertEqual(summary["status"], "success")
+        self.assertEqual(self.start_of(self.series_requests()[-1]), "2026-11-17T11:00:00Z")   # 마지막 적재 기록
+        for preset in ("gpu-b300-sxm 1gpu-24vcpu-346gb", "gpu-b300-sxm 8gpu-192vcpu-2768gb"):
+            self.assertEqual(self.prices(preset, "uk-south1", "spot"),
+                             [Decimal("5.0"), Decimal("5.2"), Decimal("5.6"), Decimal("6.1")])
+
+    def test_start_never_after_now(self):
+        # 마지막 기록이 지금보다 늦어도(시계 차이 등) 미래 시작 시각으로 조회하지 않는다(API는 400)
+        self.collect()                                                   # 11-17 10:00·11:00 기록 적재
+        self.assertEqual(nebius.series_start(self.conn, datetime(2026, 11, 17, 9, 40, tzinfo=timezone.utc)),
+                         datetime(2026, 11, 17, 9, 0, tzinfo=timezone.utc))
+
+    def test_unfinished_hour_loaded_next_run(self):
+        # T0 = 11-18 09:00. 10:00 기록은 09~10시 구간의 진행 중 값이라 이번에는 적재하지 않는다
+        self.series = series([("2026-11-18T08:00:00Z", "5.0"), ("2026-11-18T09:00:00Z", "5.1"),
+                              ("2026-11-18T10:00:00Z", "5.2")], SERIES_OTHERS)
+        self.collect()
+        self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "uk-south1", "spot"),
+                         [Decimal("5.0"), Decimal("5.1")])
+        self.clock[0] += timedelta(days=1)
+        self.series = series([("2026-11-18T09:00:00Z", "5.1"), ("2026-11-18T10:00:00Z", "5.3")], SERIES_OTHERS)
+        self.collect()
+        self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "uk-south1", "spot"),
+                         [Decimal("5.0"), Decimal("5.1"), Decimal("5.3")])       # 확정된 값으로 적재
+
+    def test_daily_then_backfill_does_not_duplicate(self):
+        self.collect()
+        self.backfill(only={"spot"})
+        self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "uk-south1", "spot"),
+                         [Decimal("5.0"), Decimal("5.2")])
 
 
 if __name__ == "__main__":
