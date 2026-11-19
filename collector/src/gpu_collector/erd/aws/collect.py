@@ -31,7 +31,7 @@ import ijson
 from ... import aws_offer, aws_savings, fetch
 from ...download import cached_download
 from ...env import MissingSecret
-from .. import db
+from .. import db, runs
 from . import api as aws_api, spot as aws_spot
 
 PROVIDER = "AWS"
@@ -128,11 +128,14 @@ class TargetResult:
     reason: str | None = None
 
 
-def collect(conn, *, trigger_type="manual", only=None, cache_dir="var/cache", now=None,
+def collect(conn, *, trigger_type="manual", only=None, cache_dir="var/cache", now=None, date=None,
             get_json=fetch.get_json, downloader=fetch.download, spot_prices=aws_spot.current_prices,
             pricing_api=aws_api):
-    """AWS 수집 1회. only: 처리할 출처 이름 모음(생략하면 전체). 반환: 실행 요약."""
+    """AWS 수집 1회. only: 처리할 출처 이름 모음(생략하면 전체). date: 수집 기준일(KST, 생략하면 오늘).
+
+    같은 수집 기준일에 이미 적재한 (출처, 리전) 묶음은 건너뛴다. 반환: 실행 요약."""
     now = now or (lambda: datetime.now(timezone.utc))
+    day = runs.collection_date(date, now)
     provider = db.provider_id(conn, PROVIDER)
     rule = db.rule(conn, RULE_VERSION)
     targets = [t for t in db.enabled_targets(conn, PROVIDER)
@@ -146,11 +149,14 @@ def collect(conn, *, trigger_type="manual", only=None, cache_dir="var/cache", no
     for target in sorted(targets, key=lambda t: (SOURCE_ORDER.index(t["source_name"]), t["region_filter"] or "")):
         groups.setdefault((target["source_name"], target["region_filter"]), []).append(target)
 
-    context = {"provider": provider, "rule": rule, "run_id": run_id, "now": now, "cache_dir": Path(cache_dir),
+    context = {"provider": provider, "rule": rule, "run_id": run_id, "now": now, "date": day, "cache_dir": Path(cache_dir),
                "get_json": get_json, "downloader": downloader, "spot_prices": spot_prices, "pricing_api": pricing_api,
                **spec_context(conn)}
     outcomes = []
     for (source_name, region), group in groups.items():
+        if runs.group_done(conn, context, group):
+            outcomes.append(runs.skipped({"source": source_name, "region": region}))
+            continue
         try:
             results = HANDLERS[source_name](conn, context, region, group)
             counts = _write_group(conn, context, group, results)
@@ -167,12 +173,11 @@ def collect(conn, *, trigger_type="manual", only=None, cache_dir="var/cache", no
             conn.commit()
             raise
 
-    ok = sum(1 for outcome in outcomes if outcome["status"] == "success")
-    status = "success" if ok == len(outcomes) else ("failed" if ok == 0 else "partial_failure")
-    failed = [f"{o['source']}@{o['region']}: {o['reason']}" for o in outcomes if o["status"] != "success"]
+    status = runs.run_status(outcomes)
+    failed = [f"{o['source']}@{o['region']}: {o['reason']}" for o in outcomes if o["status"] not in ("success", "skipped")]
     db.finish_run(conn, run_id, now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": run_id, "status": status, "groups": outcomes}
+    return {"run_id": run_id, "date": day, "status": status, "groups": outcomes}
 
 
 # 출처별 처리 ------------------------------------------------------------------
@@ -517,7 +522,7 @@ def _write_group(conn, context, group, results):
         disclosure = result.disclosure or ("public" if result.hits else "unknown")
         check_id, _ = db.add_check(conn, run_id, target["target_id"], "target", checked_at, disclosure,
                                    "success" if found else "not_found", True,
-                                   f"{run_id}:{target['target_id']}:target", reason=result.reason)
+                                   runs.target_key(context, target), reason=result.reason)
         db.add_evidence(conn, check_id, target["source_id"], "official", result.source_url, result.source_version,
                         {"scope": {"model": target["model_name"], "region": target["region_filter"],
                                    "contract": target["contract_filter"], "scope_version": target["scope_version"]},
@@ -529,7 +534,7 @@ def _write_group(conn, context, group, results):
             if offer_id in seen:
                 continue
             db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "unknown", "not_found", True,
-                         f"{run_id}:{target['target_id']}:offer:{offer_id}", product_id=product_id,
+                         runs.offer_key(context, target, offer_id), product_id=product_id,
                          offer_id=offer_id, reason="이전에 확인한 오퍼가 이번 수집 범위에서 발견되지 않음")
             counts["offers_missing"] += 1
     return counts
@@ -543,7 +548,7 @@ def _write_hit(conn, context, target, hit, checked_at):
         product_id, previous = db.ensure_product(conn, hit.product)
     offer_id = db.ensure_offer(conn, product_id, hit.offer)
     check_id, created = db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "public", "success",
-                                     True, f"{run_id}:{target['target_id']}:offer:{offer_id}",
+                                     True, runs.offer_key(context, target, offer_id),
                                      product_id=product_id, offer_id=offer_id)
     if not created:
         raise SourceInvalid(f"duplicate_offer_in_run: offer {offer_id}")

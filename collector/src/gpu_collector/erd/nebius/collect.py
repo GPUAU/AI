@@ -23,7 +23,7 @@ from decimal import Decimal, InvalidOperation
 import requests
 
 from ... import fetch
-from .. import db
+from .. import db, runs
 
 PROVIDER = "Nebius"
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-nebius 1"
@@ -111,9 +111,13 @@ class TargetResult:
 
 # 매일 수집 ----------------------------------------------------------------------
 
-def collect(conn, *, trigger_type="manual", now=None, get_text=None, get_json=fetch.get_json, pause=time.sleep):
-    """Nebius 수집 1회: 문서 가격표(온디맨드·약정 상태) → 스팟 API. 반환: 실행 요약."""
+def collect(conn, *, trigger_type="manual", now=None, date=None, get_text=None, get_json=fetch.get_json,
+            pause=time.sleep):
+    """Nebius 수집 1회: 문서 가격표(온디맨드·약정 상태) → 스팟 API. date: 수집 기준일(KST, 생략하면 오늘).
+
+    같은 수집 기준일에 이미 적재한 묶음(문서 가격표·스팟)은 건너뛴다. 반환: 실행 요약."""
     now = now or (lambda: datetime.now(timezone.utc))
+    day = runs.collection_date(date, now)
     get_text = get_text or fetch_text
     targets = db.enabled_targets(conn, PROVIDER)
     docs_targets_ = [t for t in targets if t["source_name"] == SOURCE_DOCS and t["contract_filter"]]
@@ -124,10 +128,12 @@ def collect(conn, *, trigger_type="manual", now=None, get_text=None, get_json=fe
     run_id = db.begin_run(conn, now(), trigger_type, COLLECTOR_VERSION)
     conn.commit()
     context = {"provider": db.provider_id(conn, PROVIDER), "rule": db.rule(conn, RULE_VERSION), "run_id": run_id,
-               "now": now, "docs": spec_targets(conn), "docs_source": source_id(conn, SOURCE_TYPES)}
+               "now": now, "date": day, "docs": spec_targets(conn), "docs_source": source_id(conn, SOURCE_TYPES)}
     outcomes = []
     try:
-        if docs_targets_:
+        if docs_targets_ and runs.group_done(conn, context, docs_targets_ + detect_targets):
+            outcomes.append(runs.skipped({"source": SOURCE_DOCS}))
+        elif docs_targets_:
             try:
                 checked = now()
                 text = get_text(PRICING_URL, REQUEST_CONFIG)
@@ -139,7 +145,9 @@ def collect(conn, *, trigger_type="manual", now=None, get_text=None, get_json=fe
                 outcomes.append({"source": SOURCE_DOCS, "status": "success", **counts})
             except EXPECTED_ERRORS as error:
                 outcomes.append(_fail(conn, context, docs_targets_ + detect_targets, SOURCE_DOCS, error))
-        if spot_targets:
+        if spot_targets and runs.group_done(conn, context, spot_targets):
+            outcomes.append(runs.skipped({"source": SOURCE_SPOT}))
+        elif spot_targets:
             try:
                 if docs_targets_:
                     pause(SECONDS_BETWEEN_REQUESTS)
@@ -156,19 +164,18 @@ def collect(conn, *, trigger_type="manual", now=None, get_text=None, get_json=fe
         db.finish_run(conn, run_id, now(), "failed", f"unexpected: {type(error).__name__}")
         conn.commit()
         raise
-    ok = sum(1 for outcome in outcomes if outcome["status"] == "success")
-    status = "success" if ok == len(outcomes) else ("failed" if ok == 0 else "partial_failure")
-    failed = [f"{o['source']}: {o['reason']}" for o in outcomes if o["status"] != "success"]
+    status = runs.run_status(outcomes)
+    failed = [f"{o['source']}: {o['reason']}" for o in outcomes if o["status"] not in ("success", "skipped")]
     db.finish_run(conn, run_id, now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": run_id, "status": status, "groups": outcomes}
+    return {"run_id": run_id, "date": day, "status": status, "groups": outcomes}
 
 
 def _fail(conn, context, targets, source, error):
     processing = "validation_failed" if isinstance(error, SourceInvalid) else "collection_failed"
     reason = f"{type(error).__name__}: {error}"
     record_failure(conn, context, targets, processing, reason,
-                   key=lambda t: f"{context['run_id']}:{t['target_id']}:target")
+                   key=lambda t: runs.failure_key(context, t))
     return {"source": source, "status": processing, "reason": reason}
 
 
@@ -435,7 +442,7 @@ def write_group(conn, context, targets, results, checked_at, *, role):
             product_id, previous = db.ensure_product(conn, hit.product)
             offer_id = db.ensure_offer(conn, product_id, hit.offer)
             check_id, created = db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "public",
-                                             "success", True, f"{run_id}:{target['target_id']}:offer:{offer_id}",
+                                             "success", True, runs.offer_key(context, target, offer_id),
                                              product_id=product_id, offer_id=offer_id)
             if not created:
                 raise SourceInvalid(f"duplicate_offer_in_run: offer {offer_id}")
@@ -453,7 +460,7 @@ def write_group(conn, context, targets, results, checked_at, *, role):
         found = bool(result.hits) or result.disclosure is not None
         check_id, _ = db.add_check(conn, run_id, target["target_id"], "target", checked_at,
                                    result.disclosure or ("public" if result.hits else "unknown"),
-                                   "success" if found else "not_found", True, f"{run_id}:{target['target_id']}:target",
+                                   "success" if found else "not_found", True, runs.target_key(context, target),
                                    reason=result.reason)
         db.add_evidence(conn, check_id, target["source_id"], role, result.source_url, result.source_version,
                         {"scope": scope(target), "offers_found": len(result.hits), **result.note}, checked_at)
@@ -463,7 +470,7 @@ def write_group(conn, context, targets, results, checked_at, *, role):
             if offer_id in seen:
                 continue
             db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "unknown", "not_found", True,
-                         f"{run_id}:{target['target_id']}:offer:{offer_id}", product_id=product_id, offer_id=offer_id,
+                         runs.offer_key(context, target, offer_id), product_id=product_id, offer_id=offer_id,
                          reason="이전에 확인한 오퍼가 이번 수집 범위에서 발견되지 않음")
             counts["offers_missing"] += 1
     return counts
@@ -520,16 +527,7 @@ def check_spike(conn, context, target, offer_id, check_id, observation_id, check
                      rule_version=SPIKE_RULE, reason=f"실효 단가 {previous[1]} → {current} ({change * 100:+.1f}%)")
 
 
-def record_failure(conn, context, targets, processing, reason, *, key):
-    conn.rollback()
-    run_id, checked_at = context["run_id"], context["now"]()
-    for target in targets:
-        db.add_check(conn, run_id, target["target_id"], "target", checked_at, "unknown", processing, False,
-                     key(target), reason=reason[:1000])
-    first = targets[0]
-    db.add_alert(conn, "collection_failed", checked_at, f"collection_failed:{key(first)}", run_id=run_id,
-                 source_id=first["source_id"], reason=f"{first['source_name']}: {reason}"[:2000])
-    conn.commit()
+record_failure = runs.record_failure
 
 
 # 공통 -------------------------------------------------------------------------

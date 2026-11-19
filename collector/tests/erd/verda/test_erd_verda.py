@@ -175,6 +175,7 @@ class CollectTests(VerdaDb):
         self.collect()
         before = self.conn.execute("SELECT count(*) FROM product").fetchone()[0]
         self.instances = [r for r in instances("12.79") if r["instance_type"] != "8H100.80S.176V"]
+        self.clock[0] += timedelta(days=1)          # 다음 날 수집(같은 날 다시 실행하면 건너뜀)
         summary = self.collect()
         self.assertEqual(summary["status"], "success")
         self.assertEqual(self.conn.execute("SELECT count(*) FROM product").fetchone()[0], before)
