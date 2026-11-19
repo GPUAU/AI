@@ -276,6 +276,9 @@ def _write(conn, context, group, results, checked_at, *, target_key, offer_key, 
             else:
                 product_id = db.history_product(conn, hit.product, at)
             offer_id = db.ensure_offer(conn, product_id, hit.offer)
+            if not unique_offers and db.observation_at(conn, offer_id, at):
+                seen.add(offer_id)              # 매일 수집이 이미 적재한 스팟 기록
+                continue
             if unique_offers and offer_id in seen:
                 raise aws.SourceInvalid(f"duplicate_offer_in_version: offer {offer_id}")
             seen.add(offer_id)

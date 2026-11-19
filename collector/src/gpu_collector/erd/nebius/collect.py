@@ -2,13 +2,14 @@
 
 | 출처(data_source.source_name) | 계약 | 원천 |
 | nebius_pricing_docs | on_demand, commitment(견적 문의) | docs.nebius.com/compute/resources/pricing.md (공식 문서 가격표, 마크다운) |
-| nebius_spot_price_api | spot | GET api.nebius.cloud/billing/v1alpha1/spot-price (공식 문서상 공개·인증 없음) |
+| nebius_spot_price_api | spot | GET api.nebius.cloud/billing/v1alpha1/spot-price/list-series (공식 문서상 공개·인증 없음, 1시간 간격 30일) |
 | nebius_vm_types_docs | (사양 근거) | VM 유형·프리셋·지역 문서. 수기로 확인한 값을 아래 PLATFORMS에 두고 근거로 남긴다 |
 
 - 상품 = GPU 플랫폼 × 프리셋(1GPU·8GPU) × 지역. 가격은 GPU 1장·시간 단위라 GPU 수로 나누지 않는다.
 - 온디맨드: 문서 가격표의 USD 표. 적용 기간 표('from …'·'before …')가 있으면 기준 시각에 적용되는 표만 쓴다.
   문서의 선점형 'From $…'은 시작가라 쓰지 않고, 스팟은 공개 API 값을 쓴다.
-- 스팟: SKU(플랫폼 × 지역)별 현재 가격과 적용 시각(effectiveTime). 같은 플랫폼의 프리셋마다 같은 값을 붙인다.
+- 스팟: SKU(플랫폼 × 지역)별 1시간 간격 가격 기록. 마지막으로 적재한 기록 이후를 받아 기록마다 관측 하나를 남긴다
+  (처음이면 최근 1일). 같은 오퍼·같은 시각의 기록은 한 번만 적재한다. 같은 플랫폼의 프리셋마다 같은 값을 붙인다.
 - 약정: 공개 가격이 없어(영업 문의) 관측을 만들지 않고 대상 점검을 '견적 문의'로 남긴다.
 - VR200은 가격을 수집하지 않고 가격표·스팟 API에 등재됐는지만 매일 확인한다(FR-027 자동 확인).
 - 스토리지(부트 디스크)는 VM 가격에 포함되지 않는다. 노드 간 네트워크는 GPU 클러스터용 8GPU 프리셋에만 둔다.
@@ -17,7 +18,8 @@
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 from decimal import Decimal, InvalidOperation
 
 import requests
@@ -33,9 +35,13 @@ SPIKE_THRESHOLD = Decimal("0.30")
 
 SOURCE_DOCS = "nebius_pricing_docs"
 SOURCE_SPOT = "nebius_spot_price_api"
+SOURCE_SPOT_HISTORY = "nebius_spot_price_history_api"
 SOURCE_TYPES = "nebius_vm_types_docs"
 PRICING_URL = "https://docs.nebius.com/compute/resources/pricing.md"
-SPOT_URL = "https://api.nebius.cloud/billing/v1alpha1/spot-price"
+SERIES_URL = "https://api.nebius.cloud/billing/v1alpha1/spot-price/list-series"
+# 시계열은 최근 30일만 조회된다. 처음 실행(적재한 기록 없음)이면 최근 1일만 받는다(그 전은 backfill).
+SERIES_LOOKBACK_LIMIT = timedelta(days=29)
+SERIES_FIRST_RUN = timedelta(days=1)
 TYPES_URL = "https://docs.nebius.com/compute/virtual-machines/types.md"
 REGIONS_URL = "https://docs.nebius.com/overview/regions.md"
 COMMITMENT_URL = "https://docs.nebius.com/signup-billing/billing-models/overview"
@@ -151,10 +157,10 @@ def collect(conn, *, trigger_type="manual", now=None, date=None, get_text=None, 
             try:
                 if docs_targets_:
                     pause(SECONDS_BETWEEN_REQUESTS)
-                items = fetch_spot(get_json, pause)
                 checked = now()
-                results = spot_results(spot_targets, items, SPOT_URL)
-                counts = write_group(conn, context, spot_targets, results, checked, role="official")
+                start = series_start(conn, checked)
+                counts = write_spot_series(conn, context, spot_targets, fetch_series(get_json, pause, start), start,
+                                           checked)
                 conn.commit()
                 outcomes.append({"source": SOURCE_SPOT, "status": "success", **counts})
             except EXPECTED_ERRORS as error:
@@ -192,20 +198,40 @@ def fetch_text(url, config):
     return response.text
 
 
-def fetch_spot(get_json, pause):
+def fetch_series(get_json, pause, start):
+    """spot-price/list-series: start 이후 1시간 간격 마지막 가격(SKU별). 반환: 항목 목록."""
     items, token = [], None
     for page in range(MAX_PAGES):
         if page:
             pause(SECONDS_BETWEEN_REQUESTS)
-        url = f"{SPOT_URL}?pageSize=100" + (f"&pageToken={token}" if token else "")
-        body = get_json(url, REQUEST_CONFIG)
+        params = {"filters.startTime": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "aggregation.granularity": "GRANULARITY_HOUR_1", "aggregation.method": "METHOD_LAST_PRICE",
+                  "pageSize": 100}
+        if token:
+            params["pageToken"] = token
+        body = get_json(f"{SERIES_URL}?{urlencode(params)}", REQUEST_CONFIG)
         if not isinstance(body, dict) or not isinstance(body.get("items"), list):
-            raise SourceInvalid("unexpected_spot_price_format")
+            raise SourceInvalid("unexpected_spot_series_format")
         items.extend(body["items"])
         token = body.get("nextPageToken")
         if not token:
             return items
     raise SourceInvalid(f"page_limit_exceeded: {MAX_PAGES}")
+
+
+def series_start(conn, now):
+    """조회 시작 시각: 마지막으로 적재한 스팟 시계열 기록(매일 수집·백필 공통). 없으면 최근 1일. 최대 29일 전.
+
+    시계열은 시간 구간을 끝 시각으로 표시해 진행 중인 구간의 기록 시각이 지금보다 늦을 수 있다(그 기록은 적재하지 않음).
+    시작 시각이 미래면 API가 400을 돌려주므로 지금 시각을 넘지 않게 한다(정각으로 내림)."""
+    last = conn.execute(
+        """SELECT max(ob.collected_at) FROM price_observation ob
+           JOIN collection_check c ON c.check_id = ob.check_id
+           JOIN collection_target t ON t.target_id = c.target_id
+           JOIN data_source s ON s.source_id = t.source_id
+           WHERE s.source_name IN (%s, %s)""", (SOURCE_SPOT, SOURCE_SPOT_HISTORY)).fetchone()[0]
+    start = last if last is not None else now - SERIES_FIRST_RUN
+    return min(max(start, now - SERIES_LOOKBACK_LIMIT), now).replace(minute=0, second=0, microsecond=0)
 
 
 # 문서 가격표 해석 (매일 수집·Wayback 공통) ------------------------------------------------
@@ -360,33 +386,95 @@ def detect_results(targets, text):
     return results
 
 
-def spot_results(targets, items, url):
-    results = {}
+def write_spot_series(conn, context, targets, items, start, checked_at):
+    """스팟 시계열 적재. 기록(오퍼 × 시각)마다 관측 하나. 이미 있는 기록(매일 수집·백필)은 건너뛴다."""
+    run_id = context["run_id"]
+    counts = {"targets": len(targets), "offers": 0, "points_added": 0, "points_skipped": 0, "not_found": 0,
+              "offers_missing": 0}
     for target in targets:
         if target["contract_filter"] != "spot":
             raise SourceInvalid(f"unsupported Nebius spot target: {target['model_name']} {target['contract_filter']}")
-        result = TargetResult(source_url=url)
-        excluded = []
+        seen, added, excluded = set(), 0, []
         for item in items:
             platform = (item.get("computeInstance") or {}).get("platform")
             if platform not in PLATFORMS or PLATFORMS[platform]["model"] != target["model_name"]:
                 continue
-            price = item.get("price") or {}
-            if str(price.get("currency", "")).lower() != "usd" or price.get("unitTitle") != "GPU hour":
-                excluded.append({"skuId": item.get("skuId"), "reason": f"unexpected_unit: {price}"})
+            if str(item.get("currency", "")).lower() != "usd" or item.get("unitTitle") != "GPU hour":
+                excluded.append({"skuId": item.get("skuId"), "reason": f"unexpected_unit: {item.get('currency')} "
+                                                                       f"{item.get('unitTitle')}"})
                 continue
-            effective = _timestamp(item.get("effectiveTime"))
+            points = item.get("points")
+            if not isinstance(points, list):
+                raise SourceInvalid(f"series_points_missing: {item.get('skuId')}")
             for preset in PLATFORMS[platform]["presets"]:
-                result.hits.append(make_hit(
-                    target, platform, preset, item.get("region"), "spot", _decimal(price.get("value"), item.get("skuId")),
-                    f"{price.get('value')} {price.get('currency')} / {price.get('unitTitle')} "
-                    f"({item.get('productTitle')}, {item.get('region')}, {item.get('skuId')})", effective, url, None,
-                    {"skuId": item.get("skuId"), "productTitle": item.get("productTitle"), "effectiveTime": item.get("effectiveTime")}))
-        result.note = {"excluded": excluded} if excluded else {}
-        if not result.hits:
-            result.reason = f"spot-price에 {target['model_name']} 스팟 가격 없음"
-        results[target["target_id"]] = result
-    return results
+                product = make_product(target, platform, preset, item.get("region"))
+                product_id, previous = db.ensure_product(conn, product)
+                offer_id = db.ensure_offer(conn, product_id, {"contract_type": "spot",
+                                                              "contract_product_type": OFFER_BY_KIND["spot"][1],
+                                                              "commitment_months": None, "payment_option": None})
+                if previous is not None:
+                    db.add_alert(conn, "config_changed", checked_at, f"config_changed:{product_id}", run_id=run_id,
+                                 target_id=target["target_id"], source_id=target["source_id"], rule_version="DR-05",
+                                 reason=f"상품 {previous}의 구성이 바뀌어 새 구성 버전 {product_id}로 적재")
+                seen.add(offer_id)
+                for point in sorted(points, key=lambda p: p.get("timestamp") or ""):
+                    at = _timestamp(point.get("timestamp"))
+                    if at is None:
+                        raise SourceInvalid(f"series_point_without_time: {item.get('skuId')}")
+                    if at > checked_at:
+                        # 끝나지 않은 시간 구간(끝 시각 표시)의 마지막 가격은 아직 바뀔 수 있어 다음 실행에서 적재한다
+                        counts["points_pending"] = counts.get("points_pending", 0) + 1
+                        continue
+                    if db.observation_at(conn, offer_id, at):
+                        counts["points_skipped"] += 1
+                        continue
+                    hit = series_hit(product, item, platform, preset, point)
+                    check_id, _ = db.add_check(conn, run_id, target["target_id"], "offer", at, "public", "success", True,
+                                               f"{runs.offer_key(context, target, offer_id)}:{at:%Y%m%dT%H%M%SZ}",
+                                               product_id=product_id, offer_id=offer_id)
+                    ensure_spec_evidence(conn, context, target, product_id, hit, checked_at)
+                    db.add_evidence(conn, check_id, target["source_id"], "official", SERIES_URL, None, hit.excerpt,
+                                    checked_at)
+                    write_observation(conn, context, offer_id, check_id, hit, at, checked_at)
+                    added += 1
+        counts["points_added"] += added
+        counts["offers"] += len(seen)
+        found = bool(seen)
+        check_id, _ = db.add_check(conn, run_id, target["target_id"], "target", checked_at,
+                                   "public" if found else "unknown", "success" if found else "not_found", True,
+                                   runs.target_key(context, target),
+                                   reason=None if found else f"spot-price/list-series에 {target['model_name']} 스팟 가격 없음")
+        db.add_evidence(conn, check_id, target["source_id"], "official", SERIES_URL, None,
+                        {"scope": scope(target), "start": start.isoformat(), "granularity": "GRANULARITY_HOUR_1",
+                         "method": "METHOD_LAST_PRICE", "offers": len(seen), "points_added": added,
+                         **({"excluded": excluded} if excluded else {})}, checked_at)
+        if not found:
+            counts["not_found"] += 1
+        for offer_id, product_id in sorted(db.previously_seen_offers(conn, target["target_id"]).items()):
+            if offer_id in seen:
+                continue
+            db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "unknown", "not_found", True,
+                         runs.offer_key(context, target, offer_id), product_id=product_id, offer_id=offer_id,
+                         reason="이전에 확인한 오퍼가 이번 수집 범위에서 발견되지 않음")
+            counts["offers_missing"] += 1
+    return counts
+
+
+def series_hit(product, item, platform, preset, point):
+    """시계열 기록 하나 → 관측. 1시간 간격의 마지막 가격이라 적용 시각은 두지 않는다(관측 시각 = 기록 시각)."""
+    offer = {"contract_type": "spot", "contract_product_type": OFFER_BY_KIND["spot"][1],
+             "commitment_months": None, "payment_option": None}
+    raw = (f"{point.get('value')} {item.get('currency')} / {item.get('unitTitle')} ({item.get('productTitle')}, "
+           f"{item.get('region')}, 1시간 간격 마지막 가격, {point.get('timestamp')})")
+    amount = _decimal(point.get("value"), (item.get("skuId"), point.get("timestamp")))
+    return Hit("spot", product, offer,
+               {"effective_from": None, "price_certainty": "firm", "raw_price_text": raw, "original_currency": "USD",
+                "original_time_unit": "hour", "price_applies_to": "gpu",
+                "raw_terms": RAW_TERMS["spot"] + "; spot-price/list-series 1시간 간격의 마지막 가격"},
+               [{"component_type": "hourly_rate", "amount": amount, "currency": "USD", "time_unit": "hour",
+                 "applies_to": "gpu", "raw_value": raw}],
+               {"platform": platform, "preset": preset[0], "region": item.get("region"), "skuId": item.get("skuId"),
+                "timestamp": point.get("timestamp")}, SERIES_URL, None)
 
 
 def make_product(target, platform, preset, region):

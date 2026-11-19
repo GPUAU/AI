@@ -13,7 +13,6 @@
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
 
 from ... import fetch
 from .. import db
@@ -22,7 +21,7 @@ from . import collect as nebius
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-nebius-history 1"
 SOURCE_SERIES = "nebius_spot_price_history_api"
 SOURCE_WAYBACK = "nebius_pricing_docs_wayback"
-SERIES_URL = "https://api.nebius.cloud/billing/v1alpha1/spot-price/list-series"
+SERIES_URL = nebius.SERIES_URL
 ARCHIVED_URL = "docs.nebius.com/compute/resources/pricing.md"
 CDX_URL = ("https://web.archive.org/cdx/search/cdx?url={url}&output=json&filter=statuscode:200"
            "&fl=timestamp,original,digest&collapse=digest")
@@ -108,24 +107,7 @@ def spot_series(conn, context, targets, days, get_json, pause, log):
     return outcomes
 
 
-def fetch_series(get_json, pause, start):
-    items, token = [], None
-    for page in range(nebius.MAX_PAGES):
-        if page:
-            pause(nebius.SECONDS_BETWEEN_REQUESTS)
-        params = {"filters.startTime": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                  "aggregation.granularity": "GRANULARITY_HOUR_1", "aggregation.method": "METHOD_LAST_PRICE",
-                  "pageSize": 100}
-        if token:
-            params["pageToken"] = token
-        body = get_json(f"{SERIES_URL}?{urlencode(params)}", REQUEST_CONFIG)
-        if not isinstance(body, dict) or not isinstance(body.get("items"), list):
-            raise nebius.SourceInvalid("unexpected_spot_series_format")
-        items.extend(body["items"])
-        token = body.get("nextPageToken")
-        if not token:
-            return items
-    raise nebius.SourceInvalid(f"page_limit_exceeded: {nebius.MAX_PAGES}")
+fetch_series = nebius.fetch_series      # 매일 수집과 같은 시계열 조회
 
 
 def _write_series(conn, context, target, item, platform, captured):
@@ -149,10 +131,16 @@ def _write_series(conn, context, target, item, platform, captured):
             if at is None or key in existing:
                 counts["skipped"] += 1
                 continue
+            if at > captured:            # 끝나지 않은 시간 구간의 값은 아직 바뀔 수 있어 다음에 적재한다
+                counts["skipped"] += 1
+                continue
             amount = nebius._decimal(point.get("value"), (item.get("skuId"), point.get("timestamp")))
             if product_id is None:
                 product_id = db.history_product(conn, product, at)
                 offer_id = db.ensure_offer(conn, product_id, offer)
+            if db.observation_at(conn, offer_id, at):     # 매일 수집이 이미 적재한 기록
+                counts["skipped"] += 1
+                continue
             raw = (f"{point.get('value')} {item.get('currency')} / {item.get('unitTitle')} ({item.get('productTitle')}, "
                    f"{item.get('region')}, 1시간 간격 마지막 가격, {point.get('timestamp')})")
             hit = nebius.Hit("spot", product, offer,

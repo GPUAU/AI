@@ -225,6 +225,12 @@ def previously_seen_offers(conn, target_id):
 
 # 관측·환산 ---------------------------------------------------------------------
 
+def observation_at(conn, offer_id, at):
+    """같은 오퍼에 같은 시각(관측 시각 또는 적용 시각)의 관측이 이미 있는지. 시계열 원천의 중복 적재를 막는다."""
+    return conn.execute("""SELECT 1 FROM price_observation WHERE offer_id = %s AND (collected_at = %s OR effective_from = %s)
+                           LIMIT 1""", (offer_id, at, at)).fetchone() is not None
+
+
 def add_observation(conn, offer_id, check_id, observation):
     return conn.execute(
         """INSERT INTO price_observation (offer_id, check_id, collected_at, effective_from, price_certainty,
