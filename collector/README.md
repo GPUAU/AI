@@ -43,13 +43,29 @@ uv 없이 할 때: `python3.12 -m venv .venv && source .venv/bin/activate && pip
 ```bash
 python -m gpu_collector.erd init                  # 빈 DB면 DDL 적용, 이어서 seed 적용
 python -m gpu_collector.erd collect aws           # 매일 수집: aws | azure | verda | nebius
+python -m gpu_collector.erd collect aws --date 2026-11-20     # 수집 기준일 지정(KST, 생략하면 오늘)
 python -m gpu_collector.erd backfill aws --since 2023-07      # 과거 이력 (사업자별 옵션은 --help)
 python -m gpu_collector.erd status record         # 랙스케일·출시 예정 모델 수기 상태 기록
 python -m gpu_collector.erd report --model B300   # 최신 가격과 대상별 마지막 점검
 ```
 
-- 종료 코드: 성공 0, 실패 1. 요약 JSON을 표준 출력에 쓴다.
-- AWS 과거 가격 파일은 `CACHE_DIR`(기본 `./var/cache`)에 받는다. 처리한 과거 파일은 지운다(`--keep-files`면 남김).
+- 요약 JSON을 표준 출력에 쓴다. AWS 과거 가격 파일은 `CACHE_DIR`(기본 `./var/cache`)에 받고, 처리한 과거 파일은 지운다(`--keep-files`면 남김).
+
+### 재실행·동시 실행
+
+- **같은 날 다시 실행해도 된다.** 매일 수집은 수집 기준일(`--date`, KST) 단위로 중복을 막는다. 그날 이미 적재한 묶음(사업자의 출처·리전 단위)은 원천을 호출하지 않고 건너뛰고(`skipped`), 실패한 묶음만 다시 적재한다.
+- **같은 사업자는 동시에 하나만 실행된다.** 같은 사업자의 collect·backfill·specs가 이미 실행 중이면 아무것도 하지 않고 종료 코드 75로 끝난다(DB advisory lock).
+- **중단된 실행은 다음 실행이 정리한다.** 강제 종료로 `running`에 남은 실행은 같은 사업자의 다음 실행이 실패(`abandoned`)로 닫는다. SIGTERM을 받으면 진행 중인 묶음을 되돌리고 실행을 실패로 기록한다.
+- **일시적 원천 오류는 짧게 다시 시도한다.** 접속 실패·시간 초과와 429·5xx는 최대 3번(2초, 4초 간격, `Retry-After`가 있으면 그만큼) 시도한다. 403 등 거부는 다시 시도하지 않는다.
+- **DB 시간 제한:** 접속 10초, 문 하나 10분, 잠금 대기 30초.
+
+| 종료 코드 | 뜻 | 다시 시도 |
+| --- | --- | --- |
+| 0 | 성공(건너뛴 묶음 포함) | — |
+| 1 | 일부 묶음 실패, 예기치 않은 오류, SIGTERM 중단 | 예 |
+| 2 | 모든 묶음 실패(원천 장애 등), DB 접속 실패 | 예 |
+| 3 | 설정 오류(DATABASE_URL 없음, 잘못된 인자, 수집 대상·기준 정보 없음) | 아니요 |
+| 75 | 같은 사업자 실행 중 | 잠시 후 |
 
 ## 공용 덤프로 로컬 DB 채우기
 
@@ -93,5 +109,5 @@ pytest
 | --- | --- |
 | `DATABASE_URL` | 실제 수집 데이터를 적재하는 DB(`gpu_erd`). collect·backfill 명령이 쓴다. 필수 |
 | `TEST_DATABASE_URL` | 테스트가 접속하는 관리용 DB(`postgres`). 여기서 임시 DB를 만들어 시험하고 지운다. 실제 데이터 DB를 건드리지 않도록 따로 둔다 |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | 로컬에서 AWS 가격 API 호출. EKS에서는 IRSA·Pod Identity 사용 |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS 가격 API 호출(IAM 사용자 `gpu-price-collector`, 가격 조회 권한만). EKS에서는 Kubernetes Secret으로 주입하고 이미지·저장소에 넣지 않는다 |
 | `CACHE_DIR` | 원천 파일 캐시 위치. 선택, 기본 `./var/cache` |
