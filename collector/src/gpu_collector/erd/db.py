@@ -3,6 +3,7 @@
 NULL은 '미확인'이다. 원천에서 확인한 값만 넣고 모르는 값을 만들어 내지 않는다.
 """
 import json
+import os
 from decimal import Decimal
 
 # 상품의 같은 구성 계열을 찾는 키. AWS는 인스턴스 유형 + 리전(스팟은 가용영역 ID)이다.
@@ -46,6 +47,10 @@ def enabled_targets(conn, provider):
 
 
 def begin_run(conn, started_at, trigger_type, collector_version):
+    """실행 기록을 연다. 이미지 빌드 정보(COLLECTOR_BUILD, 예: Git SHA)가 있으면 수집기 버전 뒤에 붙인다."""
+    build = os.environ.get("COLLECTOR_BUILD", "").strip()
+    if build and build != "unknown":
+        collector_version = f"{collector_version} @{build[:12]}"
     return conn.execute(
         """INSERT INTO collection_run (started_at, run_status, trigger_type, collector_version)
            VALUES (%s, 'running', %s, %s) RETURNING run_id""",
