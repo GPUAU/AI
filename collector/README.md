@@ -18,10 +18,12 @@
 
 | 사업자 | 매일 수집 원천 | 과거 이력 |
 | --- | --- | --- |
-| AWS | Price List Query API, Savings Plans 요율 API, 스팟 가격 API | 가격 파일 과거 버전, 스팟 90일 |
+| AWS | Price List Query API, Savings Plans 요율 API, 스팟 가격 변경 기록 API | 가격 파일 과거 버전, 스팟 90일 |
 | Azure | Retail Prices API | GitHub 일별 스냅샷 |
 | Verda | 공개 API(인스턴스 가격, 약정 할인율) | Wayback 저장본 |
-| Nebius | 문서 가격표, 공개 스팟 가격 API | 스팟 30일, 문서 Wayback 저장본 |
+| Nebius | 문서 가격표, 공개 스팟 가격 시계열 API(1시간 간격) | 스팟 30일, 문서 Wayback 저장본 |
+
+**스팟:** 매일 수집은 마지막으로 적재한 스팟 기록 이후에 바뀐 가격을 모두 받는다(기록 하나 = 관측 하나, 관측 시각 = 기록 시각). 처음 실행이면 AWS는 지금 적용 중인 가격, Nebius는 최근 1일을 받고, 그 전은 backfill로 채운다. 같은 오퍼·같은 시각의 기록은 매일 수집과 backfill을 통틀어 한 번만 적재한다. Nebius의 끝나지 않은 시간 구간 값은 다음 실행에서 확정값으로 적재한다. 며칠 실행하지 못해도 원천 보관 기간(AWS 90일, Nebius 30일) 안이면 다음 실행이 채운다.
 
 ## 로컬 실행
 
