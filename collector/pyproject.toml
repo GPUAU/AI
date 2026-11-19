@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-collector"
+version = "0.1.0"
+description = "GPU 공개 가격 수집·적재 (ERD 스키마)"
+requires-python = ">=3.12"
+dependencies = [
+    "psycopg[binary]==3.2.10",
+    "ijson==3.3.0",
+    "requests==2.32.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
