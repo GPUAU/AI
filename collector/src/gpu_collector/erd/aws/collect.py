@@ -22,7 +22,7 @@
 """
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -43,6 +43,9 @@ SPIKE_THRESHOLD = Decimal("0.30")
 SOURCE_EC2 = "aws_ec2_price_list"
 SOURCE_SP = "aws_savings_plans_price_list"
 SOURCE_SPOT = "aws_ec2_spot_api"
+SOURCE_SPOT_HISTORY = "aws_ec2_spot_price_history"
+# 매일 스팟은 마지막으로 적재한 기록 이후의 변경 기록을 받는다. AWS는 최근 90일만 주므로 그 안에서만 거슬러 올라간다.
+SPOT_LOOKBACK_LIMIT = timedelta(days=89)
 SOURCE_EC2_API = "aws_ec2_pricing_api"
 SOURCE_SP_API = "aws_savings_plans_api"
 SOURCE_DOCS = "aws_ec2_instance_docs"
@@ -129,7 +132,7 @@ class TargetResult:
 
 
 def collect(conn, *, trigger_type="manual", only=None, cache_dir="var/cache", now=None, date=None,
-            get_json=fetch.get_json, downloader=fetch.download, spot_prices=aws_spot.current_prices,
+            get_json=fetch.get_json, downloader=fetch.download, spot_history=aws_spot.price_history,
             pricing_api=aws_api):
     """AWS 수집 1회. only: 처리할 출처 이름 모음(생략하면 전체). date: 수집 기준일(KST, 생략하면 오늘).
 
@@ -150,7 +153,7 @@ def collect(conn, *, trigger_type="manual", only=None, cache_dir="var/cache", no
         groups.setdefault((target["source_name"], target["region_filter"]), []).append(target)
 
     context = {"provider": provider, "rule": rule, "run_id": run_id, "now": now, "date": day, "cache_dir": Path(cache_dir),
-               "get_json": get_json, "downloader": downloader, "spot_prices": spot_prices, "pricing_api": pricing_api,
+               "get_json": get_json, "downloader": downloader, "spot_history": spot_history, "pricing_api": pricing_api,
                **spec_context(conn)}
     outcomes = []
     for (source_name, region), group in groups.items():
@@ -344,14 +347,17 @@ def _handle_savings_api(conn, context, region, group):
 
 
 def _handle_spot(conn, context, region, group):
+    """스팟 변경 기록. 마지막으로 적재한 기록 시각(워터마크)부터 지금까지 바뀐 가격을 모두 받는다.
+
+    AWS는 시작 시각에 적용 중이던 가격도 함께 준다. 이미 적재한 기록(같은 오퍼·같은 적용 시각)은 적재 때 건너뛴다.
+    적재한 기록이 없으면(처음 실행) 지금 적용 중인 가격만 받는다. 과거 90일은 backfill로 채운다."""
     instances = {INSTANCE_BY_MODEL[t["model_name"]] for t in group}
     checked = context["now"]()
-    rows = context["spot_prices"](region, instances, now=checked)
-    stamp = checked.strftime("%Y-%m-%dT%H:%M:%SZ")
-    url = aws_spot.request_url(region, {
-        "Action": "DescribeSpotPriceHistory", "ProductDescription.1": aws_spot.PRODUCT_DESCRIPTION,
-        "StartTime": stamp, "EndTime": stamp,
-        **{f"InstanceType.{i}": name for i, name in enumerate(sorted(instances), 1)}})
+    marks = [_spot_watermark(conn, target, region) for target in group]
+    start = min((mark for mark in marks if mark is not None), default=checked)
+    start = min(max(start, checked - SPOT_LOOKBACK_LIMIT), checked)
+    rows = context["spot_history"](region, instances, start, checked)
+    url = aws_spot.request_url(region, aws_spot.history_params(instances, start, checked))
     results = {}
     for target in group:
         if target["contract_filter"] != "spot":
@@ -360,12 +366,25 @@ def _handle_spot(conn, context, region, group):
         base = db.latest_product(conn, context["provider"], target["gpu_model_id"], instance, region) or {}
         result = TargetResult(source_url=url, source_version=aws_spot.API_VERSION)
         for row in sorted((r for r in rows if r["instance_type"] == instance),
-                          key=lambda r: r["availability_zone_id"] or r["availability_zone"] or ""):
+                          key=lambda r: (r["timestamp"], r["availability_zone_id"] or r["availability_zone"] or "")):
+            if row["timestamp"] is None:
+                raise SourceInvalid(f"spot_row_without_timestamp: {instance}")
             result.hits.append(spot_hit(target, base, row, region, url))
         if not result.hits:
             result.reason = f"{region} 스팟 가격 API에 {instance} Linux 가격 없음"
         results[target["target_id"]] = result
     return results
+
+
+def _spot_watermark(conn, target, region):
+    """같은 모델·리전 스팟 오퍼에 적재한 마지막 기록의 적용 시각(매일 수집·백필 공통)."""
+    return conn.execute(
+        """SELECT max(ob.effective_from) FROM price_observation ob
+           JOIN collection_check c ON c.check_id = ob.check_id
+           JOIN collection_target t ON t.target_id = c.target_id
+           JOIN data_source s ON s.source_id = t.source_id
+           WHERE s.source_name IN (%s, %s) AND t.region_filter = %s AND t.gpu_model_id = %s""",
+        (SOURCE_SPOT, SOURCE_SPOT_HISTORY, region, target["gpu_model_id"])).fetchone()[0]
 
 
 HANDLERS = {SOURCE_EC2: _handle_ec2, SOURCE_EC2_API: _handle_ec2_api, SOURCE_SP: _handle_savings,
@@ -547,9 +566,15 @@ def _write_hit(conn, context, target, hit, checked_at):
     else:
         product_id, previous = db.ensure_product(conn, hit.product)
     offer_id = db.ensure_offer(conn, product_id, hit.offer)
+    key, collected_at = runs.offer_key(context, target, offer_id), checked_at
+    if hit.kind == "spot":
+        # 스팟은 변경 기록마다 관측 하나. 관측 시각은 기록 시각이고, 매일 수집·백필이 같은 기록을 두 번 넣지 않는다
+        collected_at = hit.observation["effective_from"]
+        if db.observation_at(conn, offer_id, collected_at):
+            return offer_id
+        key = f"{key}:{collected_at:%Y%m%dT%H%M%SZ}"
     check_id, created = db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "public", "success",
-                                     True, runs.offer_key(context, target, offer_id),
-                                     product_id=product_id, offer_id=offer_id)
+                                     True, key, product_id=product_id, offer_id=offer_id)
     if not created:
         raise SourceInvalid(f"duplicate_offer_in_run: offer {offer_id}")
     if previous is not None:
@@ -559,7 +584,7 @@ def _write_hit(conn, context, target, hit, checked_at):
     ensure_spec_evidence(conn, context, product_id, checked_at)
     db.add_evidence(conn, check_id, target["source_id"], "official", hit.source_url, hit.source_version,
                     hit.excerpt, checked_at)
-    observation_id = db.add_observation(conn, offer_id, check_id, {**hit.observation, "collected_at": checked_at})
+    observation_id = db.add_observation(conn, offer_id, check_id, {**hit.observation, "collected_at": collected_at})
     component_ids = [db.add_component(conn, observation_id, component) for component in hit.components]
     gpu_count = hit.product.get("gpu_count")
     result = normalize(hit.kind, hit.offer, hit.components, component_ids, gpu_count, rule["monthly_hours"])

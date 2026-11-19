@@ -22,11 +22,11 @@ T0 = datetime(2026, 11, 16, 3, 0, tzinfo=timezone.utc)
 SPOT_TIME = datetime(2026, 11, 16, 2, 0, tzinfo=timezone.utc)
 
 
-def spot_rows(prices):
-    """prices: {가용영역 ID: 가격 문자열}. B300만 돌려준다."""
+def spot_rows(prices, at=SPOT_TIME):
+    """prices: {가용영역 ID: 가격 문자열}. B300만 돌려준다. at: 기록 시각."""
     return [{"instance_type": "p6-b300.48xlarge", "product_description": "Linux/UNIX",
              "availability_zone": f"us-east-1{zone[-1]}", "availability_zone_id": zone,
-             "price": Decimal(price), "timestamp": SPOT_TIME} for zone, price in prices.items()]
+             "price": Decimal(price), "timestamp": at} for zone, price in prices.items()]
 
 
 class ErdDb(unittest.TestCase):
@@ -47,6 +47,7 @@ class ErdDb(unittest.TestCase):
         self.conn.commit()
         self.temp = tempfile.TemporaryDirectory()
         self.clock = [T0]
+        self.spot_calls = []
 
     def tearDown(self):
         self.conn.close()
@@ -74,14 +75,16 @@ class ErdDb(unittest.TestCase):
             Path(destination).write_bytes(body)
             return fetch.FetchResult(url=url, path=Path(destination), sha256="a" * 64, size=len(body))
 
-        def spot_prices(region, instances, now=None):
+        def spot_history(region, instances, start, end, max_pages=None):
+            # 수집 1시간 전에 바뀐 가격 하나를 돌려준다(가용영역별)
+            self.spot_calls.append((start, end))
             if spot_error:
                 raise aws_spot.SpotApiError(spot_error)
-            return spot_rows(spot)
+            return spot_rows(spot, at=end - timedelta(hours=1))
 
         self.clock[0] += timedelta(days=1)
         return aws.collect(self.conn, only=only, cache_dir=self.temp.name, now=self.now, get_json=get_json,
-                           downloader=downloader, spot_prices=spot_prices)
+                           downloader=downloader, spot_history=spot_history)
 
     def q(self, sql, *params):
         return self.conn.execute(sql, params).fetchall()

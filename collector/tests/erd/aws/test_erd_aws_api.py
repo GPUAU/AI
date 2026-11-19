@@ -59,7 +59,7 @@ class ApiCollectionTests(ErdDb):
         from erd.aws.test_erd_aws import spot_rows
         return aws.collect(self.conn, cache_dir=self.temp.name, now=self.now, pricing_api=self.api,
                            get_json=self.fail, downloader=self.fail,
-                           spot_prices=lambda region, instances, now=None: spot_rows(rows))
+                           spot_history=lambda region, instances, start, end, max_pages=None: spot_rows(rows))
 
     @staticmethod
     def fail(*args, **kwargs):
