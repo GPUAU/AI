@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 
 import requests
 
-from ...fetch import USER_AGENT
+from ...fetch import USER_AGENT, send
 from ...env import secret
 
 API_VERSION = "2016-11-15"
@@ -85,7 +85,7 @@ def _call(region, params, now, http_get):
                "Authorization": (f"AWS4-HMAC-SHA256 Credential={access_key}/{scope}, "
                                  f"SignedHeaders=host;x-amz-date, Signature={signature}")}
     try:
-        response = http_get(f"https://{host}/?{query}", headers=headers, timeout=(15, 60))
+        response = send(lambda: http_get(f"https://{host}/?{query}", headers=headers, timeout=(15, 60)))
     except requests.RequestException as error:
         raise SpotApiError(f"request_failed: {type(error).__name__}") from error
     try:

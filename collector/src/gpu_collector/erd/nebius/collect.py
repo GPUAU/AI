@@ -173,10 +173,10 @@ def _fail(conn, context, targets, source, error):
 
 
 def fetch_text(url, config):
-    """문서(마크다운) 원문을 받는다. 403·429는 우회하지 않고 실패로 남긴다."""
+    """문서(마크다운) 원문을 받는다. 일시적 오류는 짧게 다시 시도하고, 그래도 안 되거나 403이면 실패로 남긴다."""
     timeout = (config.get("connect_timeout_s", 15), config.get("read_idle_timeout_s", 60))
     try:
-        response = requests.get(url, headers={"User-Agent": fetch.USER_AGENT}, timeout=timeout)
+        response = fetch.send(lambda: requests.get(url, headers={"User-Agent": fetch.USER_AGENT}, timeout=timeout))
     except requests.RequestException as error:
         raise fetch.FetchError(f"request_failed: {type(error).__name__}") from error
     if response.status_code != 200:

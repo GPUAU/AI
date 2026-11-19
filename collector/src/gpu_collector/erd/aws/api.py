@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from ...fetch import USER_AGENT
+from ...fetch import USER_AGENT, send
 from ...env import secret
 
 PRICING_HOST = "api.pricing.us-east-1.amazonaws.com"
@@ -101,7 +101,7 @@ def _post(host, region, service, path, body, now, http_post, *, content_type, ta
                                 f"Signature={signature}")
     headers["User-Agent"] = USER_AGENT
     try:
-        response = http_post(f"https://{host}{path}", data=payload, headers=headers, timeout=(15, 60))
+        response = send(lambda: http_post(f"https://{host}{path}", data=payload, headers=headers, timeout=(15, 60)))
     except requests.RequestException as error:
         raise AwsApiError(f"request_failed: {type(error).__name__}") from error
     try:
