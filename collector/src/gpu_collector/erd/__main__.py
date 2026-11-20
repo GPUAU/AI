@@ -17,6 +17,8 @@
   python -m gpu_collector.erd backfill nebius [--days 29] [--only spot,docs] [--no-verify]
                                                        스팟 30일 이력(공식 API) + 문서 Wayback 저장본(집계)
   python -m gpu_collector.erd collect oracle [--date ...] [--trigger ...]  OCI 공개 정가 API(GPU 1장·시간 온디맨드, 리전 단일가)
+  python -m gpu_collector.erd backfill oracle --since 2026-05 [--until 2026-11] [--no-verify]
+                                                       Wayback 정가 API 응답 저장본(집계 출처, 2026-05부터)으로 Oracle 과거 정가 적재
   python -m gpu_collector.erd collect fx [--date ...] [--trigger ...]      한국수출입은행 현재환율 API(매매기준율, 응답 통화 전부→KRW)
                                                        기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재
   python -m gpu_collector.erd backfill fx --since 2023-07-01 [--until 2026-11-20] [--max-calls 900]
@@ -53,7 +55,7 @@ from .azure import collect as azure, history as azure_history
 from .verda import collect as verda, history as verda_history
 from .nebius import collect as nebius, history as nebius_history
 from .fx import collect as fx
-from .oracle import collect as oracle
+from .oracle import collect as oracle, history as oracle_history
 from . import runs, status
 
 SQL = resources.files("gpu_collector") / "sql"
@@ -66,7 +68,7 @@ EXIT_BY_STATUS = {"success": EXIT_OK, "partial_failure": EXIT_PARTIAL, "failed":
 CONNECT_TIMEOUT_S = 10
 DB_OPTIONS = "-c statement_timeout=600000 -c lock_timeout=30000"
 COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius, "oracle": oracle, "fx": fx}
-NO_BACKFILL = {"oracle"}      # 과거 이력 적재가 아직 없는 수집기
+NO_BACKFILL = set()           # 과거 이력 적재가 없는 수집기
 
 
 class Terminated(Exception):
@@ -111,7 +113,7 @@ def parse(argv):
     b.add_argument("--keep-files", action="store_true", help="받은 과거 가격 파일을 지우지 않는다")
     b.add_argument("--workers", type=int, default=3, help="미리 받을 파일 수")
     b.add_argument("--every", default="month", choices=["month", "week", "day"], help="Azure 스냅샷 간격")
-    b.add_argument("--no-verify", action="store_true", help="Azure·Verda: 공식 API와 대조하지 않는다")
+    b.add_argument("--no-verify", action="store_true", help="Azure·Verda·Oracle: 공식 API와 대조하지 않는다")
     st = sub.add_parser("status")
     st.add_argument("action", choices=["record"])
     sp = sub.add_parser("specs")
@@ -197,6 +199,8 @@ def backfill(conn, args):
     only = set(args.only.split(",")) if args.only else None
     if args.provider == "fx":
         return fx.backfill(conn, since=args.since, until=args.until, max_calls=args.max_calls)
+    if args.provider == "oracle":
+        return oracle_history.backfill(conn, since=args.since, until=args.until, verify=not args.no_verify)
     if args.provider == "nebius":
         return nebius_history.backfill(conn, days=args.days, verify=not args.no_verify, only=only)
     if args.provider == "verda":

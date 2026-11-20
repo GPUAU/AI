@@ -245,10 +245,7 @@ def write_group(conn, context, targets, results, checked_at, version, excluded):
                              rule_version="DR-05", reason=f"상품 {previous}의 구성이 바뀌어 새 구성 버전 {product_id}로 적재")
             ensure_spec_evidence(conn, context, target, product_id, checked_at)
             db.add_evidence(conn, check_id, target["source_id"], "official", API_URL, version, hit.excerpt, checked_at)
-            observation_id = db.add_observation(conn, offer_id, check_id, {**hit.observation, "collected_at": checked_at})
-            component_ids = [db.add_component(conn, observation_id, c) for c in hit.components]
-            db.add_normalization(conn, observation_id, context["rule"]["rule_id"],
-                                 normalize(hit, component_ids, context["rule"]["monthly_hours"]), checked_at)
+            observation_id = write_observation(conn, context, offer_id, check_id, hit, checked_at, checked_at)
             check_spike(conn, context, target, offer_id, check_id, observation_id, checked_at)
             seen.add(offer_id)
         counts["offers"] += len(result.hits)
@@ -269,6 +266,14 @@ def write_group(conn, context, targets, results, checked_at, version, excluded):
                          reason="이전에 확인한 오퍼가 이번 수집 범위에서 발견되지 않음")
             counts["offers_missing"] += 1
     return counts
+
+
+def write_observation(conn, context, offer_id, check_id, hit, collected_at, calculated_at):
+    observation_id = db.add_observation(conn, offer_id, check_id, {**hit.observation, "collected_at": collected_at})
+    component_ids = [db.add_component(conn, observation_id, c) for c in hit.components]
+    db.add_normalization(conn, observation_id, context["rule"]["rule_id"],
+                         normalize(hit, component_ids, context["rule"]["monthly_hours"]), calculated_at)
+    return observation_id
 
 
 def ensure_spec_evidence(conn, context, target, product_id, captured_at):
