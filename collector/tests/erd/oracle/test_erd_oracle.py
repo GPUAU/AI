@@ -146,3 +146,79 @@ class Collect(OracleDb):
         self.body = body()
         self.assertEqual(self.collect()["status"], "success")
         self.assertEqual(count(self.conn, "SELECT count(*) FROM price_observation"), 6)
+
+
+# 과거 이력(Wayback 저장본) -------------------------------------------------------------
+
+import gzip
+
+from gpu_collector.erd.oracle import history as oracle_history
+
+CDX = [["timestamp", "original", "digest"],
+       ["20260511153955", "https://apexapps.oracle.com/pls/apex/cetools/api/v1/products/?utm_source=x", "D1"],
+       ["20260812191351", "https://apexapps.oracle.com/pls/apex/cetools/api/v1/products/?currencyCode=USD", "D2"],
+       ["20260921200000", "https://apexapps.oracle.com/pls/apex/cetools/api/v1/products/?partNumber=B110519", "D3"],
+       ["20261026220915", "https://apexapps.oracle.com/pls/apex/cetools/api/v1/products/?currencyCode=BRL", "D4"]]
+
+
+class History(OracleDb):
+    def setUp(self):
+        super().setUp()
+        self.captures = {"20260511153955": body({"B300": 14}), "20260812191351": body()}
+        self.fetched = []
+
+    def get_json(self, url, config):
+        if url.startswith("https://web.archive.org/cdx/"):
+            return CDX
+        return super().get_json(url, config)
+
+    def get_bytes(self, url, config):
+        stamp = url.split("/web/")[1].split("id_/")[0]
+        self.fetched.append(stamp)
+        captured = self.captures[stamp]
+        if isinstance(captured, Exception):
+            raise captured
+        return gzip.compress(json.dumps(captured).encode())
+
+    def backfill(self, **kwargs):
+        return oracle_history.backfill(self.conn, since="2026-05", until="2026-11", now=self.now,
+                                       get_json=self.get_json, get_bytes=self.get_bytes, pause=lambda _s: None,
+                                       log=lambda _m: None, **kwargs)
+
+    def test_loads_full_usd_captures_only(self):
+        summary = self.backfill()
+        self.assertEqual(summary["status"], "success")
+        self.assertEqual(self.fetched, ["20260511153955", "20260812191351"])
+        self.assertEqual({c["reason"] for c in summary["ignored_captures"]}, {"한 품목만 조회", "USD 아님(BRL)"})
+        rows = self.conn.execute(
+            """SELECT ob.collected_at::date, n.effective_usd_gpu_hour FROM price_observation ob
+               JOIN price_normalization n USING (observation_id) JOIN offer o USING (offer_id)
+               JOIN product p USING (product_id) JOIN gpu_model m USING (gpu_model_id)
+               WHERE m.model_name = 'B300' ORDER BY 1""").fetchall()
+        self.assertEqual([(str(d), v) for d, v in rows], [("2026-05-11", Decimal(14)), ("2026-08-12", Decimal(15))])
+
+    def test_primary_verification_and_aggregator_role(self):
+        self.backfill()
+        rows = dict(self.conn.execute(
+            """SELECT ob.collected_at::date::text, bool_and(e.primary_verified) FROM source_evidence e
+               JOIN price_observation ob USING (check_id)
+               WHERE e.evidence_role = 'aggregator' GROUP BY 1""").fetchall())
+        self.assertEqual(rows, {"2026-05-11": False, "2026-08-12": True})     # 05-11은 B300 가격이 지금과 다름
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM collection_alert"), 0)
+
+    def test_rerun_skips_loaded_captures_and_shares_products_with_daily(self):
+        self.backfill()
+        self.fetched.clear()
+        self.backfill()
+        self.assertEqual(self.fetched, [])
+        self.collect()
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM product"), 6)
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM price_observation"), 18)
+
+    def test_failed_capture_is_recorded_and_retried(self):
+        self.captures["20260812191351"] = fetch.FetchError("http_503")
+        self.assertEqual(self.backfill()["status"], "partial_failure")
+        self.captures["20260812191351"] = body()
+        self.fetched.clear()
+        self.assertEqual(self.backfill()["status"], "success")
+        self.assertEqual(self.fetched, ["20260812191351"])
