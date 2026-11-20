@@ -61,8 +61,11 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
         verified, verify_note = history.primary_prices(get_json, now) if verify else (None, "원천 확인 안 함(--no-verify)")
         log(f"원천 확인 기준: {verify_note}")
         commits = [c for c in list_commits(get_json, pause) if since <= c["month"] <= until]
+        repaired = repair_target_evidence(conn, targets, commits, now())
+        conn.commit()
         jobs = [c for c in commits if not all(db.check_exists(conn, _target_key(t, c)) for t in targets)]
-        log(f"카탈로그 커밋 {len(jobs)}개 처리 예정 ({since}~{until}). 이미 적재한 커밋은 건너뜀")
+        log(f"카탈로그 커밋 {len(jobs)}개 처리 예정 ({since}~{until}). 이미 적재한 커밋은 건너뜀. "
+            f"근거가 빠진 대상 점검 {repaired}건 보완")
         outcomes = []
         for index, commit in enumerate(jobs):
             if index:
@@ -79,7 +82,7 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
     failed = [f"{o['sha'][:12]}: {o['reason']}" for o in outcomes if o["status"] != "success"]
     db.finish_run(conn, context["run_id"], now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": context["run_id"], "status": status, "groups": outcomes}
+    return {"run_id": context["run_id"], "status": status, "evidence_repaired": repaired, "groups": outcomes}
 
 
 # 커밋 목록 ---------------------------------------------------------------------
@@ -233,6 +236,28 @@ def _write(conn, context, targets, commit, catalog, verified):
                         {"scope": oracle.scope(target), "kind": "aggregator_history", "primary_source": oracle.API_URL,
                          "shape": shape, "offers_found": 1 if found else 0}, captured)
     return counts
+
+
+def repair_target_evidence(conn, targets, commits, captured):
+    """예전 실행이 근거 없이 남긴 대상 점검에 근거를 붙인다(커밋 목록으로 URL 복원). 반환: 보완한 점검 수."""
+    repaired = 0
+    for commit in commits:
+        for target in targets:
+            row = conn.execute(
+                """SELECT c.check_id, c.processing_status FROM collection_check c
+                   WHERE c.deduplication_key = %s
+                     AND NOT EXISTS (SELECT 1 FROM source_evidence e WHERE e.check_id = c.check_id)""",
+                (_target_key(target, commit),)).fetchone()
+            if row is None:
+                continue
+            shape = oracle.SHAPES[target["model_name"]]["shape"]
+            db.add_evidence(conn, row[0], target["source_id"], "aggregator", VIEW_URL.format(**commit),
+                            f"skypilot-catalog {commit['sha'][:12]} {commit['path']}",
+                            {"scope": oracle.scope(target), "kind": "aggregator_history",
+                             "primary_source": oracle.API_URL, "shape": shape,
+                             "offers_found": 1 if row[1] == "success" else 0, "repaired": True}, captured)
+            repaired += 1
+    return repaired
 
 
 def _target_key(target, commit):

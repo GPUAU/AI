@@ -391,3 +391,17 @@ class SkyPilotGuards(SkyPilot):
                                       WHERE s.source_name = 'oracle_skypilot_catalog' AND c.check_scope = 'target'
                                         AND NOT EXISTS (SELECT 1 FROM source_evidence e WHERE e.check_id = c.check_id)""")
         self.assertEqual(missing, 0)
+
+    def test_rerun_repairs_target_checks_left_without_evidence(self):
+        self.collect()
+        self.backfill()
+        self.conn.execute("""DELETE FROM source_evidence e USING collection_check c
+                             WHERE e.check_id = c.check_id AND c.check_scope = 'target'
+                               AND c.deduplication_key LIKE 'skypilot:%'""")
+        self.conn.commit()
+        summary = self.backfill()
+        self.assertEqual(summary["evidence_repaired"], 30)        # 커밋 5개 × 대상 6개
+        missing = count(self.conn, """SELECT count(*) FROM collection_check c WHERE c.deduplication_key LIKE 'skypilot:%%'
+                                        AND c.check_scope = 'target'
+                                        AND NOT EXISTS (SELECT 1 FROM source_evidence e WHERE e.check_id = c.check_id)""")
+        self.assertEqual(missing, 0)
