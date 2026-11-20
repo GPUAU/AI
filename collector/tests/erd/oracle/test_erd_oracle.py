@@ -88,7 +88,7 @@ class Collect(OracleDb):
                                    "unconfirmed"))
         attributes = {r[0] for r in self.conn.execute(
             "SELECT attribute_name FROM product_evidence WHERE product_id = %s", (row[8],)).fetchall()}
-        self.assertEqual(attributes, set(oracle.SPEC_ATTRIBUTES))
+        self.assertEqual(attributes, set(oracle.SPEC_ATTRIBUTES) | {"vcpu_count"})      # B300: NVLink 원문 없음
         gb300 = self.conn.execute("""SELECT p.gpu_count FROM product p JOIN gpu_model m USING (gpu_model_id)
                                      WHERE m.model_name = 'GB300'""").fetchone()[0]
         self.assertEqual(gb300, 4)
@@ -307,3 +307,47 @@ class SkyPilot(OracleDb):
         summary = self.backfill()
         self.assertEqual(summary["status"], "partial_failure")
         self.assertIn("region_prices_differ", next(g for g in summary["groups"] if g["sha"].startswith("a"))["reason"])
+
+
+# 사양 보강(vCPU·NVLink) -------------------------------------------------------------------
+
+class Specs(OracleDb):
+    def spec_rows(self):
+        return {r[0]: r[1:] for r in self.conn.execute(
+            """SELECT m.model_name, p.vcpu_count, p.interconnect_status, p.intra_node_interconnect, p.configuration_version
+               FROM product p JOIN gpu_model m USING (gpu_model_id)""").fetchall()}
+
+    def test_new_products_get_vcpu_and_nvlink_only_with_oracle_source(self):
+        self.collect()
+        rows = self.spec_rows()
+        self.assertEqual(rows["H100"][:3], (224, "confirmed", "NVIDIA NVLink"))
+        self.assertEqual(rows["B200"][:2], (256, "confirmed"))
+        self.assertEqual(rows["B300"][:3], (256, "unconfirmed", None))           # Oracle 원문 없음
+        self.assertEqual(rows["GB300"][:2], (None, "confirmed"))                  # Grace vCPU 환산 문구 없음
+        self.assertIn("NVLink 72", rows["GB200"][2])
+
+    def test_old_unknown_vcpu_is_filled_in_place_without_new_version(self):
+        self.collect()
+        self.conn.execute("UPDATE product SET vcpu_count = NULL")                # 보강 전 적재 상태
+        self.conn.execute("DELETE FROM product_evidence")
+        self.conn.execute("""UPDATE collection_check SET deduplication_key = replace(deduplication_key, %s, 'old')
+                             WHERE deduplication_key LIKE 'spec:%%'""", (oracle.SHAPES_VERSION,))   # 옛 근거 버전
+        self.conn.execute("""UPDATE product SET interconnect_status = 'unconfirmed', intra_node_interconnect = NULL""")
+        self.conn.commit()
+        summary = oracle.attach_specs(self.conn, now=self.now)
+        self.assertEqual(summary["vcpu_filled"], 4)
+        self.clock[0] += timedelta(days=1)
+        self.collect()
+        rows = self.spec_rows()
+        self.assertEqual({v[3] for v in rows.values()}, {1})                     # 새 구성 버전 없음
+        self.assertEqual(rows["H200"][:2], (224, "confirmed"))
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM collection_alert WHERE alert_type = 'config_changed'"), 0)
+
+    def test_collect_fills_unknown_vcpu_before_comparing_config(self):
+        self.collect()
+        self.conn.execute("UPDATE product SET vcpu_count = NULL")
+        self.conn.commit()
+        self.clock[0] += timedelta(days=1)
+        self.collect()
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM product"), 6)
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM collection_alert WHERE alert_type = 'config_changed'"), 0)
