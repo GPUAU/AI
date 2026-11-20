@@ -264,3 +264,16 @@ class Cli(unittest.TestCase):
         self.assertEqual((args.provider, args.since, args.max_calls), ("fx", "2023-07-01", 100))
         self.assertEqual(cli.lock_name(args), "fx")
         self.assertEqual(cli.lock_name(cli.parse(["collect", "fx"])), "fx")
+
+
+class GapFill(FxDb):
+    def test_daily_collect_fills_missed_business_days(self):
+        self.responses[date(2026, 11, 13)] = body("1,320")
+        self.collect(date="2026-11-13")                                  # 금 적재
+        for d in (16, 17, 18):
+            self.responses[date(2026, 11, d)] = body()
+        self.calls.clear()
+        summary = self.collect(date="2026-11-18")                        # 월·화 실패 후 수요일 성공
+        self.assertEqual(self.calls, [date(2026, 11, 18), date(2026, 11, 17), date(2026, 11, 16)])
+        self.assertEqual(summary["groups"][0]["loaded_dates"], ["2026-11-16", "2026-11-17", "2026-11-18"])
+        self.assertEqual(count(self.conn, "SELECT count(DISTINCT reference_date) FROM exchange_rate"), 4)

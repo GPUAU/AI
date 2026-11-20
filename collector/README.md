@@ -29,7 +29,9 @@
 
 **Oracle:** OCI 문서가 안내하는 공개 정가 API에서 `OCI - Compute - GPU - {모델}` 품목(B300·GB300·B200·GB200·H200·H100)의 USD Pay As You Go 단가를 적재한다. GPU 1장·시간 가격이라 GPU 수로 나누지 않고, 리전 구분이 없어 `region_code`는 비운다. 상품은 모델별 베어메탈 구성(`BM.GPU.B300.8` 등)이고 GPU 수·메모리는 Compute Shapes 문서를 사양 근거로 연결한다. vCPU는 가격 페이지의 "1 OCPU = 2 vCPUs for x86" 문구로 x86 구성(H100·H200·B200·B300)만 채우고 Grace(GB200·GB300)는 비운다. NVLink는 Oracle 원문으로 6개 모델 모두 확인한다: OCI GPU Quick Start 문서(H100·H200·B300·GB200·GB300의 NVLink 검증 절차·NVL72 설명), compute 가격 페이지 GPU 표 `GPU Interconnect: NVIDIA NVLINK`(H100·H200·B200·GB200, 2026-01-16 저장본), GPU Memory Fabric 문서(GB200·GB300). 근거에는 모델마다 실제로 문구가 있는 출처만 남긴다. 예전에 비워 둔 값은 `specs oracle`(또는 다음 수집·백필)이 구성 버전을 올리지 않고 그 행에 채운다. NVIDIA AI Enterprise(라이선스)·H100T 품목은 제외한다. 스팟·약정은 API에 없고, 선점형 인스턴스(50% 할인)는 지원 구성에 대상 GPU가 없다(P100·V100만). 과거 이력은 Wayback에 저장된 정가 API 응답(USD 전체 목록, 2026-05부터)과 SkyPilot 카탈로그의 OCI `vms.csv` 커밋 이력(같은 정가 API로 만든 노드 가격, GPU 수로 나눔, 관측 시각은 커밋 시각)을 집계 출처로 쓴다. `backfill oracle`이 둘을 차례로 적재하고 `--only`로 고를 수 있다. 매일 수집을 먼저 실행해야 같은 상품에 붙는다. oracle.com 가격 페이지는 가격 칸을 브라우저에서 같은 API로 채워 HTML 저장본에 값이 없다.
 
-**환율:** 응답의 통화 전부(22개, KRW 제외)의 매매기준율을 `{통화}→KRW`로 `exchange_rate`에 적재한다. `JPY(100)`·`IDR(100)`은 1단위로 나눠 저장하고, 교차환율(EUR→USD 등)은 저장하지 않고 환산할 때 계산한다. INR은 제공되지 않는다. 영업일 11시 전후에 그날 환율이 나오고 비영업일·갱신 전은 빈 응답이라, 매일 수집은 수집 기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재한다(주말은 호출하지 않음). 기준일이 4일 넘게 지나면 `fx_stale`, 실패하면 `fx_failed` 알림을 남긴다. 하루 1,000회 제한이라 백필은 `--max-calls`(기본 900)에서 멈추고, 다시 실행하면 적재하지 않은 날짜부터 이어서 적재한다.
+**환율:** 응답의 통화 전부(22개, KRW 제외)의 매매기준율을 `{통화}→KRW`로 `exchange_rate`에 적재한다. `JPY(100)`·`IDR(100)`은 1단위로 나눠 저장하고, 교차환율(EUR→USD 등)은 저장하지 않고 환산할 때 계산한다. INR은 제공되지 않는다. 영업일 11시 전후에 그날 환율이 나오고 비영업일·갱신 전은 빈 응답이라, 매일 수집은 수집 기준일 환율과 함께 마지막 적재일 다음날부터 빠진 영업일 환율도 채운다(최대 10일, 주말은 호출하지 않음). 며칠 실패한 뒤 성공해도 그 사이가 비지 않는다. 기준일이 4일 넘게 지나면 `fx_stale`, 실패하면 `fx_failed` 알림을 남긴다. 하루 1,000회 제한이라 백필은 `--max-calls`(기본 900)에서 멈추고, 다시 실행하면 적재하지 않은 날짜부터 이어서 적재한다.
+
+**원화 환산:** `convert krw`가 `price_normalization`의 USD/GPU·시간 값(명목·실효)에 USD→KRW 매매기준율을 곱해 `krw_conversion`에 넣는다. 환율은 **관측일(KST) 이하의 가장 최근 기준일** 것을 쓰고(주말·공휴일은 직전 영업일), **그날 환율이 확정된 관측만** 환산한다(적재된 최신 기준일이 관측일 이상). 고시 전이거나 다음 영업일 환율이 아직 없는 관측은 보류(`pending`)했다가 다음 실행에서 환산한다. 빠졌던 영업일 환율을 뒤늦게 적재해 맞는 환율이 바뀌면 정정 행을 추가하고(`corrected`), 기존 행은 남긴다. 한 환산에 원화 환산이 여러 개면 쓴 환율의 기준일이 가장 늦은 행이 현재 값이다. 곱셈은 DB numeric으로 해 반올림하지 않고, 한 번의 SQL로 적재한다. 첫 환율보다 이른 관측은 `fx_failed`, 기준일이 4일 넘게 지난 환율을 쓰면 `fx_stale` 알림을 남긴다. 매일 순서는 매일 수집 → `collect fx` → `convert krw`.
 
 **스팟:** 매일 수집은 마지막으로 적재한 스팟 기록 이후에 바뀐 가격을 모두 받는다(기록 하나 = 관측 하나, 관측 시각 = 기록 시각). 처음 실행이면 AWS는 지금 적용 중인 가격, Nebius는 최근 1일을 받고, 그 전은 backfill로 채운다. 같은 오퍼·같은 시각의 기록은 매일 수집과 backfill을 통틀어 한 번만 적재한다. Nebius의 끝나지 않은 시간 구간 값은 다음 실행에서 확정값으로 적재한다. 며칠 실행하지 못해도 원천 보관 기간(AWS 90일, Nebius 30일) 안이면 다음 실행이 채운다.
 
@@ -56,6 +58,7 @@ python -m gpu_collector.erd collect aws           # 매일 수집: aws | azure |
 python -m gpu_collector.erd collect aws --date 2026-11-20     # 수집 기준일 지정(KST, 생략하면 오늘)
 python -m gpu_collector.erd backfill aws --since 2023-07      # 과거 이력 (사업자별 옵션은 --help)
 python -m gpu_collector.erd backfill fx --since 2023-07-01    # 과거 환율(날짜는 YYYY-MM-DD, 하루 1,000회 제한)
+python -m gpu_collector.erd convert krw                       # USD 환산값을 원화로(원화 환산이 없는 행만)
 python -m gpu_collector.erd status record         # 랙스케일·출시 예정 모델 수기 상태 기록
 python -m gpu_collector.erd report --model B300   # 최신 가격과 대상별 마지막 점검
 ```
