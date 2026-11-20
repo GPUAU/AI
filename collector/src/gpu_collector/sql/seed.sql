@@ -489,6 +489,55 @@ WHERE NOT EXISTS (
     WHERE t.provider_id = p.provider_id AND t.gpu_model_id = m.gpu_model_id AND t.source_id = s.source_id
       AND t.region_filter IS NULL AND t.contract_filter IS NOT DISTINCT FROM v.contract);
 
+-- Scaleway --------------------------------------------------------------------------------------------------------
+-- 공개 카탈로그 API의 GPU Instance(B300-SXM-8, H100-SXM-8/4/2, H100 PCIe 1/2)와 Elastic Metal H100 시간당 요금을 수집한다.
+-- 종합 클라우드(hyperscaler): 일반 VM·베어메탈·오브젝트 스토리지·관리형 DB·Kubernetes·서버리스를 판매한다.
+-- 가격은 EUR(Instance 분 단위). USD 환산은 수출입은행 교차환율(규칙 v4). Elastic Metal 월 요금·설치비와 Dedibox는 기한 없는
+-- 월 구독의 1회 설치비라 약정으로 환산하면 단가가 왜곡돼 수집하지 않는다. 스팟·약정 상품은 없다.
+INSERT INTO provider (provider_name, provider_type, official_url)
+VALUES ('Scaleway', 'hyperscaler', 'https://www.scaleway.com')
+ON CONFLICT (provider_name) DO NOTHING;
+
+-- 분 단가·비USD 통화를 v3에 더한 규칙. 교차환율은 관측일(KST) 이하 최신 기준일(원화 환산과 같은 규칙).
+INSERT INTO normalization_rule (rule_version, monthly_hours, formula_description, precision_policy)
+VALUES ('v4', 730,
+        'v3에 더해: 분 단위는 × 60으로 시간 단가. 비USD 통화는 한국수출입은행 매매기준율 교차환율'
+        '({통화}→KRW ÷ USD→KRW, 관측일(KST) 이하 최신 기준일, 두 통화 같은 기준일)로 USD. 쓴 환율 ID·기준일은 calculation_inputs에 기록',
+        '저장은 원본 정밀도(교차환율 나눗셈은 28자리 유효숫자). 표시는 USD 소수 둘째 자리, KRW 원 단위')
+ON CONFLICT (rule_version) DO NOTHING;
+
+-- OR-02 이용 조건(2026-11-20 확인): 공식 Go SDK(github.com/scaleway/scaleway-sdk-go, api/product_catalog/v2alpha1)의
+-- PublicCatalogAPI.ListPublicCatalogProducts가 "List all available products in the Scaleway catalog ... prices"로 이 공개
+-- 조회를 제공한다(인증 없음). api.scaleway.com/robots.txt의 Disallow: /는 크롤링 규칙으로 보고, 하루 1회 저빈도 호출·내부 분석
+-- 용도이며 원시 데이터를 재배포하지 않는다. 버전이 v2alpha1(알파)이라 형식이 바뀌면 검증 실패로 남긴다.
+-- www.scaleway.com(가격 페이지·문서)은 BunnyCDN 봇 확인(Bunny Shield)으로 자동 접근을 막아 매일 수집은 API만 쓴다. 가격 페이지의
+-- 사양(gpuRam·useNvlink)은 Wayback 저장본(2026-11-18)을 사람이 확인한 값이다. 과거 가격은 Wayback 저장본(집계, 미확인)만 쓴다.
+INSERT INTO data_source (source_name, source_type, base_url, collection_method, terms_status, terms_checked_at, terms_url)
+VALUES ('scaleway_product_catalog_api', 'official_api',
+        'https://api.scaleway.com/product-catalog/v2alpha1/public-catalog/products', 'api', 'allowed',
+        '2026-11-20T00:00:00Z', 'https://github.com/scaleway/scaleway-sdk-go/tree/master/api/product_catalog/v2alpha1'),
+       ('scaleway_gpu_pricing_page', 'official_page', 'https://www.scaleway.com/en/pricing/gpu/', 'manual', 'allowed',
+        '2026-11-20T00:00:00Z', 'https://www.scaleway.com/en/contracts/'),
+       ('scaleway_gpu_pricing_wayback', 'aggregator', 'https://web.archive.org/web/*/www.scaleway.com/en/pricing/gpu/',
+        'api', 'unknown', NULL, 'https://archive.org/about/terms.php')
+ON CONFLICT (source_name) DO NOTHING;
+
+INSERT INTO collection_target (provider_id, gpu_model_id, source_id, region_filter, contract_filter, scope_description)
+SELECT p.provider_id, m.gpu_model_id, s.source_id, NULL, v.contract, v.description
+FROM (VALUES
+    ('scaleway_product_catalog_api', 'on_demand', '공개 카탈로그 API의 GPU Instance 분 단가·Elastic Metal 시간 단가 (EUR, zone별)'),
+    ('scaleway_gpu_pricing_wayback', 'on_demand', 'Wayback 가격 페이지 저장본의 GPU Instance 가격 (집계, 과거 이력)'),
+    ('scaleway_gpu_pricing_page', NULL, '가격 페이지 내장 JSON의 GPU 메모리(gpuRam)·NVLink(useNvlink) (수기 확인 근거)')
+) AS v (source, contract, description)
+CROSS JOIN (VALUES ('B300'), ('H100')) AS mm (model)
+JOIN provider p ON p.provider_name = 'Scaleway'
+JOIN gpu_model m ON m.model_name = mm.model
+JOIN data_source s ON s.source_name = v.source
+WHERE NOT EXISTS (
+    SELECT 1 FROM collection_target t
+    WHERE t.provider_id = p.provider_id AND t.gpu_model_id = m.gpu_model_id AND t.source_id = s.source_id
+      AND t.region_filter IS NULL AND t.contract_filter IS NOT DISTINCT FROM v.contract);
+
 -- 환율 (한국수출입은행) ----------------------------------------------------------------------------------------------
 -- 현재환율 API(data=AP01)의 매매기준율을 응답 통화 전부에 대해 '{통화}→KRW'로 적재한다(erd/fx/collect.py).
 -- OR-02 이용 조건(2026-11-20 확인, 같은 날 사용자 승인): API 페이지의 이용허락조건 표시는 공공누리 미적용이다

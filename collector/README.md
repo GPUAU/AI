@@ -10,6 +10,7 @@
 | `src/gpu_collector/erd/` | 수집 명령(`__main__.py`), DB 적재 공통(`db.py`), 수기 상태 기록(`status.py`) |
 | `src/gpu_collector/erd/{aws,azure,verda,nebius}/` | 사업자별 매일 수집(`collect.py`)·과거 이력 백필(`history.py`) |
 | `src/gpu_collector/erd/oracle/` | Oracle 매일 수집(`collect.py`)·과거 이력 백필(`history.py` Wayback, `skypilot.py` SkyPilot 카탈로그) |
+| `src/gpu_collector/erd/scaleway/` | Scaleway 매일 수집(`collect.py`) |
 | `src/gpu_collector/erd/fx/` | 환율 매일 수집·백필(한국수출입은행, `collect.py`) |
 | `src/gpu_collector/` | 공통 모듈: HTTP 조회(`fetch`), 파일 캐시(`download`), 비밀값(`env`), AWS 가격 파일 파서(`aws_offer`, `aws_savings`) |
 | `tests/erd/` | 사업자별·스키마 테스트. `support.py`가 임시 DB를 만들고 지운다 |
@@ -25,9 +26,12 @@
 | Verda | 공개 API(인스턴스 가격, 약정 할인율) | Wayback 저장본 |
 | Nebius | 문서 가격표, 공개 스팟 가격 시계열 API(1시간 간격) | 스팟 30일, 문서 Wayback 저장본 |
 | Oracle | 공개 정가 API(GPU 1장·시간 온디맨드, 리전 단일가) | Wayback 정가 API 응답 저장본(2026-05~), SkyPilot 카탈로그 커밋 이력(H100·H200 2025-01~) |
+| Scaleway | 공개 카탈로그 API(B300·H100 Instance 분 단가, Elastic Metal H100 시간 단가, EUR) | (예정) Wayback 가격 페이지 |
 | 환율(`fx`) | 한국수출입은행 현재환율 API(매매기준율) | 같은 API의 과거 영업일 조회 |
 
 **Oracle:** OCI 문서가 안내하는 공개 정가 API에서 `OCI - Compute - GPU - {모델}` 품목(B300·GB300·B200·GB200·H200·H100)의 USD Pay As You Go 단가를 적재한다. GPU 1장·시간 가격이라 GPU 수로 나누지 않고, 리전 구분이 없어 `region_code`는 비운다. 상품은 모델별 베어메탈 구성(`BM.GPU.B300.8` 등)이고 GPU 수·메모리는 Compute Shapes 문서를 사양 근거로 연결한다. vCPU는 가격 페이지의 "1 OCPU = 2 vCPUs for x86" 문구로 x86 구성(H100·H200·B200·B300)만 채우고 Grace(GB200·GB300)는 비운다. NVLink는 Oracle 원문으로 6개 모델 모두 확인한다: OCI GPU Quick Start 문서(H100·H200·B300·GB200·GB300의 NVLink 검증 절차·NVL72 설명), compute 가격 페이지 GPU 표 `GPU Interconnect: NVIDIA NVLINK`(H100·H200·B200·GB200, 2026-01-16 저장본), GPU Memory Fabric 문서(GB200·GB300). 근거에는 모델마다 실제로 문구가 있는 출처만 남긴다. 예전에 비워 둔 값은 `specs oracle`(또는 다음 수집·백필)이 구성 버전을 올리지 않고 그 행에 채운다. NVIDIA AI Enterprise(라이선스)·H100T 품목은 제외한다. 스팟·약정은 API에 없고, 선점형 인스턴스(50% 할인)는 지원 구성에 대상 GPU가 없다(P100·V100만). 과거 이력은 Wayback에 저장된 정가 API 응답(USD 전체 목록, 2026-05부터)과 SkyPilot 카탈로그의 OCI `vms.csv` 커밋 이력(같은 정가 API로 만든 노드 가격, GPU 수로 나눔, 관측 시각은 커밋 시각)을 집계 출처로 쓴다. `backfill oracle`이 둘을 차례로 적재하고 `--only`로 고를 수 있다. 매일 수집을 먼저 실행해야 같은 상품에 붙는다. oracle.com 가격 페이지는 가격 칸을 브라우저에서 같은 API로 채워 HTML 저장본에 값이 없다.
+
+**Scaleway:** 공식 Go SDK가 제공하는 공개 카탈로그 API(`v2alpha1`, 인증 없음) 전 페이지에서 GPU Instance(B300-SXM-8, H100-SXM-8/4/2, H100 PCIe 1/2, zone별)와 Elastic Metal H100 시간 요금을 적재한다. 가격은 EUR(Instance 분 단위)이고, USD 환산(규칙 v4)은 수출입은행 교차환율(EUR→KRW ÷ USD→KRW, 관측일 이하 최신 기준일)로 하며 쓴 환율 ID를 `calculation_inputs`에 남긴다. 그래서 매일 순서는 `collect fx` → `collect scaleway` → `convert krw`이고, 원화 환산값은 EUR 시간 단가 × EUR→KRW와 같다. 환율이 없으면 환산은 `not_computable`. Elastic Metal 월 요금·설치비와 Dedibox는 기한 없는 월 구독의 1회 설치비라 수집하지 않는다. GPU 메모리·NVLink는 가격 페이지 내장 JSON을 사람이 확인한 근거, 노드 간 네트워크는 일반 VPC 대역폭이라 비운다. www.scaleway.com은 봇 확인(BunnyCDN)으로 자동 접근을 막아 매일 수집은 API만 쓴다.
 
 **환율:** 응답의 통화 전부(22개, KRW 제외)의 매매기준율을 `{통화}→KRW`로 `exchange_rate`에 적재한다. `JPY(100)`·`IDR(100)`은 1단위로 나눠 저장하고, 교차환율(EUR→USD 등)은 저장하지 않고 환산할 때 계산한다. INR은 제공되지 않는다. 영업일 11시 전후에 그날 환율이 나오고 비영업일·갱신 전은 빈 응답이라, 매일 수집은 수집 기준일 환율과 함께 마지막 적재일 다음날부터 빠진 영업일 환율도 채운다(최대 10일, 주말은 호출하지 않음). 며칠 실패한 뒤 성공해도 그 사이가 비지 않는다. 기준일이 4일 넘게 지나면 `fx_stale`, 실패하면 `fx_failed` 알림을 남긴다. 하루 1,000회 제한이라 백필은 `--max-calls`(기본 900)에서 멈추고, 다시 실행하면 적재하지 않은 날짜부터 이어서 적재한다.
 
@@ -54,7 +58,7 @@ uv 없이 할 때: `python3.12 -m venv .venv && source .venv/bin/activate && pip
 
 ```bash
 python -m gpu_collector.erd init                  # 빈 DB면 DDL 적용, 이어서 seed 적용
-python -m gpu_collector.erd collect aws           # 매일 수집: aws | azure | verda | nebius | oracle | fx(환율)
+python -m gpu_collector.erd collect aws           # 매일 수집: aws | azure | verda | nebius | oracle | scaleway | fx(환율)
 python -m gpu_collector.erd collect aws --date 2026-11-20     # 수집 기준일 지정(KST, 생략하면 오늘)
 python -m gpu_collector.erd backfill aws --since 2023-07      # 과거 이력 (사업자별 옵션은 --help)
 python -m gpu_collector.erd backfill fx --since 2023-07-01    # 과거 환율(날짜는 YYYY-MM-DD, 하루 1,000회 제한)

@@ -20,6 +20,7 @@
   python -m gpu_collector.erd backfill oracle --since 2026-05 [--until 2026-11] [--no-verify]
                                                        Wayback 정가 API 응답 저장본(2026-05~)·SkyPilot 카탈로그(2025-01~)로
                                                        Oracle 과거 정가 적재(집계 출처, --only로 출처 선택)
+  python -m gpu_collector.erd collect scaleway [--date ...] [--trigger ...]  Scaleway 공개 카탈로그 API(B300·H100, EUR → 교차환율 USD)
   python -m gpu_collector.erd collect fx [--date ...] [--trigger ...]      한국수출입은행 현재환율 API(매매기준율, 응답 통화 전부→KRW)
                                                        기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재
   python -m gpu_collector.erd backfill fx --since 2023-07-01 [--until 2026-11-20] [--max-calls 900]
@@ -61,6 +62,7 @@ from .verda import collect as verda, history as verda_history
 from .nebius import collect as nebius, history as nebius_history
 from .fx import collect as fx, convert as krw
 from .oracle import collect as oracle, history as oracle_history, skypilot as oracle_skypilot
+from .scaleway import collect as scaleway
 from . import runs, status
 
 SQL = resources.files("gpu_collector") / "sql"
@@ -72,8 +74,9 @@ EXIT_BY_STATUS = {"success": EXIT_OK, "partial_failure": EXIT_PARTIAL, "failed":
 # DB 시간 제한: 접속 10초, 문 하나 10분, 잠금 대기 30초. 네트워크 단절·잠금 대기로 무한히 멈추지 않게 한다.
 CONNECT_TIMEOUT_S = 10
 DB_OPTIONS = "-c statement_timeout=600000 -c lock_timeout=30000"
-COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius, "oracle": oracle, "fx": fx}
-NO_BACKFILL = set()           # 과거 이력 적재가 없는 수집기
+COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius, "oracle": oracle, "scaleway": scaleway,
+              "fx": fx}
+NO_BACKFILL = {"scaleway"}    # 과거 이력 적재가 없는 수집기
 
 
 class Terminated(Exception):
