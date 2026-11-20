@@ -222,3 +222,88 @@ class History(OracleDb):
         self.fetched.clear()
         self.assertEqual(self.backfill()["status"], "success")
         self.assertEqual(self.fetched, ["20260812191351"])
+
+
+# 과거 이력(SkyPilot 카탈로그) ------------------------------------------------------------
+
+from gpu_collector.erd.oracle import skypilot as oracle_skypilot
+
+CSV_HEADER = "InstanceType,AcceleratorName,AcceleratorCount,vCPUs,MemoryGiB,GpuInfo,Price,SpotPrice,Region,AvailabilityZone\n"
+
+
+def catalog(rows, regions=("us-ashburn-1", "ap-chuncheon-1")):
+    lines = [CSV_HEADER]
+    for shape, gpus, price in rows:
+        for index, region in enumerate(regions):
+            value = price[index] if isinstance(price, tuple) else price
+            lines.append(f'{shape},X,{gpus},224,2048,"{{}}",{value},,{region},{region}-AD-1\n')
+    lines.append('VM.Standard.E5.Flex,,,1,8,,0.03,,us-ashburn-1,AD-1\n')
+    return "".join(lines)
+
+
+def commit(sha, date):
+    return {"sha": sha, "commit": {"committer": {"date": date}}}
+
+
+class SkyPilot(OracleDb):
+    def setUp(self):
+        super().setUp()
+        self.commits = {"v6": [commit("a" * 40, "2025-01-12T10:00:00Z"), commit("0" * 40, "2024-12-13T10:00:00Z")],
+                        "v7": [commit("b" * 40, "2025-04-29T10:00:00Z")],
+                        "v8": [commit("d" * 40, "2026-11-18T10:00:00Z"), commit("c" * 40, "2025-09-11T10:00:00Z")]}
+        hopper = [("BM.GPU.H100.8", 8, 80), ("BM.GPU.H200.8", 8, 80)]
+        self.files = {"0" * 40: catalog([("BM.GPU4.8", 8, 24.4)]), "a" * 40: catalog(hopper), "b" * 40: catalog(hopper),
+                      "c" * 40: catalog(hopper),
+                      "d" * 40: catalog(hopper + [("BM.GPU.B300.8", 8, 120), ("BM.GPU.GB300.4", 4, 72),
+                                                  ("BM.GPU.B200.8", 8, 112), ("BM.GPU.GB200.4", 4, 64)])}
+        self.fetched = []
+
+    def get_json(self, url, config):
+        if url.startswith("https://api.github.com/"):
+            version = url.split("catalogs/")[1].split("/")[0]
+            return self.commits.get(version, [])
+        return super().get_json(url, config)
+
+    def get_text(self, url, config):
+        sha = url.split("skypilot-catalog/")[1].split("/")[0]
+        self.fetched.append(sha[:1])
+        return self.files[sha]
+
+    def backfill(self):
+        return oracle_skypilot.backfill(self.conn, since="2024-01", until="2026-11", now=self.now, get_json=self.get_json,
+                                        get_text=self.get_text, pause=lambda _s: None, log=lambda _m: None)
+
+    def b300_and_h100(self):
+        return self.conn.execute(
+            """SELECT m.model_name, ob.collected_at::date::text, n.effective_usd_gpu_hour FROM price_observation ob
+               JOIN price_normalization n USING (observation_id) JOIN offer o USING (offer_id)
+               JOIN product p USING (product_id) JOIN gpu_model m USING (gpu_model_id)
+               WHERE m.model_name IN ('B300', 'H100') ORDER BY 1, 2""").fetchall()
+
+    def test_loads_node_prices_per_gpu_on_daily_products(self):
+        self.collect()
+        summary = self.backfill()
+        self.assertEqual(summary["status"], "success")
+        self.assertEqual(self.fetched, ["0", "a", "b", "c", "d"])
+        self.assertEqual(self.b300_and_h100(), [
+            ("B300", "2026-11-18", Decimal(15)), ("B300", "2026-11-20", Decimal(15)),
+            ("H100", "2025-01-12", Decimal(10)), ("H100", "2025-04-29", Decimal(10)), ("H100", "2025-09-11", Decimal(10)),
+            ("H100", "2026-11-18", Decimal(10)), ("H100", "2026-11-20", Decimal(10))])
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM product"), 6)       # 매일 수집과 같은 상품
+        verified = self.conn.execute("""SELECT bool_and(primary_verified) FROM source_evidence
+                                        WHERE evidence_role = 'aggregator'""").fetchone()[0]
+        self.assertTrue(verified)
+
+    def test_rerun_skips_commits(self):
+        self.collect()
+        self.backfill()
+        self.fetched.clear()
+        self.backfill()
+        self.assertEqual(self.fetched, [])
+
+    def test_region_price_mismatch_fails_validation(self):
+        self.collect()
+        self.files["a" * 40] = catalog([("BM.GPU.H100.8", 8, (80, 81))])
+        summary = self.backfill()
+        self.assertEqual(summary["status"], "partial_failure")
+        self.assertIn("region_prices_differ", next(g for g in summary["groups"] if g["sha"].startswith("a"))["reason"])
