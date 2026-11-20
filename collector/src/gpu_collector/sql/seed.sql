@@ -439,6 +439,43 @@ WHERE NOT EXISTS (
     WHERE t.provider_id = p.provider_id AND t.gpu_model_id = m.gpu_model_id AND t.source_id = s.source_id
       AND t.region_filter IS NULL AND t.contract_filter IS NULL);
 
+-- Oracle Cloud(OCI) -----------------------------------------------------------------------------------------------
+-- 공개 정가 API의 'OCI - Compute - GPU - {모델}' 품목(GPU 1장·시간, Pay As You Go, 리전 단일가)을 수집한다.
+-- 종합 클라우드(hyperscaler): GPU 외에 범용 VM·스토리지·DB·네트워크를 폭넓게 판매한다.
+-- 상품은 모델별 베어메탈 구성(BM.GPU.B300.8 등). GB300·GB200은 NVL72 랙의 4 GPU 노드(BM.GPU.GB300.4·GB200.4)다.
+-- 스팟(선점형)·약정 가격은 API에 없어 대상에 넣지 않는다.
+INSERT INTO provider (provider_name, provider_type, official_url)
+VALUES ('Oracle', 'hyperscaler', 'https://www.oracle.com/cloud/')
+ON CONFLICT (provider_name) DO NOTHING;
+
+-- OR-02 이용 조건(2026-11-20 확인): OCI 문서 'Estimate Your Monthly Cost'의 'Accessing List Pricing for OCI Products'가
+-- 이 API를 curl·프로그래밍 방식으로 정가를 조회하는 방법으로 안내한다(인증 없음, partNumber·currencyCode 파라미터).
+-- 공식 안내된 프로그램용 조회라 Oracle 웹사이트 이용 약관의 자동화 수단 접근 제한과 별개로 본다. 하루 1회 호출,
+-- 내부 분석 용도이며 원시 데이터를 외부에 재배포하지 않는다. Shapes 문서는 사람이 열람해 확인한 사양 근거다.
+INSERT INTO data_source (source_name, source_type, base_url, collection_method, terms_status, terms_checked_at, terms_url)
+VALUES ('oracle_price_list_api', 'official_api', 'https://apexapps.oracle.com/pls/apex/cetools/api/v1/products/',
+        'api', 'allowed', '2026-11-20T00:00:00Z',
+        'https://docs.oracle.com/en-us/iaas/Content/Billing/Tasks/signingup_topic-Estimating_Costs.htm'),
+       ('oracle_compute_shapes_docs', 'official_page',
+        'https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm',
+        'manual', 'allowed', '2026-11-20T00:00:00Z', 'https://www.oracle.com/legal/terms/')
+ON CONFLICT (source_name) DO NOTHING;
+
+INSERT INTO collection_target (provider_id, gpu_model_id, source_id, region_filter, contract_filter, scope_description)
+SELECT p.provider_id, m.gpu_model_id, s.source_id, NULL, v.contract, v.description
+FROM (VALUES
+    ('oracle_price_list_api', 'on_demand', '공개 정가 API의 GPU 1장·시간 Pay As You Go 정가 (USD, 리전 단일가)'),
+    ('oracle_compute_shapes_docs', NULL, 'Compute Shapes 문서의 베어메탈 GPU 구성(GPU 수·GPU 메모리·CPU 메모리·로컬 디스크·RDMA, 수기 확인 근거)')
+) AS v (source, contract, description)
+CROSS JOIN (VALUES ('B300'), ('GB300'), ('B200'), ('GB200'), ('H200'), ('H100')) AS mm (model)
+JOIN provider p ON p.provider_name = 'Oracle'
+JOIN gpu_model m ON m.model_name = mm.model
+JOIN data_source s ON s.source_name = v.source
+WHERE NOT EXISTS (
+    SELECT 1 FROM collection_target t
+    WHERE t.provider_id = p.provider_id AND t.gpu_model_id = m.gpu_model_id AND t.source_id = s.source_id
+      AND t.region_filter IS NULL AND t.contract_filter IS NOT DISTINCT FROM v.contract);
+
 -- 환율 (한국수출입은행) ----------------------------------------------------------------------------------------------
 -- 현재환율 API(data=AP01)의 매매기준율을 응답 통화 전부에 대해 '{통화}→KRW'로 적재한다(erd/fx/collect.py).
 -- OR-02 이용 조건(2026-11-20 확인, 같은 날 사용자 승인): API 페이지의 이용허락조건 표시는 공공누리 미적용이다

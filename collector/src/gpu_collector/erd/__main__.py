@@ -16,6 +16,7 @@
   python -m gpu_collector.erd collect nebius [--date ...] [--trigger ...]  Nebius 문서 가격표(온디맨드·약정 상태) + 공개 스팟 API
   python -m gpu_collector.erd backfill nebius [--days 29] [--only spot,docs] [--no-verify]
                                                        스팟 30일 이력(공식 API) + 문서 Wayback 저장본(집계)
+  python -m gpu_collector.erd collect oracle [--date ...] [--trigger ...]  OCI 공개 정가 API(GPU 1장·시간 온디맨드, 리전 단일가)
   python -m gpu_collector.erd collect fx [--date ...] [--trigger ...]      한국수출입은행 현재환율 API(매매기준율, 응답 통화 전부→KRW)
                                                        기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재
   python -m gpu_collector.erd backfill fx --since 2023-07-01 [--until 2026-11-20] [--max-calls 900]
@@ -52,6 +53,7 @@ from .azure import collect as azure, history as azure_history
 from .verda import collect as verda, history as verda_history
 from .nebius import collect as nebius, history as nebius_history
 from .fx import collect as fx
+from .oracle import collect as oracle
 from . import runs, status
 
 SQL = resources.files("gpu_collector") / "sql"
@@ -63,7 +65,8 @@ EXIT_BY_STATUS = {"success": EXIT_OK, "partial_failure": EXIT_PARTIAL, "failed":
 # DB 시간 제한: 접속 10초, 문 하나 10분, 잠금 대기 30초. 네트워크 단절·잠금 대기로 무한히 멈추지 않게 한다.
 CONNECT_TIMEOUT_S = 10
 DB_OPTIONS = "-c statement_timeout=600000 -c lock_timeout=30000"
-COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius, "fx": fx}
+COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius, "oracle": oracle, "fx": fx}
+NO_BACKFILL = {"oracle"}      # 과거 이력 적재가 아직 없는 수집기
 
 
 class Terminated(Exception):
@@ -97,7 +100,7 @@ def parse(argv):
     c.add_argument("--only", help="쉼표로 구분한 data_source.source_name (aws만)")
     c.add_argument("--trigger", default="manual", choices=["manual", "scheduled", "retry"])
     b = sub.add_parser("backfill")
-    b.add_argument("provider", choices=sorted(COLLECTORS))
+    b.add_argument("provider", choices=sorted(set(COLLECTORS) - NO_BACKFILL))
     b.add_argument("--since", help="YYYY-MM부터 (aws·azure·verda 필수). fx는 YYYY-MM-DD")
     b.add_argument("--days", type=int, default=29, help="Nebius 스팟 이력 일수(최대 29)")
     b.add_argument("--until", help="YYYY-MM까지(생략하면 이번 달). fx는 YYYY-MM-DD(생략하면 오늘)")
