@@ -105,7 +105,7 @@ def parse(argv):
     c.add_argument("--trigger", default="manual", choices=["manual", "scheduled", "retry"])
     b = sub.add_parser("backfill")
     b.add_argument("provider", choices=sorted(set(COLLECTORS) - NO_BACKFILL))
-    b.add_argument("--since", help="YYYY-MM부터 (aws·azure·verda 필수). fx는 YYYY-MM-DD")
+    b.add_argument("--since", help="YYYY-MM부터 (aws·azure·verda·oracle 필수). fx는 YYYY-MM-DD")
     b.add_argument("--days", type=int, default=29, help="Nebius 스팟 이력 일수(최대 29)")
     b.add_argument("--until", help="YYYY-MM까지(생략하면 이번 달). fx는 YYYY-MM-DD(생략하면 오늘)")
     b.add_argument("--max-calls", type=int, default=fx.MAX_CALLS, help="fx: 이번 실행의 API 호출 상한")

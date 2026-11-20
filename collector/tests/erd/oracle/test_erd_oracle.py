@@ -85,10 +85,10 @@ class Collect(OracleDb):
                       p.region_code, p.interconnect_status, p.product_id
                FROM product p JOIN gpu_model m USING (gpu_model_id) WHERE m.model_name = 'B300'""").fetchone()
         self.assertEqual(row[:8], ("BM.GPU.B300.8", "B0", "node", 8, Decimal("262.5"), Decimal("4096"), None,
-                                   "unconfirmed"))
+                                   "confirmed"))
         attributes = {r[0] for r in self.conn.execute(
             "SELECT attribute_name FROM product_evidence WHERE product_id = %s", (row[8],)).fetchall()}
-        self.assertEqual(attributes, set(oracle.SPEC_ATTRIBUTES) | {"vcpu_count"})      # B300: NVLink 원문 없음
+        self.assertEqual(attributes, set(oracle.SPEC_ATTRIBUTES) | {"vcpu_count", "intra_node_interconnect"})
         gb300 = self.conn.execute("""SELECT p.gpu_count FROM product p JOIN gpu_model m USING (gpu_model_id)
                                      WHERE m.model_name = 'GB300'""").fetchone()[0]
         self.assertEqual(gb300, 4)
@@ -317,12 +317,12 @@ class Specs(OracleDb):
             """SELECT m.model_name, p.vcpu_count, p.interconnect_status, p.intra_node_interconnect, p.configuration_version
                FROM product p JOIN gpu_model m USING (gpu_model_id)""").fetchall()}
 
-    def test_new_products_get_vcpu_and_nvlink_only_with_oracle_source(self):
+    def test_new_products_get_vcpu_and_nvlink_with_oracle_sources(self):
         self.collect()
         rows = self.spec_rows()
         self.assertEqual(rows["H100"][:3], (224, "confirmed", "NVIDIA NVLink"))
         self.assertEqual(rows["B200"][:2], (256, "confirmed"))
-        self.assertEqual(rows["B300"][:3], (256, "unconfirmed", None))           # Oracle 원문 없음
+        self.assertEqual(rows["B300"][:3], (256, "confirmed", "NVIDIA NVLink"))  # GPU Quick Start B300
         self.assertEqual(rows["GB300"][:2], (None, "confirmed"))                  # Grace vCPU 환산 문구 없음
         self.assertIn("NVLink 72", rows["GB200"][2])
 
@@ -351,3 +351,43 @@ class Specs(OracleDb):
         self.collect()
         self.assertEqual(count(self.conn, "SELECT count(*) FROM product"), 6)
         self.assertEqual(count(self.conn, "SELECT count(*) FROM collection_alert WHERE alert_type = 'config_changed'"), 0)
+
+    def test_evidence_records_only_sources_that_have_the_quote(self):
+        self.collect()
+        rows = dict(self.conn.execute(
+            """SELECT m.model_name, e.excerpt FROM product_evidence pe JOIN source_evidence e USING (evidence_id)
+               JOIN product p USING (product_id) JOIN gpu_model m USING (gpu_model_id)
+               WHERE pe.attribute_name = 'intra_node_interconnect'""").fetchall())
+        urls = {m: [x["url"] for x in json.loads(v)["interconnect_sources"]] for m, v in rows.items()}
+        self.assertEqual(urls["B200"], [oracle.PRICING_PAGE_ARCHIVE])
+        self.assertNotIn(oracle.MEMORY_FABRIC_DOC, urls["H100"])
+        self.assertNotIn(oracle.PRICING_PAGE_ARCHIVE, urls["GB300"])        # 저장본의 GB300 칸은 비어 있었음
+
+    def test_skipped_day_still_links_new_spec_version(self):
+        self.collect()
+        self.conn.execute("""UPDATE collection_check SET deduplication_key = replace(deduplication_key, %s, 'old')
+                             WHERE deduplication_key LIKE 'spec:%%'""", (oracle.SHAPES_VERSION,))
+        self.conn.commit()
+        self.assertEqual(self.collect()["groups"][0]["status"], "skipped")
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM collection_check WHERE deduplication_key LIKE %s",
+                               f"spec:%:{oracle.SHAPES_VERSION}"), 6)
+
+
+class SkyPilotGuards(SkyPilot):
+    def test_without_daily_product_fails_instead_of_creating_mismatched_product(self):
+        summary = self.backfill()                                   # collect oracle 없이
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM product"), 0)
+        failed = [g for g in summary["groups"] if g["status"] != "success"]
+        self.assertTrue(failed and all("no_daily_product" in g["reason"] for g in failed))
+        self.collect()
+        self.assertEqual(self.backfill()["status"], "success")      # 매일 수집 후 다시 실행하면 적재
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM collection_alert WHERE alert_type = 'config_changed'"), 0)
+
+    def test_target_checks_have_evidence(self):
+        self.collect()
+        self.backfill()
+        missing = count(self.conn, """SELECT count(*) FROM collection_check c JOIN collection_target t USING (target_id)
+                                      JOIN data_source s USING (source_id)
+                                      WHERE s.source_name = 'oracle_skypilot_catalog' AND c.check_scope = 'target'
+                                        AND NOT EXISTS (SELECT 1 FROM source_evidence e WHERE e.check_id = c.check_id)""")
+        self.assertEqual(missing, 0)
