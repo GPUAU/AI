@@ -40,7 +40,7 @@ SECONDS_BETWEEN_REQUESTS = 6      # Wayback이 연속 요청을 끊는다(연결
 # 속성 순서가 저장본마다 다르다(<script id=… type=…> / <script type=… id=…>)
 NEXT_DATA = re.compile(r'<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
 NEXT_DATA_OPEN = re.compile(r'<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>')
-PRODUCT_START = re.compile(r'\{"apiId":"')
+PRODUCT_START = re.compile(r'\{"(?:apiId|catalogId|name)":"')     # 저장본마다 상품 객체 첫 키가 다르다
 INSTANCES = {name for name, spec in scaleway.SPECS.items() if spec["quote"] is not None}
 # 2024년 HTML 표 한 줄: 상품명 | 24 cores | 1 GPU | 240 GB | … | €2.52 | /hour
 TABLE_ROW = re.compile(r"(?P<name>(?:B300|H100)[A-Z0-9-]+) \| (?P<cpu>\d+) (?:cores|vCPUs) \| (?P<gpus>\d+) GPUs? \| "
@@ -165,7 +165,7 @@ def _complete_objects(text):
                     except ValueError:
                         pass
                     break
-    return objects          # 2024~2025 초 저장본: 내장 JSON에 상품 가격이 없고 HTML 표에만 있다
+    return objects
 
 
 def _offer_name(node):
@@ -188,7 +188,7 @@ def _walk(node):
 
 
 def _from_json(data):
-    rows, seen = [], set()
+    rows, seen = [], {}
     for item in _walk(data):
         hardware = item.get("hardware") or {}
         name = _offer_name(item)
@@ -198,15 +198,21 @@ def _from_json(data):
             if not zone.get("zone") or not value:
                 continue
             key = (name, zone["zone"])
-            if key in seen:
-                continue                  # 같은 상품이 페이지에 여러 번 나온다
-            seen.add(key)
             if value.get("currencyCode") != "EUR":
                 raise scaleway.SourceInvalid(f"unexpected_currency: {key} {value.get('currencyCode')}")
             amount = Decimal(value.get("units") or 0) + Decimal(value.get("nanos") or 0) / Decimal(10 ** 9)
+            if amount <= 0:
+                raise scaleway.SourceInvalid(f"non_positive_price: {key} {amount}")
+            if key in seen:
+                if seen[key] != amount:   # 같은 상품이 페이지에 여러 번 나오는데 가격이 다르면 고르지 않는다
+                    raise scaleway.SourceInvalid(f"conflicting_prices: {key} {seen[key]} vs {amount}")
+                continue
+            seen[key] = amount
+            ram = (hardware.get("ram") or {}).get("size")
             rows.append({"name": name, "zone": zone["zone"], "unit": "minute", "amount": amount,
                          "gpus": (hardware.get("gpu") or {}).get("count"),
-                         "vcpu": ((hardware.get("cpu") or {}).get("virtual") or {}).get("count"), "ram_gb": None,
+                         "vcpu": ((hardware.get("cpu") or {}).get("virtual") or {}).get("count"),
+                         "ram_gb": Decimal(ram) / Decimal(10 ** 9) if ram else None,
                          "sku": per_minute.get("sku"), "source": "__NEXT_DATA__ perMinute"})
     return rows
 
@@ -225,6 +231,8 @@ def _from_table(text):
             amount = Decimal(match.group("price").replace(",", ""))
         except InvalidOperation:
             raise scaleway.SourceInvalid(f"invalid_table_price: {name} {match.group('price')}") from None
+        if amount <= 0:
+            raise scaleway.SourceInvalid(f"non_positive_table_price: {name} {amount}")
         rows.append({"name": name, "zone": None, "unit": "hour", "amount": amount, "gpus": int(match.group("gpus")),
                      "vcpu": int(match.group("cpu")), "ram_gb": Decimal(match.group("ram").replace(",", "")),
                      "sku": None, "source": "HTML 표 €/hour"})
@@ -330,7 +338,8 @@ def _write(conn, context, targets, capture, rows):
             db.add_evidence(conn, check_id, target["source_id"], "aggregator", view_url, version,
                             {**hit.excerpt, "primary_source": scaleway.API_URL.format(page="N")}, captured,
                             primary_verified=primary, verified_at=captured if primary else None)
-            scaleway.write_observation(conn, context, offer_id, check_id, hit, as_of, captured, alerts=False)
+            scaleway.write_observation(conn, {**context, "target": target}, offer_id, check_id, hit, as_of, captured,
+                                       alerts=False)
         counts["offers"] += len(found)
         if not found:
             counts["not_found"] += 1

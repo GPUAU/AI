@@ -10,11 +10,12 @@ price_normalization의 USD/GPU·시간 값(명목·실효)에 한국수출입은
   한 환산 행에 원화 환산이 여러 개면 쓴 환율의 기준일이 가장 늦은 것이 현재 값이다(조회할 때 그 행을 고른다).
 - 첫 환율보다 이른 관측은 쓸 환율이 없어 건너뛰고 fx_failed로 남긴다(환율 백필 필요).
 - 쓴 환율의 기준일이 관측일보다 4일 넘게 지났으면 fx_stale 알림(DR-04).
+- 시작할 때 비USD 사업자의 환율 미확정 USD 환산(rates.fill_pending)을 같은 규칙으로 먼저 채운다.
 """
 from datetime import date as date_type, datetime, timezone
 
 from .. import db
-from . import collect as fx
+from . import collect as fx, rates
 
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-krw 1"
 LOCK = "krw"
@@ -82,6 +83,7 @@ def convert(conn, *, since=None, now=None, trigger_type="manual"):
     run_id = db.begin_run(conn, now(), trigger_type, COLLECTOR_VERSION)
     conn.commit()
     try:
+        usd_filled = rates.fill_pending(conn)      # 비USD 사업자의 환율 미확정 USD 환산을 먼저 채운다
         pending, no_rate, first_missing, last_missing, latest = conn.execute(COUNTS, params).fetchone()
         calculated_at = now()
         converted, corrected, stale = conn.execute(INSERT, {**params, "calculated_at": calculated_at}).fetchone()
@@ -106,7 +108,7 @@ def convert(conn, *, since=None, now=None, trigger_type="manual"):
         conn.commit()
         raise
     return {"run_id": run_id, "status": status, "latest_rate_date": latest.isoformat() if latest else None,
-            "converted": converted, "corrected": corrected, "pending": pending, "no_rate": no_rate,
+            "usd_filled": usd_filled, "converted": converted, "corrected": corrected, "pending": pending, "no_rate": no_rate,
             "stale_alerts": len(stale)}
 
 

@@ -10,8 +10,8 @@
 - 제외: Elastic Metal 월 요금·설치비, Dedibox(기한 없는 월 구독의 1회 설치비라 약정으로 환산하면 단가가 왜곡된다),
   Inference Dedicated(관리형 추론), QaaS. 스팟·약정 상품은 없다.
 - 가격은 EUR. Instance는 분 단가, Elastic Metal은 시간 단가. USD 환산은 수출입은행 교차환율(EUR→KRW ÷ USD→KRW)로
-  관측일(KST) 이하 최신 기준일 환율을 쓴다(erd/fx/rates.py). 쓴 환율은 calculation_inputs에 남긴다. 환율이 없으면
-  환산은 not_computable로 남긴다. 매일 12시 collect fx → collect scaleway → convert krw 순서를 전제한다.
+  관측일(KST) 이하 최신 기준일 환율을 쓴다(erd/fx/rates.py). 쓴 환율은 calculation_inputs에 남긴다. 관측일 환율이
+  아직 확정되지 않았으면 not_computable(환율 미확정)으로 남기고 convert krw가 시작할 때 채운다. 매일 12시 collect fx → collect scaleway → convert krw 순서를 전제한다.
 - 스토리지는 Instance 가격에 포함되지 않는다(Block·Scratch 별도). 노드 간 네트워크는 비운다: API 값(Internal 20 Gb/s)은
   일반 VPC 대역폭이라 GPU 클러스터망이 아니다(근거에만 남김).
 - 카탈로그가 v2alpha1(알파)이라 필드가 바뀌면 검증 실패로 남긴다.
@@ -244,17 +244,14 @@ def normalize(conn, hit, component_ids, observed_on):
     amount = hit.components[0]["amount"]
     per_hour = amount * MINUTES_PER_HOUR if hit.unit == "minute" else amount
     inputs = {"component_ids": component_ids, "gpu_count": gpu_count, "time_unit": hit.unit,
-              "currency": hit.currency, "observed_on": observed_on.isoformat()}
-    fx = rates.usd_rate(conn, hit.currency, observed_on)
-    if fx is None:
-        return {"nominal": None, "effective": None, "status": "not_computable",
-                "reason": f"{observed_on} 이하 {hit.currency}·USD 같은 기준일 환율 없음", "inputs": inputs}
-    value = per_hour * fx["rate"] / gpu_count
-    inputs.update(currency_rate_id=fx["currency_rate_id"], usd_rate_id=fx["usd_rate_id"],
-                  reference_date=fx["reference_date"].isoformat() if fx["reference_date"] else None,
-                  currency_krw=str(fx.get("currency_krw")), usd_krw=str(fx.get("usd_krw")),
-                  formula=("분 단가 × 60" if hit.unit == "minute" else "시간 단가")
-                  + f" × ({hit.currency}→KRW ÷ USD→KRW) ÷ GPU 수")
+              "currency": hit.currency, "observed_on": observed_on.isoformat(),
+              "formula": ("분 단가 × 60" if hit.unit == "minute" else "시간 단가")
+              + f" × ({hit.currency}→KRW ÷ USD→KRW) ÷ GPU 수"}
+    fx_rate, reason = rates.usd_rate(conn, hit.currency, observed_on)
+    if fx_rate is None:
+        # 환율 미확정이면 convert krw가 시작할 때 rates.fill_pending이 채운다
+        return {"nominal": None, "effective": None, "status": "not_computable", "reason": reason, "inputs": inputs}
+    value, inputs = rates.apply(inputs, per_hour, gpu_count, fx_rate)
     return {"nominal": value, "effective": value, "status": "success", "reason": None, "inputs": inputs}
 
 
@@ -281,7 +278,8 @@ def write_group(conn, context, targets, results, checked_at):
             ensure_spec_evidence(conn, context, target, product_id, hit.product["original_product_name"], checked_at)
             db.add_evidence(conn, check_id, target["source_id"], "official", API_URL.format(page="N"), None,
                             hit.excerpt, checked_at)
-            status = write_observation(conn, context, offer_id, check_id, hit, checked_at, checked_at)
+            status = write_observation(conn, {**context, "target": target}, offer_id, check_id, hit, checked_at,
+                                       checked_at)
             counts["not_computable"] += status == "not_computable"
             seen.add(offer_id)
         counts["offers"] += len(result.hits)
@@ -305,6 +303,7 @@ def write_group(conn, context, targets, results, checked_at):
 
 def write_observation(conn, context, offer_id, check_id, hit, collected_at, calculated_at, *, alerts=True):
     """관측·가격 요소·USD 환산. alerts=False(과거 자료)면 fx_stale·급변 알림을 만들지 않는다. 반환: 환산 상태."""
+    target = context.get("target") or {}
     observation_id = db.add_observation(conn, offer_id, check_id, {**hit.observation, "collected_at": collected_at})
     component_ids = [db.add_component(conn, observation_id, c) for c in hit.components]
     observed_on = date_type.fromisoformat(runs.collection_date(None, lambda: collected_at))
@@ -313,10 +312,11 @@ def write_observation(conn, context, offer_id, check_id, hit, collected_at, calc
     reference = result["inputs"].get("reference_date")
     if alerts and reference and rates.stale(observed_on, date_type.fromisoformat(reference)):
         db.add_alert(conn, "fx_stale", calculated_at, f"fx_stale:{hit.currency}:{observed_on}:{reference}",
-                     run_id=context["run_id"], source_id=None,
+                     run_id=context["run_id"], target_id=target.get("target_id"), check_id=check_id,
+                     source_id=target.get("source_id"),
                      reason=f"{PROVIDER} USD 환산: 관측일 {observed_on}에 기준일 {reference} 환율 사용")
     if alerts:
-        check_spike(conn, context, offer_id, check_id, observation_id, calculated_at)
+        check_spike(conn, context, target, offer_id, check_id, observation_id, calculated_at)
     return result["status"]
 
 
@@ -342,7 +342,7 @@ def ensure_spec_evidence(conn, context, target, product_id, name, captured_at):
     return True
 
 
-def check_spike(conn, context, offer_id, check_id, observation_id, checked_at):
+def check_spike(conn, context, target, offer_id, check_id, observation_id, checked_at):
     current = conn.execute("SELECT effective_usd_gpu_hour FROM price_normalization WHERE observation_id = %s",
                            (observation_id,)).fetchone()[0]
     previous = db.previous_effective(conn, offer_id, context["rule"]["rule_id"], observation_id)
@@ -351,7 +351,8 @@ def check_spike(conn, context, offer_id, check_id, observation_id, checked_at):
     change = (current - previous[1]) / previous[1]
     if abs(change) > SPIKE_THRESHOLD:
         db.add_alert(conn, "price_spike", checked_at, f"price_spike:{observation_id}", run_id=context["run_id"],
-                     check_id=check_id, previous_observation_id=previous[0], current_observation_id=observation_id,
+                     target_id=target.get("target_id"), check_id=check_id, source_id=target.get("source_id"),
+                     previous_observation_id=previous[0], current_observation_id=observation_id,
                      rule_version=SPIKE_RULE, reason=f"실효 단가 {previous[1]} → {current} ({change * 100:+.1f}%)")
 
 

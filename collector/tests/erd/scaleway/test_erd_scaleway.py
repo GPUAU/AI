@@ -284,3 +284,44 @@ class History(ScalewayDb):
         observations = count(self.conn, "SELECT count(*) FROM price_observation")
         self.backfill()
         self.assertEqual(count(self.conn, "SELECT count(*) FROM price_observation"), observations)
+
+
+class PendingRate(ScalewayDb):
+    def test_rate_not_yet_published_is_filled_by_convert_krw_with_same_day_rate(self):
+        from gpu_collector.erd.fx import convert
+        self.conn.execute("DELETE FROM exchange_rate")
+        source = fx.source_id(self.conn)
+        fx.write_rates(self.conn, source, date(2026, 11, 19), {"USD": Decimal("1331.1"), "EUR": Decimal("1460.68")}, T0)
+        self.conn.commit()
+        self.collect()                                    # 11-20 환율 고시 전 수집
+        self.assertEqual({(r[8]) for r in self.rows()}, {"not_computable"})
+        reasons = {r[0] for r in self.conn.execute("SELECT reason FROM price_normalization").fetchall()}
+        self.assertEqual(reasons, {"환율 미확정"})
+        fx.write_rates(self.conn, source, date(2026, 11, 20), {"USD": Decimal("1330.8"), "EUR": Decimal("1459.62")}, T0)
+        self.conn.commit()
+        summary = convert.convert(self.conn, now=self.now)
+        self.assertEqual((summary["usd_filled"], summary["converted"]), (6, 6))
+        b300 = [r for r in self.rows() if r[0] == "B300-SXM-8-288G"][0]
+        self.assertEqual((b300[8], b300[9]["reference_date"]), ("success", "2026-11-20"))
+        krw = self.conn.execute(
+            """SELECT k.effective_krw_gpu_hour, e.reference_date::text FROM krw_conversion k
+               JOIN exchange_rate e USING (exchange_rate_id) JOIN price_normalization n USING (normalization_id)
+               JOIN price_observation ob USING (observation_id) JOIN offer o USING (offer_id)
+               JOIN product p USING (product_id) WHERE p.original_product_name = 'B300-SXM-8-288G'""").fetchone()
+        self.assertEqual(krw[1], "2026-11-20")                                   # USD·원화 같은 기준일
+        self.assertAlmostEqual(float(krw[0]), 60 * 1459.62 / 8, places=6)
+
+
+class ParserGuards(unittest.TestCase):
+    def test_conflicting_duplicate_prices_fail(self):
+        page = next_data_page([("H100-1-80G", 1, 24, 0, 45500000, ["fr-par-2"]),
+                               ("H100-1-80G", 1, 24, 0, 47775000, ["fr-par-2"])])
+        with self.assertRaises(scaleway.SourceInvalid):
+            scaleway_history.read_page(page)
+
+    def test_truncated_objects_with_name_first(self):
+        page = next_data_page([("H100-1-80G", 1, 24, 0, 47775000, ["fr-par-2"]),
+                               ("B300-SXM-8-288G", 8, 224, 1, 0, ["fr-par-2"])], "name").decode()
+        cut = page.rfind('"B300-SXM-8-288G"') + 30
+        rows = scaleway_history.read_page(page[:cut].encode())
+        self.assertEqual([r["name"] for r in rows], ["H100-1-80G"])
