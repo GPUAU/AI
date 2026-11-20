@@ -7,10 +7,11 @@ name = "gpu-collector"
 version = "0.1.0"
 description = "GPU 공개 가격 수집·적재 (ERD 스키마)"
 requires-python = ">=3.12"
+# 호환 범위만 적는다. Airflow 이미지에는 Airflow constraints로 설치해 Airflow가 검증한 버전에 맞춘다(airflow/Dockerfile).
 dependencies = [
-    "psycopg[binary]==3.2.10",
-    "ijson==3.3.0",
-    "requests==2.32.3",
+    "psycopg[binary]>=3.2.10,<4",
+    "ijson>=3.3,<4",
+    "requests>=2.32.3,<3",
 ]
 
 [project.optional-dependencies]
