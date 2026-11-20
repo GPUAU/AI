@@ -31,6 +31,8 @@
 
 **환율:** 응답의 통화 전부(22개, KRW 제외)의 매매기준율을 `{통화}→KRW`로 `exchange_rate`에 적재한다. `JPY(100)`·`IDR(100)`은 1단위로 나눠 저장하고, 교차환율(EUR→USD 등)은 저장하지 않고 환산할 때 계산한다. INR은 제공되지 않는다. 영업일 11시 전후에 그날 환율이 나오고 비영업일·갱신 전은 빈 응답이라, 매일 수집은 수집 기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재한다(주말은 호출하지 않음). 기준일이 4일 넘게 지나면 `fx_stale`, 실패하면 `fx_failed` 알림을 남긴다. 하루 1,000회 제한이라 백필은 `--max-calls`(기본 900)에서 멈추고, 다시 실행하면 적재하지 않은 날짜부터 이어서 적재한다.
 
+**원화 환산:** `convert krw`가 `price_normalization`의 USD/GPU·시간 값(명목·실효)에 USD→KRW 매매기준율을 곱해 `krw_conversion`에 넣는다. 환율은 **관측일(KST) 이하의 가장 최근 기준일** 것을 쓰고(주말·공휴일은 직전 영업일), **그날 환율이 확정된 관측만** 환산한다(적재된 최신 기준일이 관측일 이상). 고시 전이거나 다음 영업일 환율이 아직 없는 관측은 보류(`pending`)했다가 다음 실행에서 환산하므로, 언제 다시 실행해도 같은 관측에는 같은 환율이 붙는다. 곱셈은 DB numeric으로 해 반올림하지 않는다. 첫 환율보다 이른 관측은 `fx_failed`, 기준일이 4일 넘게 지난 환율을 쓰면 `fx_stale` 알림을 남긴다. 매일 순서는 매일 수집 → `collect fx` → `convert krw`.
+
 **스팟:** 매일 수집은 마지막으로 적재한 스팟 기록 이후에 바뀐 가격을 모두 받는다(기록 하나 = 관측 하나, 관측 시각 = 기록 시각). 처음 실행이면 AWS는 지금 적용 중인 가격, Nebius는 최근 1일을 받고, 그 전은 backfill로 채운다. 같은 오퍼·같은 시각의 기록은 매일 수집과 backfill을 통틀어 한 번만 적재한다. Nebius의 끝나지 않은 시간 구간 값은 다음 실행에서 확정값으로 적재한다. 며칠 실행하지 못해도 원천 보관 기간(AWS 90일, Nebius 30일) 안이면 다음 실행이 채운다.
 
 ## 로컬 실행
@@ -56,6 +58,7 @@ python -m gpu_collector.erd collect aws           # 매일 수집: aws | azure |
 python -m gpu_collector.erd collect aws --date 2026-11-20     # 수집 기준일 지정(KST, 생략하면 오늘)
 python -m gpu_collector.erd backfill aws --since 2023-07      # 과거 이력 (사업자별 옵션은 --help)
 python -m gpu_collector.erd backfill fx --since 2023-07-01    # 과거 환율(날짜는 YYYY-MM-DD, 하루 1,000회 제한)
+python -m gpu_collector.erd convert krw                       # USD 환산값을 원화로(원화 환산이 없는 행만)
 python -m gpu_collector.erd status record         # 랙스케일·출시 예정 모델 수기 상태 기록
 python -m gpu_collector.erd report --model B300   # 최신 가격과 대상별 마지막 점검
 ```
