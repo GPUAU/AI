@@ -37,7 +37,10 @@ RAW_URL = "https://web.archive.org/web/{timestamp}id_/{original}"
 VIEW_URL = "https://web.archive.org/web/{timestamp}/{original}"
 REQUEST_CONFIG = {"connect_timeout_s": 20, "read_idle_timeout_s": 180}
 SECONDS_BETWEEN_REQUESTS = 6      # Wayback이 연속 요청을 끊는다(연결 오류). 다시 실행하면 이어서 적재
-NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
+# 속성 순서가 저장본마다 다르다(<script id=… type=…> / <script type=… id=…>)
+NEXT_DATA = re.compile(r'<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
+NEXT_DATA_OPEN = re.compile(r'<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>')
+PRODUCT_START = re.compile(r'\{"apiId":"')
 INSTANCES = {name for name, spec in scaleway.SPECS.items() if spec["quote"] is not None}
 # 2024년 HTML 표 한 줄: 상품명 | 24 cores | 1 GPU | 240 GB | … | €2.52 | /hour
 TABLE_ROW = re.compile(r"(?P<name>(?:B300|H100)[A-Z0-9-]+) \| (?P<cpu>\d+) (?:cores|vCPUs) \| (?P<gpus>\d+) GPUs? \| "
@@ -126,7 +129,43 @@ def read_page(body):
         rows = _from_json(data)
         if rows:
             return rows
+    elif NEXT_DATA_OPEN.search(text):
+        # 저장본이 중간에 잘려 내장 JSON이 닫히지 않은 경우: 상품 객체만 괄호 짝을 맞춰 꺼낸다
+        start = NEXT_DATA_OPEN.search(text).end()
+        rows = _from_json(_complete_objects(text[start:]))
+        if rows:
+            return rows
     return _from_table(text)          # 2024~2025 초 저장본: 내장 JSON에 상품 가격이 없고 HTML 표에만 있다
+
+
+def _complete_objects(text):
+    """잘린 JSON 텍스트에서 {"apiId":… 로 시작하는 완결된 객체들. 문자열 안의 괄호는 세지 않는다."""
+    objects = []
+    for match in PRODUCT_START.finditer(text):
+        depth, in_string, escape = 0, False, False
+        for index in range(match.start(), len(text)):
+            char = text[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        objects.append(json.loads(text[match.start():index + 1]))
+                    except ValueError:
+                        pass
+                    break
+    return objects          # 2024~2025 초 저장본: 내장 JSON에 상품 가격이 없고 HTML 표에만 있다
 
 
 def _offer_name(node):

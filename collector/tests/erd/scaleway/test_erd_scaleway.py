@@ -191,7 +191,8 @@ def next_data_page(products, key="name"):
                                             "hourly": {"value": {"currencyCode": "EUR", "units": 99, "nanos": 0}}}}
                    for zone in zones]}
         for name, gpus, vcpu, units, nanos, zones in products]}]}}}}
-    return f'<html><script id="__NEXT_DATA__" type="application/json">{json.dumps(data)}</script></html>'.encode()
+    body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)      # 실제 페이지처럼 공백 없이
+    return f'<html><script id="__NEXT_DATA__" type="application/json">{body}</script></html>'.encode()
 
 
 TABLE_2024 = ("<table><tr><td>H100-1-80G</td><td></td><td>24 cores</td><td>1 GPU</td><td>240 GB</td>"
@@ -216,6 +217,19 @@ class Parsers(unittest.TestCase):
         rows = scaleway_history.read_page(gzip.compress(TABLE_2024))
         self.assertEqual([(r["name"], r["zone"], r["unit"], r["amount"], r["vcpu"]) for r in rows],
                          [("H100-1-80G", None, "hour", Decimal("2.52"), 24), ("H100-2-80G", None, "hour", Decimal("5.04"), 48)])
+
+    def test_next_data_with_other_attribute_order(self):
+        page = next_data_page([("B300-SXM-8-288G", 8, 224, 1, 0, ["fr-par-2"])]).replace(
+            b'<script id="__NEXT_DATA__" type="application/json">', b'<script type="application/json" id="__NEXT_DATA__">')
+        self.assertEqual(len(scaleway_history.read_page(page)), 1)
+
+    def test_truncated_next_data_reads_complete_product_objects(self):
+        page = next_data_page([("H100-1-80G", 1, 24, 0, 47775000, ["fr-par-2"]),
+                               ("B300-SXM-8-288G", 8, 224, 1, 0, ["fr-par-2"])], "apiId").decode()
+        page = page.replace('"hardware"', '"note":"brace } and quote \\" inside","hardware"', 1)
+        cut = page.rfind('"B300-SXM-8-288G"') + 30                     # B300 객체 중간에서 잘림
+        rows = scaleway_history.read_page(page[:cut].encode())
+        self.assertEqual([(r["name"], r["amount"]) for r in rows], [("H100-1-80G", Decimal("0.047775"))])
 
     def test_unknown_page_fails(self):
         with self.assertRaises(scaleway.SourceInvalid):
