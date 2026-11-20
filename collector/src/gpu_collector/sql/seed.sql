@@ -438,3 +438,13 @@ WHERE NOT EXISTS (
     SELECT 1 FROM collection_target t
     WHERE t.provider_id = p.provider_id AND t.gpu_model_id = m.gpu_model_id AND t.source_id = s.source_id
       AND t.region_filter IS NULL AND t.contract_filter IS NULL);
+
+-- 환율 (한국수출입은행) ----------------------------------------------------------------------------------------------
+-- 현재환율 API(data=AP01)의 매매기준율을 응답 통화 전부에 대해 '{통화}→KRW'로 적재한다(erd/fx/collect.py).
+-- OR-02 이용 조건(2026-11-20 확인, 같은 날 사용자 승인): API 페이지의 이용허락조건 표시는 공공누리 미적용이다
+-- (공공누리 1~4유형 아님, 자유 이용 허락 아님). 인증키를 발급받아 호출하도록 공개한 API이고, 환율은 내부 환산에만 쓰며
+-- 원시 데이터를 외부에 재배포하지 않는다. 하루 1,000회 제한, 영업일 11시 전후 갱신. 인증키는 KOREAEXIM_API_KEY로 주입한다.
+INSERT INTO data_source (source_name, source_type, base_url, collection_method, terms_status, terms_checked_at, terms_url)
+VALUES ('koreaexim_exchange_api', 'fx_source', 'https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON',
+        'api', 'allowed', '2026-11-20T00:00:00Z', 'https://www.koreaexim.go.kr/ir/HPHKIR020M01?apino=2&viewtype=C')
+ON CONFLICT (source_name) DO NOTHING;
