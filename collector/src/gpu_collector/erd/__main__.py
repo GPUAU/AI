@@ -24,6 +24,9 @@
                                                        기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재
   python -m gpu_collector.erd backfill fx --since 2023-07-01 [--until 2026-11-20] [--max-calls 900]
                                                        과거 영업일 환율(이미 적재한 날짜는 건너뜀, 하루 1,000회 제한)
+  python -m gpu_collector.erd convert krw [--since 2023-07-01]
+                                                       USD 환산값을 원화로(관측일 이하 최신 USD→KRW 매매기준율, 그날 환율이
+                                                       확정된 관측만. 원화 환산이 없는 행만 적재)
   python -m gpu_collector.erd status record            랙스케일·출시 예정 모델 공개 상태 수기 확인 기록(erd/status.py, 월 1회)
   python -m gpu_collector.erd specs aws                 이미 적재한 AWS 상품에 모델 원문·사양 근거(상호연결)를 채운다(1회)
   python -m gpu_collector.erd specs oracle              이미 적재한 Oracle 상품에 vCPU(x86)·NVLink 근거를 채운다(1회, 구성 버전 유지)
@@ -56,7 +59,7 @@ from .aws import collect as aws, history as aws_history
 from .azure import collect as azure, history as azure_history
 from .verda import collect as verda, history as verda_history
 from .nebius import collect as nebius, history as nebius_history
-from .fx import collect as fx
+from .fx import collect as fx, convert as krw
 from .oracle import collect as oracle, history as oracle_history, skypilot as oracle_skypilot
 from . import runs, status
 
@@ -116,6 +119,9 @@ def parse(argv):
     b.add_argument("--workers", type=int, default=3, help="미리 받을 파일 수")
     b.add_argument("--every", default="month", choices=["month", "week", "day"], help="Azure 스냅샷 간격")
     b.add_argument("--no-verify", action="store_true", help="Azure·Verda·Oracle: 공식 API와 대조하지 않는다")
+    cv = sub.add_parser("convert")
+    cv.add_argument("target", choices=["krw"])
+    cv.add_argument("--since", help="관측일(KST) YYYY-MM-DD부터만 (생략하면 전체)")
     st = sub.add_parser("status")
     st.add_argument("action", choices=["record"])
     sp = sub.add_parser("specs")
@@ -132,6 +138,8 @@ def lock_name(args):
     """같은 이름끼리 동시에 실행하지 않는다. 사업자의 collect·backfill·specs는 같은 이름을 쓴다."""
     if args.command in ("collect", "backfill", "specs"):
         return args.provider
+    if args.command == "convert":
+        return krw.LOCK
     if args.command == "status":
         return "status"
     return None
@@ -178,6 +186,8 @@ def run(conn, args, abandoned):
         return EXIT_OK
     if args.command == "status":
         summary = status.record(conn)
+    elif args.command == "convert":
+        summary = krw.convert(conn, since=args.since)
     elif args.command == "specs":
         summary = (oracle if args.provider == "oracle" else aws).attach_specs(conn)
     elif args.command == "collect":
