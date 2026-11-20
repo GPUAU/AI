@@ -52,4 +52,4 @@ docker run --rm --entrypoint bash -v "$PWD/collector/tests:/tests:ro" \
 ## 예정 작업
 
 - 일일 수집 DAG와 로컬 Airflow(docker compose) — 별도 이슈
-- 인프라 준비 후: ECR 푸시, CI 이미지 빌드
+- 인프라 준비 후: Harbor 푸시, CI 이미지 빌드
