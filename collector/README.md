@@ -9,6 +9,7 @@
 | `src/gpu_collector/sql/` | `ddl.sql`(스키마), `seed.sql`(사업자·모델·환산 규칙·출처·수집 대상). 패키지에 함께 설치된다 |
 | `src/gpu_collector/erd/` | 수집 명령(`__main__.py`), DB 적재 공통(`db.py`), 수기 상태 기록(`status.py`) |
 | `src/gpu_collector/erd/{aws,azure,verda,nebius}/` | 사업자별 매일 수집(`collect.py`)·과거 이력 백필(`history.py`) |
+| `src/gpu_collector/erd/fx/` | 환율 매일 수집·백필(한국수출입은행, `collect.py`) |
 | `src/gpu_collector/` | 공통 모듈: HTTP 조회(`fetch`), 파일 캐시(`download`), 비밀값(`env`), AWS 가격 파일 파서(`aws_offer`, `aws_savings`) |
 | `tests/erd/` | 사업자별·스키마 테스트. `support.py`가 임시 DB를 만들고 지운다 |
 | `scripts/migrate_data.sh` | 예전 스키마 DB의 데이터를 현재 스키마 DB로 옮기기 |
@@ -22,6 +23,9 @@
 | Azure | Retail Prices API | GitHub 일별 스냅샷 |
 | Verda | 공개 API(인스턴스 가격, 약정 할인율) | Wayback 저장본 |
 | Nebius | 문서 가격표, 공개 스팟 가격 시계열 API(1시간 간격) | 스팟 30일, 문서 Wayback 저장본 |
+| 환율(`fx`) | 한국수출입은행 현재환율 API(매매기준율) | 같은 API의 과거 영업일 조회 |
+
+**환율:** 응답의 통화 전부(22개, KRW 제외)의 매매기준율을 `{통화}→KRW`로 `exchange_rate`에 적재한다. `JPY(100)`·`IDR(100)`은 1단위로 나눠 저장하고, 교차환율(EUR→USD 등)은 저장하지 않고 환산할 때 계산한다. INR은 제공되지 않는다. 영업일 11시 전후에 그날 환율이 나오고 비영업일·갱신 전은 빈 응답이라, 매일 수집은 수집 기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재한다(주말은 호출하지 않음). 기준일이 4일 넘게 지나면 `fx_stale`, 실패하면 `fx_failed` 알림을 남긴다. 하루 1,000회 제한이라 백필은 `--max-calls`(기본 900)에서 멈추고, 다시 실행하면 적재하지 않은 날짜부터 이어서 적재한다.
 
 **스팟:** 매일 수집은 마지막으로 적재한 스팟 기록 이후에 바뀐 가격을 모두 받는다(기록 하나 = 관측 하나, 관측 시각 = 기록 시각). 처음 실행이면 AWS는 지금 적용 중인 가격, Nebius는 최근 1일을 받고, 그 전은 backfill로 채운다. 같은 오퍼·같은 시각의 기록은 매일 수집과 backfill을 통틀어 한 번만 적재한다. Nebius의 끝나지 않은 시간 구간 값은 다음 실행에서 확정값으로 적재한다. 며칠 실행하지 못해도 원천 보관 기간(AWS 90일, Nebius 30일) 안이면 다음 실행이 채운다.
 
@@ -44,9 +48,10 @@ uv 없이 할 때: `python3.12 -m venv .venv && source .venv/bin/activate && pip
 
 ```bash
 python -m gpu_collector.erd init                  # 빈 DB면 DDL 적용, 이어서 seed 적용
-python -m gpu_collector.erd collect aws           # 매일 수집: aws | azure | verda | nebius
+python -m gpu_collector.erd collect aws           # 매일 수집: aws | azure | verda | nebius | fx(환율)
 python -m gpu_collector.erd collect aws --date 2026-11-20     # 수집 기준일 지정(KST, 생략하면 오늘)
 python -m gpu_collector.erd backfill aws --since 2023-07      # 과거 이력 (사업자별 옵션은 --help)
+python -m gpu_collector.erd backfill fx --since 2023-07-01    # 과거 환율(날짜는 YYYY-MM-DD, 하루 1,000회 제한)
 python -m gpu_collector.erd status record         # 랙스케일·출시 예정 모델 수기 상태 기록
 python -m gpu_collector.erd report --model B300   # 최신 가격과 대상별 마지막 점검
 ```
@@ -112,4 +117,5 @@ pytest
 | `DATABASE_URL` | 실제 수집 데이터를 적재하는 DB(`gpu_erd`). collect·backfill 명령이 쓴다. 필수 |
 | `TEST_DATABASE_URL` | 테스트가 접속하는 관리용 DB(`postgres`). 여기서 임시 DB를 만들어 시험하고 지운다. 실제 데이터 DB를 건드리지 않도록 따로 둔다 |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS 가격 API 호출(IAM 사용자 `gpu-price-collector`, 가격 조회 권한만). EKS에서는 Kubernetes Secret으로 주입하고 이미지·저장소에 넣지 않는다 |
+| `KOREAEXIM_API_KEY` | 한국수출입은행 현재환율 API 인증키(`collect fx`·`backfill fx`). 발급 2년 뒤 파기되므로(등록 이메일로 재동의하면 연장) 종료 코드 3과 `result_3`이 나오면 키 만료를 먼저 확인한다. EKS에서는 Kubernetes Secret으로 주입한다 |
 | `CACHE_DIR` | 원천 파일 캐시 위치. 선택, 기본 `./var/cache` |
