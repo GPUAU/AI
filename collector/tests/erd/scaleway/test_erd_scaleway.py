@@ -174,3 +174,99 @@ class Collect(ScalewayDb):
         self.assertEqual(self.collect()["groups"][0]["status"], "collection_failed")
         self.products = catalog()
         self.assertEqual(self.collect()["status"], "success")
+
+
+# 과거 이력(Wayback 가격 페이지) ----------------------------------------------------------
+
+import gzip
+
+from gpu_collector.erd.scaleway import history as scaleway_history
+
+
+def next_data_page(products, key="name"):
+    data = {"props": {"pageProps": {"externalData": {"ranges": [{"name": "NVIDIA H100", "products": [
+        {key: name, "hardware": {"gpu": {"count": gpus}, "cpu": {"virtual": {"count": vcpu}}},
+         "zones": [{"zone": zone, "price": {"perMinute": {"sku": f"/compute/{name.lower()}/run_{zone}",
+                                                         "value": {"currencyCode": "EUR", "units": units, "nanos": nanos}},
+                                            "hourly": {"value": {"currencyCode": "EUR", "units": 99, "nanos": 0}}}}
+                   for zone in zones]}
+        for name, gpus, vcpu, units, nanos, zones in products]}]}}}}
+    return f'<html><script id="__NEXT_DATA__" type="application/json">{json.dumps(data)}</script></html>'.encode()
+
+
+TABLE_2024 = ("<table><tr><td>H100-1-80G</td><td></td><td>24 cores</td><td>1 GPU</td><td>240 GB</td>"
+              "<td>Block Storage</td><td>10 Gbps</td><td>€2.52</td><td>/hour</td><td>€1839.6</td><td>/month</td></tr>"
+              "<tr><td>H100-2-80G</td><td>48 cores</td><td>2 GPU</td><td>480 GB</td><td>Block Storage</td>"
+              "<td>20 Gbps</td><td>€5.04</td><td>/hour</td></tr></table>").encode()
+
+CDX = [["timestamp", "original", "digest"],
+       ["20240524045214", "https://www.scaleway.com/en/pricing/gpu/", "A"],
+       ["20250322230659", "https://www.scaleway.com/en/pricing/gpu/", "B"],
+       ["20260307002714", "https://www.scaleway.com/en/pricing/gpu/", "C"]]
+
+
+class Parsers(unittest.TestCase):
+    def test_json_name_and_apiid_and_table(self):
+        rows = scaleway_history.read_page(next_data_page([("B300-SXM-8-288G", 8, 224, 1, 0, ["fr-par-2"])]))
+        self.assertEqual([(r["name"], r["zone"], r["unit"], r["amount"]) for r in rows],
+                         [("B300-SXM-8-288G", "fr-par-2", "minute", Decimal(1))])
+        rows = scaleway_history.read_page(next_data_page([("H100-1-80G", 1, 24, 0, 45500000, ["fr-par-2", "pl-waw-2"])],
+                                                         key="apiId"))
+        self.assertEqual({(r["zone"], r["amount"]) for r in rows}, {("fr-par-2", Decimal("0.0455")), ("pl-waw-2", Decimal("0.0455"))})
+        rows = scaleway_history.read_page(gzip.compress(TABLE_2024))
+        self.assertEqual([(r["name"], r["zone"], r["unit"], r["amount"], r["vcpu"]) for r in rows],
+                         [("H100-1-80G", None, "hour", Decimal("2.52"), 24), ("H100-2-80G", None, "hour", Decimal("5.04"), 48)])
+
+    def test_unknown_page_fails(self):
+        with self.assertRaises(scaleway.SourceInvalid):
+            scaleway_history.read_page(b"<html>nothing</html>")
+
+
+class History(ScalewayDb):
+    def setUp(self):
+        super().setUp()
+        source = fx.source_id(self.conn)
+        for day, eur, usd in ((date(2024, 5, 24), "1470", "1360"), (date(2025, 3, 21), "1580", "1460"),
+                              (date(2026, 3, 6), "1500", "1350")):
+            fx.write_rates(self.conn, source, day, {"USD": Decimal(usd), "EUR": Decimal(eur)}, T0)
+        self.conn.commit()
+        self.pages = {"20240524045214": gzip.compress(TABLE_2024),
+                      "20250322230659": next_data_page([("H100-1-80G", 1, 24, 0, 45500000, ["fr-par-2", "pl-waw-2"])], "apiId"),
+                      "20260307002714": next_data_page([("B300-SXM-8-288G", 8, 224, 1, 0, ["fr-par-2"]),
+                                                        ("H100-1-80G", 1, 24, 0, 47775000, ["fr-par-2", "pl-waw-2"])])}
+
+    def get_json(self, url, config):
+        if url.startswith("https://web.archive.org/cdx/"):
+            return CDX
+        return super().get_json(url, config)
+
+    def backfill(self):
+        return scaleway_history.backfill(self.conn, since="2024-01", until="2026-11", now=self.now, get_json=self.get_json,
+                                         get_bytes=lambda url, config: self.pages[url.split("/web/")[1].split("id_/")[0]],
+                                         pause=lambda _s: None, log=lambda _m: None)
+
+    def test_backfill_attaches_zoned_history_to_daily_products_and_2024_to_unknown_region(self):
+        self.collect()
+        summary = self.backfill()
+        self.assertEqual(summary["status"], "success")
+        rows = self.conn.execute(
+            """SELECT p.original_product_name, p.region_code, ob.collected_at::date::text, pc.amount, pc.time_unit,
+                      n.result_status
+               FROM price_observation ob JOIN offer o USING (offer_id) JOIN product p USING (product_id)
+               JOIN price_component pc ON pc.observation_id = ob.observation_id
+               JOIN price_normalization n ON n.observation_id = ob.observation_id
+               WHERE ob.collected_at < '2026-11-01' ORDER BY 1, 2, 3""").fetchall()
+        self.assertIn(("H100-1-80G", None, "2024-05-24", Decimal("2.52"), "hour", "success"), rows)
+        self.assertIn(("H100-1-80G", "pl-waw-2", "2025-03-22", Decimal("0.0455"), "minute", "success"), rows)
+        self.assertIn(("B300-SXM-8-288G", "fr-par-2", "2026-03-07", Decimal("1"), "minute", "success"), rows)
+        # 매일 수집 상품(zone 있음)은 새 구성 버전 없이 이어받는다
+        self.assertEqual(count(self.conn, """SELECT count(*) FROM product WHERE region_code IS NOT NULL
+                                              AND configuration_version > 1"""), 0)
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM collection_alert"), 0)
+
+    def test_rerun_skips_loaded_captures(self):
+        self.collect()
+        self.backfill()
+        observations = count(self.conn, "SELECT count(*) FROM price_observation")
+        self.backfill()
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM price_observation"), observations)

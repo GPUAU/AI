@@ -303,19 +303,19 @@ def write_group(conn, context, targets, results, checked_at):
     return counts
 
 
-def write_observation(conn, context, offer_id, check_id, hit, collected_at, calculated_at, *, spike=True):
-    """관측·가격 요소·USD 환산. 반환: 환산 상태."""
+def write_observation(conn, context, offer_id, check_id, hit, collected_at, calculated_at, *, alerts=True):
+    """관측·가격 요소·USD 환산. alerts=False(과거 자료)면 fx_stale·급변 알림을 만들지 않는다. 반환: 환산 상태."""
     observation_id = db.add_observation(conn, offer_id, check_id, {**hit.observation, "collected_at": collected_at})
     component_ids = [db.add_component(conn, observation_id, c) for c in hit.components]
     observed_on = date_type.fromisoformat(runs.collection_date(None, lambda: collected_at))
     result = normalize(conn, hit, component_ids, observed_on)
     db.add_normalization(conn, observation_id, context["rule"]["rule_id"], result, calculated_at)
     reference = result["inputs"].get("reference_date")
-    if reference and rates.stale(observed_on, date_type.fromisoformat(reference)):
+    if alerts and reference and rates.stale(observed_on, date_type.fromisoformat(reference)):
         db.add_alert(conn, "fx_stale", calculated_at, f"fx_stale:{hit.currency}:{observed_on}:{reference}",
                      run_id=context["run_id"], source_id=None,
                      reason=f"{PROVIDER} USD 환산: 관측일 {observed_on}에 기준일 {reference} 환율 사용")
-    if spike:
+    if alerts:
         check_spike(conn, context, offer_id, check_id, observation_id, calculated_at)
     return result["status"]
 
