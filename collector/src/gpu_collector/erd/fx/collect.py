@@ -187,28 +187,52 @@ def collect(conn, *, trigger_type="manual", now=None, date=None, fetch_day=None)
     return {"run_id": run_id, "date": day.isoformat(), "status": status, "groups": [outcome]}
 
 
+def last_loaded(conn, source, day):
+    return conn.execute(
+        """SELECT max(reference_date) FROM exchange_rate
+           WHERE source_id = %s AND quote_currency = %s AND reference_date <= %s""", (source, QUOTE, day)).fetchone()[0]
+
+
 def _collect_day(conn, source, run_id, day, fetch_day, now):
-    """기준일부터 거슬러 올라가 첫 영업일 환율을 찾는다. 이미 적재한 날을 만나면 호출하지 않고 멈춘다."""
-    calls = 0
-    for back in range(LOOKBACK_DAYS + 1):
-        candidate = day - timedelta(days=back)
-        if loaded_days(conn, source, candidate, candidate):
-            outcome = {"source": SOURCE, "status": "skipped", "reference_date": candidate.isoformat(), "calls": calls,
-                       "reason": "이 기준일 환율을 이미 적재함"}
-            break
-        if not business_day(candidate):
-            continue
-        rates = read_rates(fetch_day(candidate))
-        calls += 1
-        if rates is None:
-            continue
-        inserted = write_rates(conn, source, candidate, rates, now())
-        conn.commit()
-        outcome = {"source": SOURCE, "status": "success", "reference_date": candidate.isoformat(), "calls": calls,
-                   "currencies": len(rates), "inserted": inserted}
-        break
-    else:
+    """기준일 환율을 적재한다. 마지막 적재일 다음날부터 기준일까지 빠진 영업일도 함께 채운다(최대 LOOKBACK_DAYS).
+
+    며칠 실패한 뒤 성공해도 그 사이 영업일 환율이 비지 않게 한다. 비어 있으면 원화 환산이 그 날짜에 직전 환율을
+    쓰게 된다. 적재한 날이 하나도 없던 DB면 기준일에서 가장 가까운 영업일 하나만 찾는다(그 이전은 backfill fx)."""
+    last = last_loaded(conn, source, day)
+    if last == day:
+        return _stale_check(conn, source, run_id, day, now, {
+            "source": SOURCE, "status": "skipped", "reference_date": day.isoformat(), "calls": 0,
+            "reason": "이 기준일 환율을 이미 적재함"})
+    floor = day - timedelta(days=LOOKBACK_DAYS)
+    lower = max(last + timedelta(days=1), floor) if last else floor
+    calls, inserted, loaded = 0, 0, []
+    candidate = day
+    while candidate >= lower:
+        if business_day(candidate):
+            rates = read_rates(fetch_day(candidate))
+            calls += 1
+            if rates is not None:
+                inserted += write_rates(conn, source, candidate, rates, now())
+                conn.commit()
+                loaded.append(candidate)
+                if last is None:
+                    break                 # 첫 적재: 가장 가까운 영업일 하나만
+        candidate -= timedelta(days=1)
+    reference = loaded[0] if loaded else last
+    if reference is None:
         raise SourceInvalid(f"{day} 이전 {LOOKBACK_DAYS}일 안에 환율이 없음")
+    outcome = {"source": SOURCE, "status": "success" if loaded else "skipped", "reference_date": reference.isoformat(),
+               "calls": calls, "inserted": inserted}
+    if len(loaded) > 1 or (loaded and loaded[0] != day):
+        outcome["loaded_dates"] = [d.isoformat() for d in sorted(loaded)]
+    if not loaded:
+        outcome["reason"] = "기준일 환율이 아직 없음(비영업일·고시 전). 직전 적재일 환율 사용"
+    if last is not None and last < floor - timedelta(days=1):
+        outcome["gap_before"] = f"{last + timedelta(days=1)}~{floor - timedelta(days=1)}: backfill fx로 채워야 함"
+    return _stale_check(conn, source, run_id, day, now, outcome)
+
+
+def _stale_check(conn, source, run_id, day, now, outcome):
     reference = date_type.fromisoformat(outcome["reference_date"])
     if (day - reference).days > STALE_DAYS:
         db.add_alert(conn, "fx_stale", now(), f"fx_stale:{day}:{reference}", run_id=run_id, source_id=source,

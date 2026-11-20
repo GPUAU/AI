@@ -103,3 +103,28 @@ class KrwConversion(OracleDb):
         self.convert()
         stored = self.conn.execute("SELECT DISTINCT effective_krw_gpu_hour FROM krw_conversion").fetchall()
         self.assertEqual(stored, [(Decimal("6458.567152796803652968036529826"),)])
+
+    def test_late_missing_rate_adds_correction_row(self):
+        self.rate(date(2026, 11, 13), "1320")                            # 금
+        self.rate(date(2026, 11, 18), "1340")                            # 수 (월·화 환율 수집 실패로 비어 있음)
+        self.observe(datetime(2026, 11, 17, 12, 0, tzinfo=KST))         # 화 관측 → 일단 금요일 환율
+        self.assertEqual(self.convert()["converted"], 6)
+        self.rate(date(2026, 11, 17), "1335")                            # 뒤늦게 화요일 환율 적재
+        summary = self.convert()
+        self.assertEqual((summary["converted"], summary["corrected"]), (6, 6))
+        current = self.conn.execute(
+            """SELECT DISTINCT ON (k.normalization_id) e.reference_date::text FROM krw_conversion k
+               JOIN exchange_rate e USING (exchange_rate_id) ORDER BY k.normalization_id, e.reference_date DESC""").fetchall()
+        self.assertEqual({r[0] for r in current}, {"2026-11-17"})
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM krw_conversion"), 12)      # 기존 행은 남김
+
+    def test_no_rate_alert_is_not_repeated_on_rerun(self):
+        self.observe(datetime(2026, 11, 18, 12, 0, tzinfo=KST))
+        self.rate(date(2026, 11, 20), "1330.8")
+        self.convert()
+        self.convert()
+        self.assertEqual(count(self.conn, "SELECT count(*) FROM collection_alert WHERE alert_type = 'fx_failed'"), 1)
+
+    def test_cli_trigger(self):
+        args = cli.parse(["convert", "krw", "--trigger", "scheduled"])
+        self.assertEqual(args.trigger, "scheduled")

@@ -122,6 +122,7 @@ def parse(argv):
     cv = sub.add_parser("convert")
     cv.add_argument("target", choices=["krw"])
     cv.add_argument("--since", help="관측일(KST) YYYY-MM-DD부터만 (생략하면 전체)")
+    cv.add_argument("--trigger", default="manual", choices=["manual", "scheduled", "retry"])
     st = sub.add_parser("status")
     st.add_argument("action", choices=["record"])
     sp = sub.add_parser("specs")
@@ -187,7 +188,7 @@ def run(conn, args, abandoned):
     if args.command == "status":
         summary = status.record(conn)
     elif args.command == "convert":
-        summary = krw.convert(conn, since=args.since)
+        summary = krw.convert(conn, since=args.since, trigger_type=args.trigger)
     elif args.command == "specs":
         summary = (oracle if args.provider == "oracle" else aws).attach_specs(conn)
     elif args.command == "collect":
