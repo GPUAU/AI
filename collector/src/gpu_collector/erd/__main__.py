@@ -20,6 +20,10 @@
   python -m gpu_collector.erd backfill oracle --since 2026-05 [--until 2026-11] [--no-verify]
                                                        Wayback 정가 API 응답 저장본(2026-05~)·SkyPilot 카탈로그(2025-01~)로
                                                        Oracle 과거 정가 적재(집계 출처, --only로 출처 선택)
+  python -m gpu_collector.erd collect scaleway [--date ...] [--trigger ...]  Scaleway 공개 카탈로그 API(B300·H100, EUR → 교차환율 USD)
+  python -m gpu_collector.erd backfill scaleway --since 2024-05 [--until 2026-11]
+                                                       Wayback GPU 가격 페이지 저장본(집계): 2025~ 내장 JSON 리전별 분 단가,
+                                                       2024 HTML 표 시간 단가(리전 미상)
   python -m gpu_collector.erd collect fx [--date ...] [--trigger ...]      한국수출입은행 현재환율 API(매매기준율, 응답 통화 전부→KRW)
                                                        기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재
   python -m gpu_collector.erd backfill fx --since 2023-07-01 [--until 2026-11-20] [--max-calls 900]
@@ -61,6 +65,7 @@ from .verda import collect as verda, history as verda_history
 from .nebius import collect as nebius, history as nebius_history
 from .fx import collect as fx, convert as krw
 from .oracle import collect as oracle, history as oracle_history, skypilot as oracle_skypilot
+from .scaleway import collect as scaleway, history as scaleway_history
 from . import runs, status
 
 SQL = resources.files("gpu_collector") / "sql"
@@ -72,7 +77,8 @@ EXIT_BY_STATUS = {"success": EXIT_OK, "partial_failure": EXIT_PARTIAL, "failed":
 # DB 시간 제한: 접속 10초, 문 하나 10분, 잠금 대기 30초. 네트워크 단절·잠금 대기로 무한히 멈추지 않게 한다.
 CONNECT_TIMEOUT_S = 10
 DB_OPTIONS = "-c statement_timeout=600000 -c lock_timeout=30000"
-COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius, "oracle": oracle, "fx": fx}
+COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius, "oracle": oracle, "scaleway": scaleway,
+              "fx": fx}
 NO_BACKFILL = set()           # 과거 이력 적재가 없는 수집기
 
 
@@ -108,7 +114,7 @@ def parse(argv):
     c.add_argument("--trigger", default="manual", choices=["manual", "scheduled", "retry"])
     b = sub.add_parser("backfill")
     b.add_argument("provider", choices=sorted(set(COLLECTORS) - NO_BACKFILL))
-    b.add_argument("--since", help="YYYY-MM부터 (aws·azure·verda·oracle 필수). fx는 YYYY-MM-DD")
+    b.add_argument("--since", help="YYYY-MM부터 (aws·azure·verda·oracle·scaleway 필수). fx는 YYYY-MM-DD")
     b.add_argument("--days", type=int, default=29, help="Nebius 스팟 이력 일수(최대 29)")
     b.add_argument("--until", help="YYYY-MM까지(생략하면 이번 달). fx는 YYYY-MM-DD(생략하면 오늘)")
     b.add_argument("--max-calls", type=int, default=fx.MAX_CALLS, help="fx: 이번 실행의 API 호출 상한")
@@ -214,6 +220,8 @@ def backfill(conn, args):
         return fx.backfill(conn, since=args.since, until=args.until, max_calls=args.max_calls)
     if args.provider == "oracle":
         return oracle_backfill(conn, args, only)
+    if args.provider == "scaleway":
+        return scaleway_history.backfill(conn, since=args.since, until=args.until)
     if args.provider == "nebius":
         return nebius_history.backfill(conn, days=args.days, verify=not args.no_verify, only=only)
     if args.provider == "verda":
