@@ -52,4 +52,5 @@ docker run --rm --entrypoint bash -v "$PWD/collector/tests:/tests:ro" \
 ## 예정 작업
 
 - 일일 수집 DAG와 로컬 Airflow(docker compose) — 별도 이슈
+  - 기반 이미지를 `apache/airflow:slim-3.3.2-python3.12`로 바꾸고 필요한 provider만 추가(postgres, cncf.kubernetes 등). 공식 이미지는 쓰지 않는 provider(Celery·Redis 등)가 많아 무겁다
 - 인프라 준비 후: Harbor 푸시, CI 이미지 빌드
