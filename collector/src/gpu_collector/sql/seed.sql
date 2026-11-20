@@ -445,8 +445,10 @@ WHERE NOT EXISTS (
 -- 상품은 모델별 베어메탈 구성(BM.GPU.B300.8 등). GB300·GB200은 NVL72 랙의 4 GPU 노드(BM.GPU.GB300.4·GB200.4)다.
 -- 스팟(선점형)·약정 가격은 API에 없어 대상에 넣지 않는다. 선점형 인스턴스(온디맨드의 50%)는 Preemptible Instances 문서의
 -- 지원 구성(Supported Shapes)에 GPU가 VM.GPU2(P100)·VM.GPU3(V100)만 있어 대상 모델에는 해당하지 않는다(2026-11-20 확인).
--- 과거 이력은 Wayback의 정가 API 응답 저장본(2026-05부터)만 쓸 수 있다. oracle.com 가격 페이지는 가격 칸을 브라우저에서
--- 같은 API로 채워 HTML 저장본에 값이 없다.
+-- 과거 이력: Wayback의 정가 API 응답 저장본(2026-05부터)과 SkyPilot 카탈로그(OCI vms.csv 커밋 이력, H100·H200은
+-- 2025-01부터, Blackwell 계열은 2026-11부터). SkyPilot의 OCI 수집기(fetch_oci.py)는 같은 정가 API로 카탈로그를 만든다.
+-- 카탈로그 저장소에 LICENSE 파일이 없어 이용 조건은 미확인이다(2026-11-20 확인). oracle.com 가격 페이지는 가격 칸을
+-- 브라우저에서 같은 API로 채워 HTML 저장본에 값이 없다.
 INSERT INTO provider (provider_name, provider_type, official_url)
 VALUES ('Oracle', 'hyperscaler', 'https://www.oracle.com/cloud/')
 ON CONFLICT (provider_name) DO NOTHING;
@@ -464,7 +466,10 @@ VALUES ('oracle_price_list_api', 'official_api', 'https://apexapps.oracle.com/pl
         'manual', 'allowed', '2026-11-20T00:00:00Z', 'https://www.oracle.com/legal/terms/'),
        ('oracle_price_list_api_wayback', 'aggregator',
         'https://web.archive.org/web/*/apexapps.oracle.com/pls/apex/cetools/api/v1/products/*',
-        'api', 'unknown', NULL, 'https://archive.org/about/terms.php')
+        'api', 'unknown', NULL, 'https://archive.org/about/terms.php'),
+       ('oracle_skypilot_catalog', 'aggregator',
+        'https://github.com/skypilot-org/skypilot-catalog/tree/master/catalogs',
+        'file', 'unknown', NULL, 'https://github.com/skypilot-org/skypilot-catalog')
 ON CONFLICT (source_name) DO NOTHING;
 
 INSERT INTO collection_target (provider_id, gpu_model_id, source_id, region_filter, contract_filter, scope_description)
@@ -472,6 +477,7 @@ SELECT p.provider_id, m.gpu_model_id, s.source_id, NULL, v.contract, v.descripti
 FROM (VALUES
     ('oracle_price_list_api', 'on_demand', '공개 정가 API의 GPU 1장·시간 Pay As You Go 정가 (USD, 리전 단일가)'),
     ('oracle_price_list_api_wayback', 'on_demand', 'Wayback 정가 API 응답 저장본의 Pay As You Go 정가 (집계, 과거 이력, USD 전체 목록만)'),
+    ('oracle_skypilot_catalog', 'on_demand', 'SkyPilot 카탈로그 OCI vms.csv 커밋별 노드 시간당 가격 (집계, 과거 이력, 커밋 시각 기준)'),
     ('oracle_compute_shapes_docs', NULL, 'Compute Shapes 문서의 베어메탈 GPU 구성(GPU 수·GPU 메모리·CPU 메모리·로컬 디스크·RDMA, 수기 확인 근거)')
 ) AS v (source, contract, description)
 CROSS JOIN (VALUES ('B300'), ('GB300'), ('B200'), ('GB200'), ('H200'), ('H100')) AS mm (model)

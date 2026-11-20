@@ -18,7 +18,8 @@
                                                        스팟 30일 이력(공식 API) + 문서 Wayback 저장본(집계)
   python -m gpu_collector.erd collect oracle [--date ...] [--trigger ...]  OCI 공개 정가 API(GPU 1장·시간 온디맨드, 리전 단일가)
   python -m gpu_collector.erd backfill oracle --since 2026-05 [--until 2026-11] [--no-verify]
-                                                       Wayback 정가 API 응답 저장본(집계 출처, 2026-05부터)으로 Oracle 과거 정가 적재
+                                                       Wayback 정가 API 응답 저장본(2026-05~)·SkyPilot 카탈로그(2025-01~)로
+                                                       Oracle 과거 정가 적재(집계 출처, --only로 출처 선택)
   python -m gpu_collector.erd collect fx [--date ...] [--trigger ...]      한국수출입은행 현재환율 API(매매기준율, 응답 통화 전부→KRW)
                                                        기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재
   python -m gpu_collector.erd backfill fx --since 2023-07-01 [--until 2026-11-20] [--max-calls 900]
@@ -55,7 +56,7 @@ from .azure import collect as azure, history as azure_history
 from .verda import collect as verda, history as verda_history
 from .nebius import collect as nebius, history as nebius_history
 from .fx import collect as fx
-from .oracle import collect as oracle, history as oracle_history
+from .oracle import collect as oracle, history as oracle_history, skypilot as oracle_skypilot
 from . import runs, status
 
 SQL = resources.files("gpu_collector") / "sql"
@@ -200,7 +201,7 @@ def backfill(conn, args):
     if args.provider == "fx":
         return fx.backfill(conn, since=args.since, until=args.until, max_calls=args.max_calls)
     if args.provider == "oracle":
-        return oracle_history.backfill(conn, since=args.since, until=args.until, verify=not args.no_verify)
+        return oracle_backfill(conn, args, only)
     if args.provider == "nebius":
         return nebius_history.backfill(conn, days=args.days, verify=not args.no_verify, only=only)
     if args.provider == "verda":
@@ -212,6 +213,19 @@ def backfill(conn, args):
                                 regions=set(args.regions.split(",")) if args.regions else None,
                                 spot_days=args.spot_days, cache_dir=cache_dir(), keep_files=args.keep_files,
                                 workers=args.workers)
+
+
+def oracle_backfill(conn, args, only):
+    """Oracle 과거 이력: Wayback 정가 API 저장본, SkyPilot 카탈로그를 차례로 적재한다(--only로 고를 수 있다)."""
+    sources = [(oracle_history.SOURCE_WAYBACK, oracle_history.backfill), (oracle_skypilot.SOURCE_SKYPILOT, oracle_skypilot.backfill)]
+    summaries = [load(conn, since=args.since, until=args.until, verify=not args.no_verify)
+                 for name, load in sources if only is None or name in only]
+    if not summaries:
+        raise LookupError(f"--only에 Oracle 과거 자료 출처가 없음: {', '.join(name for name, _ in sources)}")
+    statuses = {s["status"] for s in summaries}
+    status = "success" if statuses == {"success"} else ("failed" if statuses == {"failed"} else "partial_failure")
+    return {"run_id": [s["run_id"] for s in summaries], "status": status,
+            "groups": [g for s in summaries for g in s["groups"]]}
 
 
 def _terminate(signum, frame):

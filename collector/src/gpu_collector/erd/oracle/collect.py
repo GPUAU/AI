@@ -216,11 +216,21 @@ def make_hit(target, item, amount):
 
 
 def normalize(hit, component_ids, monthly_hours):
-    inputs = {"component_ids": component_ids, "gpu_count": hit.product["gpu_count"],
-              "monthly_hours": str(monthly_hours), "applies_to": "gpu"}
+    """GPU 1장 가격(정가 API)은 그대로, 노드 가격(SkyPilot 카탈로그)은 GPU 수로 나눈다."""
+    applies_to = hit.observation["price_applies_to"]
+    gpu_count = hit.product.get("gpu_count")
+    inputs = {"component_ids": component_ids, "gpu_count": gpu_count, "monthly_hours": str(monthly_hours),
+              "applies_to": applies_to}
     hourly = hit.components[0]["amount"]
-    return {"nominal": hourly, "effective": hourly, "status": "success", "reason": None,
-            "inputs": {**inputs, "formula": "GPU 1장 시간당 정가(GPU 수로 나누지 않음)"}}
+    if applies_to == "gpu":
+        return {"nominal": hourly, "effective": hourly, "status": "success", "reason": None,
+                "inputs": {**inputs, "formula": "GPU 1장 시간당 정가(GPU 수로 나누지 않음)"}}
+    if not gpu_count:
+        return {"nominal": None, "effective": None, "status": "not_computable", "reason": "GPU 수 미확인",
+                "inputs": inputs}
+    value = hourly / gpu_count
+    return {"nominal": value, "effective": value, "status": "success", "reason": None,
+            "inputs": {**inputs, "formula": "노드 시간당 가격 ÷ GPU 수"}}
 
 
 # 적재 -------------------------------------------------------------------------
