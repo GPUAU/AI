@@ -55,13 +55,17 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
                "now": now, "docs": oracle.docs_targets(conn),
                "docs_source": oracle.source_id(conn, oracle.SOURCE_SHAPES)}
     context["run_id"] = db.begin_run(conn, now(), "manual", COLLECTOR_VERSION)
+    oracle.fill_known_specs(conn, context["provider"])       # 미확인 vCPU를 먼저 채워 구성 비교가 어긋나지 않게
     conn.commit()
     try:
         verified, verify_note = history.primary_prices(get_json, now) if verify else (None, "원천 확인 안 함(--no-verify)")
         log(f"원천 확인 기준: {verify_note}")
         commits = [c for c in list_commits(get_json, pause) if since <= c["month"] <= until]
+        repaired = repair_target_evidence(conn, targets, commits, now())
+        conn.commit()
         jobs = [c for c in commits if not all(db.check_exists(conn, _target_key(t, c)) for t in targets)]
-        log(f"카탈로그 커밋 {len(jobs)}개 처리 예정 ({since}~{until}). 이미 적재한 커밋은 건너뜀")
+        log(f"카탈로그 커밋 {len(jobs)}개 처리 예정 ({since}~{until}). 이미 적재한 커밋은 건너뜀. "
+            f"근거가 빠진 대상 점검 {repaired}건 보완")
         outcomes = []
         for index, commit in enumerate(jobs):
             if index:
@@ -78,7 +82,7 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
     failed = [f"{o['sha'][:12]}: {o['reason']}" for o in outcomes if o["status"] != "success"]
     db.finish_run(conn, context["run_id"], now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": context["run_id"], "status": status, "groups": outcomes}
+    return {"run_id": context["run_id"], "status": status, "evidence_repaired": repaired, "groups": outcomes}
 
 
 # 커밋 목록 ---------------------------------------------------------------------
@@ -160,7 +164,8 @@ def _process(conn, context, targets, commit, get_text, verified):
 
 
 def existing_spec(conn, target, shape):
-    """매일 수집이 만든 같은 베어메탈 구성의 최신 상품 값. 없으면 Shapes 문서 값으로 만든다(품목 정보 없음)."""
+    """매일 수집이 만든 같은 베어메탈 구성의 최신 상품 값. 없으면 None(품목 정보 없이 상품을 만들면 이후 매일 수집과
+    구성이 달라져 새 구성 버전·config_changed가 생기므로 만들지 않는다)."""
     columns = db.PRODUCT_IDENTITY + db.CONFIG_FIELDS
     row = conn.execute(
         f"""SELECT {", ".join(columns)} FROM product
@@ -168,7 +173,7 @@ def existing_spec(conn, target, shape):
               AND system_type = 'node' AND service_option = 'standard'
             ORDER BY configuration_version DESC LIMIT 1""",
         (target["provider_id"], target["gpu_model_id"], shape)).fetchone()
-    return dict(zip(columns, row)) if row else oracle.make_product(target, {})
+    return dict(zip(columns, row)) if row else None
 
 
 def make_hit(target, spec, gpus, price, commit):
@@ -201,6 +206,8 @@ def _write(conn, context, targets, commit, catalog, verified):
         if found is not None:
             gpus, price = found
             spec = existing_spec(conn, target, shape)
+            if spec is None:
+                raise oracle.SourceInvalid(f"no_daily_product: {shape} 상품이 없음. collect oracle을 먼저 실행")
             if gpus != spec["gpu_count"]:
                 raise oracle.SourceInvalid(f"gpu_count_mismatch: {shape} catalog {gpus} vs product {spec['gpu_count']}")
             hit = make_hit(target, spec, gpus, price, commit)
@@ -222,10 +229,35 @@ def _write(conn, context, targets, commit, catalog, verified):
             counts["offers"] += 1
         else:
             counts["not_found"] += 1
-        db.add_check(conn, run_id, target["target_id"], "target", as_of, "public" if found else "unknown",
-                     "success" if found else "not_found", True, key,
-                     reason=None if found else f"이 커밋의 {commit['path']}에 {shape} 없음")
+        check_id, _ = db.add_check(conn, run_id, target["target_id"], "target", as_of,
+                                   "public" if found else "unknown", "success" if found else "not_found", True, key,
+                                   reason=None if found else f"이 커밋의 {commit['path']}에 {shape} 없음")
+        db.add_evidence(conn, check_id, target["source_id"], "aggregator", view_url, version,
+                        {"scope": oracle.scope(target), "kind": "aggregator_history", "primary_source": oracle.API_URL,
+                         "shape": shape, "offers_found": 1 if found else 0}, captured)
     return counts
+
+
+def repair_target_evidence(conn, targets, commits, captured):
+    """예전 실행이 근거 없이 남긴 대상 점검에 근거를 붙인다(커밋 목록으로 URL 복원). 반환: 보완한 점검 수."""
+    repaired = 0
+    for commit in commits:
+        for target in targets:
+            row = conn.execute(
+                """SELECT c.check_id, c.processing_status FROM collection_check c
+                   WHERE c.deduplication_key = %s
+                     AND NOT EXISTS (SELECT 1 FROM source_evidence e WHERE e.check_id = c.check_id)""",
+                (_target_key(target, commit),)).fetchone()
+            if row is None:
+                continue
+            shape = oracle.SHAPES[target["model_name"]]["shape"]
+            db.add_evidence(conn, row[0], target["source_id"], "aggregator", VIEW_URL.format(**commit),
+                            f"skypilot-catalog {commit['sha'][:12]} {commit['path']}",
+                            {"scope": oracle.scope(target), "kind": "aggregator_history",
+                             "primary_source": oracle.API_URL, "shape": shape,
+                             "offers_found": 1 if row[1] == "success" else 0, "repaired": True}, captured)
+            repaired += 1
+    return repaired
 
 
 def _target_key(target, commit):
