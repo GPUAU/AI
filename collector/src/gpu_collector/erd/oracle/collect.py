@@ -3,11 +3,17 @@
 | 출처(data_source.source_name) | 계약 | 원천 |
 | oracle_price_list_api | on_demand | GET apexapps.oracle.com/pls/apex/cetools/api/v1/products/?currencyCode=USD |
 |                       |           | (OCI 문서 'Estimate Your Monthly Cost' > 'Accessing List Pricing for OCI Products'가 안내하는 공개 API) |
-| oracle_compute_shapes_docs | (사양 근거) | OCI Compute Shapes 문서. 수기로 확인한 값을 아래 SHAPES에 두고 근거로 남긴다 |
+| oracle_compute_shapes_docs | (사양 근거) | OCI Compute Shapes 문서·compute 가격 페이지·GPU Memory Fabric 문서. 수기로 확인한 값을
+|                            |             | 아래 SHAPES에 두고 근거로 남긴다 |
 
 - 가격은 GPU 1장·시간 정가(PAY_AS_YOU_GO) 품목이라 GPU 수로 나누지 않는다. 리전 구분이 없는 단일 가격이다(region_code NULL).
 - 품목에는 서버 구성이 없다. 모델별 베어메탈 구성(BM.GPU.B300.8 등)을 상품으로 두고 사양은 Shapes 문서를 근거로 연결한다.
-  Shapes 문서에 NVLink 등 노드 안 상호연결 문구가 없어 상호연결은 미확인으로 둔다(DR-07).
+  노드 안 상호연결은 Oracle 원문이 있는 모델만 확인으로 둔다(DR-07): H100·H200·B200·GB200은 compute 가격 페이지의
+  'GPU Interconnect: NVIDIA NVLINK'(2026-01-16 저장본, 현재 페이지에는 이 칸이 빠짐), GB200·GB300은 GPU Memory Fabric
+  문서의 'NVIDIA NVLink 72'(지원 구성 BM.GPU.GB200.4·GB300.4). B300은 원문이 없어 미확인.
+- vCPU는 compute 가격 페이지의 '1 OCPU is the equivalent of 2 vCPUs for x86-based compute'로 x86 구성만 채운다.
+  Grace(Arm, GB200·GB300)는 환산 문구가 없어 비워 둔다. 예전에 미확인(NULL)으로 적재한 행은 구성 버전을 올리지 않고
+  그 행에 채운다(fill_known_specs, AWS specs와 같은 원칙).
 - 'OCI - Compute - GPU - {모델}' 품목만 쓴다. NVIDIA AI Enterprise(소프트웨어 라이선스 별도 요금)·H100T·Cloud@Customer 등은
   GPU 컴퓨팅 정가가 아니라 제외하고 근거에 남긴다.
 - 스팟(선점형)·약정 가격은 API에 없어 수집하지 않는다.
@@ -38,30 +44,44 @@ METRIC = "GPU Per Hour"
 MODEL = "PAY_AS_YOU_GO"
 RAW_TERMS = "OCI 정가(Pay As You Go), GPU 1장·시간. 리전 구분 없는 단일 가격 품목. 서버 구성은 Shapes 문서 기준"
 
-SHAPES_VERSION = "docs.oracle.com Compute Shapes 2026-11-20 확인"
+SHAPES_VERSION = "docs.oracle.com Compute Shapes·oracle.com compute 가격 페이지 2026-11-20 확인 (2)"
+PRICING_PAGE = "https://www.oracle.com/cloud/compute/pricing/"
+PRICING_PAGE_ARCHIVE = "https://web.archive.org/web/20260116/https://www.oracle.com/cloud/compute/pricing/"
+MEMORY_FABRIC_DOC = "https://docs.oracle.com/en-us/iaas/Content/Compute/Concepts/gpu-memory-fabric.htm"
+OCPU_QUOTE = ("OCPUs represent physical CPU cores. Most CPU architectures, including x86, execute two threads per physical "
+              "core, so 1 OCPU is the equivalent of 2 vCPUs for x86-based compute.")
+PAGE_NVLINK = "compute 가격 페이지 GPU 표 'GPU Interconnect: NVIDIA NVLINK' (2026-01-16 저장본)"
+FABRIC_NVLINK = ("GPU Memory Fabric 문서: 'NVIDIA NVLink 72 supports up to 18 Compute hosts each' / "
+                 "'Supported Compute shapes are BM.GPU.GB200.4 and BM.GPU.GB300.4'")
 # Compute Shapes 문서(2026-11-20 수기 확인). 베어메탈 GPU 구성 표의 GPU 수·GPU 메모리(합계)·CPU 메모리·로컬 디스크·RDMA.
-# vCPU는 OCPU 단위라(x86·Arm 환산이 다름) 비워 둔다.
+# vcpus: x86 구성의 OCPU × 2(가격 페이지 문구), Grace는 None. nvlink: Oracle 원문이 있을 때만(근거 목록), 없으면 None.
 SHAPES = {
     "B300": {"shape": "BM.GPU.B300.8", "gpus": 8, "gpu_memory": 2100, "ram": 4096, "disk": "8 x 3.84 TB NVMe",
-             "rdma": "8 x 800 Gbps RDMA", "quotes": ["BM.GPU.B300.8 GPU: 8x NVIDIA B300 Tensor Core GPUs 263 GB",
-                                                     "OCPU 128, GPU Memory 2100 GB, CPU Memory 4096 GB"]},
+             "rdma": "8 x 800 Gbps RDMA", "vcpus": 256, "nvlink": None,
+             "quotes": ["BM.GPU.B300.8 GPU: 8x NVIDIA B300 Tensor Core GPUs 263 GB",
+                        "CPU: 2 x 64-core Intel Emerald Rapids 8592+", "OCPU 128, GPU Memory 2100 GB, CPU Memory 4096 GB"]},
     "GB300": {"shape": "BM.GPU.GB300.4", "gpus": 4, "gpu_memory": 1112, "ram": 960, "disk": "4 x 7.68 TB NVMe",
-              "rdma": "8 x 400 Gbps RDMA", "quotes": ["BM.GPU.GB300.4 GPU: 4 x NVIDIA Blackwell B300 278 GB",
-                                                      "CPU: 2 x 72-core NVIDIA Grace",
-                                                      "OCPU 144, GPU Memory 1112 GB, CPU Memory 960 GB"]},
+              "rdma": "8 x 400 Gbps RDMA", "vcpus": None,
+              "nvlink": ("NVIDIA NVLink (NVL72 랙, NVLink 72 도메인)", [FABRIC_NVLINK]),
+              "quotes": ["BM.GPU.GB300.4 GPU: 4 x NVIDIA Blackwell B300 278 GB", "CPU: 2 x 72-core NVIDIA Grace",
+                         "OCPU 144, GPU Memory 1112 GB, CPU Memory 960 GB"]},
     "B200": {"shape": "BM.GPU.B200.8", "gpus": 8, "gpu_memory": 1440, "ram": 4096, "disk": "8 x 3.84 TB NVMe",
-             "rdma": "8 x 400 Gbps RDMA", "quotes": ["BM.GPU.B200.8 GPU: 8x NVIDIA B200 Tensor Core GPUs 180 GB",
-                                                     "OCPU 128, GPU Memory 1440 GB, CPU Memory 4096 GB"]},
+             "rdma": "8 x 400 Gbps RDMA", "vcpus": 256, "nvlink": ("NVIDIA NVLink", [PAGE_NVLINK]),
+             "quotes": ["BM.GPU.B200.8 GPU: 8x NVIDIA B200 Tensor Core GPUs 180 GB",
+                        "CPU: 2 x 64-core Intel Emerald Rapids 8592+", "OCPU 128, GPU Memory 1440 GB, CPU Memory 4096 GB"]},
     "GB200": {"shape": "BM.GPU.GB200.4", "gpus": 4, "gpu_memory": 768, "ram": 960, "disk": "4 x 7.68 TB NVMe",
-              "rdma": "4 x 400 Gbps RDMA", "quotes": ["BM.GPU.GB200.4 GPU: 4 x NVIDIA Blackwell B200 192 GB",
-                                                      "CPU: 2 x 72-core NVIDIA Grace",
-                                                      "OCPU 144, GPU Memory 768 GB, CPU Memory 960 GB"]},
+              "rdma": "4 x 400 Gbps RDMA", "vcpus": None,
+              "nvlink": ("NVIDIA NVLink (NVL72 랙, NVLink 72 도메인)", [PAGE_NVLINK, FABRIC_NVLINK]),
+              "quotes": ["BM.GPU.GB200.4 GPU: 4 x NVIDIA Blackwell B200 192 GB", "CPU: 2 x 72-core NVIDIA Grace",
+                         "OCPU 144, GPU Memory 768 GB, CPU Memory 960 GB"]},
     "H200": {"shape": "BM.GPU.H200.8", "gpus": 8, "gpu_memory": 1128, "ram": 3072, "disk": "8 x 3.84 TB NVMe",
-             "rdma": "8 x 400 Gbps RDMA", "quotes": ["BM.GPU.H200.8 GPU: 8x NVIDIA H200 Tensor Core GPUs 141 GB",
-                                                     "OCPU 112, GPU Memory 1128 GB, CPU Memory 3072 GB"]},
+             "rdma": "8 x 400 Gbps RDMA", "vcpus": 224, "nvlink": ("NVIDIA NVLink", [PAGE_NVLINK]),
+             "quotes": ["BM.GPU.H200.8 GPU: 8x NVIDIA H200 Tensor Core GPUs 141 GB",
+                        "CPU: 2 x 56-core Intel Sapphire Rapids 8480+", "OCPU 112, GPU Memory 1128 GB, CPU Memory 3072 GB"]},
     "H100": {"shape": "BM.GPU.H100.8", "gpus": 8, "gpu_memory": 640, "ram": 2048, "disk": "16 x 3.84 TB NVMe",
-             "rdma": "8 x 2 x 200 Gbps RDMA", "quotes": ["BM.GPU.H100.8: GPU: 8x H100 80 GB",
-                                                         "OCPU 112, GPU Memory 640 GB, CPU Memory 2048 GB"]},
+             "rdma": "8 x 2 x 200 Gbps RDMA", "vcpus": 224, "nvlink": ("NVIDIA NVLink", [PAGE_NVLINK]),
+             "quotes": ["BM.GPU.H100.8: GPU: 8x H100 80 GB", "CPU: Intel Sapphire Rapids 8480+ 2x 56c",
+                        "OCPU 112, GPU Memory 640 GB, CPU Memory 2048 GB"]},
 }
 SPEC_ATTRIBUTES = ("gpu_count", "vram_gb_per_gpu", "ram_gb", "storage_description", "inter_node_network")
 EXPECTED_ERRORS = (fetch.FetchError, OSError, ValueError, LookupError)
@@ -96,6 +116,7 @@ def collect(conn, *, trigger_type="manual", now=None, date=None, get_json=fetch.
     if not targets:
         raise LookupError("no enabled Oracle price list collection_target")
     run_id = db.begin_run(conn, now(), trigger_type, COLLECTOR_VERSION)
+    fill_known_specs(conn, db.provider_id(conn, PROVIDER))
     conn.commit()
     context = {"provider": db.provider_id(conn, PROVIDER), "rule": db.rule(conn, RULE_VERSION), "run_id": run_id,
                "now": now, "date": day, "docs": docs_targets(conn), "docs_source": source_id(conn, SOURCE_SHAPES)}
@@ -195,7 +216,8 @@ def make_product(target, item):
         "provider_id": target["provider_id"], "gpu_model_id": target["gpu_model_id"],
         "original_product_name": spec["shape"], "region_code": None, "system_type": "node",
         "service_option": "standard", "sku": item.get("partNumber"), "original_model_name": item.get("displayName"),
-        "gpu_count": spec["gpus"], "vram_gb_per_gpu": Decimal(spec["gpu_memory"]) / spec["gpus"], "vcpu_count": None,
+        "gpu_count": spec["gpus"], "vram_gb_per_gpu": Decimal(spec["gpu_memory"]) / spec["gpus"],
+        "vcpu_count": spec["vcpus"],
         "ram_gb": Decimal(spec["ram"]), "storage_description": f"로컬 디스크 {spec['disk']}", "spec_scope": "node",
         "inter_node_network": f"클러스터 네트워크 {spec['rdma']}", "country_code": None,
     }
@@ -287,20 +309,71 @@ def write_observation(conn, context, offer_id, check_id, hit, collected_at, calc
 
 
 def ensure_spec_evidence(conn, context, target, product_id, captured_at):
-    """새 상품(구성 버전)에 Shapes 문서 근거를 연결한다. 상호연결 문구가 없어 상호연결은 미확인으로 남긴다."""
-    if db.has_product_evidence(conn, product_id):
-        return
+    """상품(구성 버전)에 이 근거 버전(SHAPES_VERSION)의 사양 근거를 한 번 연결한다. 근거 버전이 바뀌면 새로 연결한다.
+
+    Oracle 원문이 있는 모델만 노드 안 상호연결을 확인(confirmed)으로 바꾼다. vCPU는 x86 구성만 근거에 넣는다."""
+    key = f"spec:{product_id}:{SHAPES_VERSION}"
     docs = context["docs"].get(target["gpu_model_id"])
     spec = SHAPES.get(target["model_name"])
-    if docs is None or spec is None:
+    if docs is None or spec is None or db.check_exists(conn, key):
         return
     check_id, _ = db.add_check(conn, context["run_id"], docs["target_id"], "product", captured_at, "public", "success",
-                               True, f"spec:{product_id}:{SHAPES_VERSION}", product_id=product_id)
-    evidence_id = db.add_evidence(conn, check_id, context["docs_source"], "spec", SHAPES_URL, SHAPES_VERSION,
-                                  {"shape": spec["shape"], "quotes": spec["quotes"], "local_disk": spec["disk"],
-                                   "rdma": spec["rdma"], "verified_by": "manual", "verified_on": "2026-11-20"},
+                               True, key, product_id=product_id)
+    excerpt = {"shape": spec["shape"], "quotes": spec["quotes"], "local_disk": spec["disk"], "rdma": spec["rdma"],
+               "verified_by": "manual", "verified_on": "2026-11-20"}
+    attributes = list(SPEC_ATTRIBUTES)
+    if spec["vcpus"] is not None:
+        excerpt.update(vcpu=f"OCPU {spec['vcpus'] // 2} × 2 (x86)", vcpu_source=PRICING_PAGE, vcpu_quote=OCPU_QUOTE)
+        attributes.append("vcpu_count")
+    nvlink = spec["nvlink"]
+    if nvlink is not None:
+        excerpt.update(interconnect_sources=nvlink[1], interconnect_urls=[PRICING_PAGE_ARCHIVE, MEMORY_FABRIC_DOC])
+    evidence_id = db.add_evidence(conn, check_id, context["docs_source"], "spec", SHAPES_URL, SHAPES_VERSION, excerpt,
                                   captured_at)
-    db.add_product_evidence(conn, product_id, evidence_id, SPEC_ATTRIBUTES)
+    gpu_count = conn.execute("SELECT gpu_count FROM product WHERE product_id = %s", (product_id,)).fetchone()[0]
+    interconnect = nvlink[0] if nvlink is not None and gpu_count and gpu_count > 1 else None
+    db.add_product_evidence(conn, product_id, evidence_id, attributes, interconnect)
+
+
+def fill_known_specs(conn, provider):
+    """예전에 미확인(NULL)으로 적재한 Oracle 상품의 vCPU를 같은 행에 채운다(구성 버전을 올리지 않음). 반환: 채운 행 수.
+
+    값이 바뀐 것이 아니라 몰랐던 값을 공식 근거로 알게 된 것이라, 새 구성 버전·config_changed 알림을 만들지 않는다."""
+    filled = 0
+    for spec in SHAPES.values():
+        if spec["vcpus"] is None:
+            continue
+        filled += conn.execute(
+            """UPDATE product SET vcpu_count = %s
+               WHERE provider_id = %s AND original_product_name = %s AND vcpu_count IS NULL""",
+            (spec["vcpus"], provider, spec["shape"])).rowcount
+    return filled
+
+
+def attach_specs(conn, *, now=None, trigger_type="manual"):
+    """이미 적재한 Oracle 상품에 미확인 사양을 채우고 최신 사양 근거를 연결한다(한 번 실행). 반환: 실행 요약."""
+    now = now or (lambda: datetime.now(timezone.utc))
+    provider = db.provider_id(conn, PROVIDER)
+    run_id = db.begin_run(conn, now(), trigger_type, "gpu-collector 0.1.0 / erd-oracle-specs 1")
+    context = {"run_id": run_id, "docs": docs_targets(conn), "docs_source": source_id(conn, SOURCE_SHAPES)}
+    if not context["docs"]:
+        raise LookupError("no enabled Oracle spec collection_target")
+    filled = fill_known_specs(conn, provider)
+    by_model = {t["gpu_model_id"]: t for t in context["docs"].values()}
+    linked = 0
+    checked_at = now()
+    for product_id, gpu_model_id in conn.execute(
+            "SELECT product_id, gpu_model_id FROM product WHERE provider_id = %s ORDER BY product_id",
+            (provider,)).fetchall():
+        target = by_model.get(gpu_model_id)
+        if target is None:
+            continue
+        before = db.check_exists(conn, f"spec:{product_id}:{SHAPES_VERSION}")
+        ensure_spec_evidence(conn, context, target, product_id, checked_at)
+        linked += 0 if before else 1
+    db.finish_run(conn, run_id, now(), "success")
+    conn.commit()
+    return {"run_id": run_id, "status": "success", "vcpu_filled": filled, "products_linked": linked}
 
 
 def check_spike(conn, context, target, offer_id, check_id, observation_id, checked_at):

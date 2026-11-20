@@ -26,6 +26,7 @@
                                                        과거 영업일 환율(이미 적재한 날짜는 건너뜀, 하루 1,000회 제한)
   python -m gpu_collector.erd status record            랙스케일·출시 예정 모델 공개 상태 수기 확인 기록(erd/status.py, 월 1회)
   python -m gpu_collector.erd specs aws                 이미 적재한 AWS 상품에 모델 원문·사양 근거(상호연결)를 채운다(1회)
+  python -m gpu_collector.erd specs oracle              이미 적재한 Oracle 상품에 vCPU(x86)·NVLink 근거를 채운다(1회, 구성 버전 유지)
   python -m gpu_collector.erd report [--model B300]    최신 가격과 대상별 마지막 점검 상태
 
 --date: 매일 수집의 수집 기준일(KST, 생략하면 오늘). 같은 기준일에 이미 적재한 묶음은 건너뛴다.
@@ -118,7 +119,7 @@ def parse(argv):
     st = sub.add_parser("status")
     st.add_argument("action", choices=["record"])
     sp = sub.add_parser("specs")
-    sp.add_argument("provider", choices=["aws"])
+    sp.add_argument("provider", choices=["aws", "oracle"])
     r = sub.add_parser("report")
     r.add_argument("--model", default="B300")
     args = parser.parse_args(argv)
@@ -178,7 +179,7 @@ def run(conn, args, abandoned):
     if args.command == "status":
         summary = status.record(conn)
     elif args.command == "specs":
-        summary = aws.attach_specs(conn)
+        summary = (oracle if args.provider == "oracle" else aws).attach_specs(conn)
     elif args.command == "collect":
         kwargs = {"trigger_type": args.trigger, "date": args.date}
         if args.provider == "aws":

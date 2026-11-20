@@ -55,6 +55,7 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
                "now": now, "docs": oracle.docs_targets(conn),
                "docs_source": oracle.source_id(conn, oracle.SOURCE_SHAPES)}
     context["run_id"] = db.begin_run(conn, now(), "manual", COLLECTOR_VERSION)
+    oracle.fill_known_specs(conn, context["provider"])       # 미확인 vCPU를 먼저 채워 구성 비교가 어긋나지 않게
     conn.commit()
     try:
         verified, verify_note = history.primary_prices(get_json, now) if verify else (None, "원천 확인 안 함(--no-verify)")
