@@ -9,7 +9,7 @@
 | `src/gpu_collector/sql/` | `ddl.sql`(스키마), `seed.sql`(사업자·모델·환산 규칙·출처·수집 대상). 패키지에 함께 설치된다 |
 | `src/gpu_collector/erd/` | 수집 명령(`__main__.py`), DB 적재 공통(`db.py`), 수기 상태 기록(`status.py`) |
 | `src/gpu_collector/erd/{aws,azure,verda,nebius}/` | 사업자별 매일 수집(`collect.py`)·과거 이력 백필(`history.py`) |
-| `src/gpu_collector/erd/oracle/` | Oracle 매일 수집(`collect.py`) |
+| `src/gpu_collector/erd/oracle/` | Oracle 매일 수집(`collect.py`)·과거 이력 백필(`history.py`) |
 | `src/gpu_collector/erd/fx/` | 환율 매일 수집·백필(한국수출입은행, `collect.py`) |
 | `src/gpu_collector/` | 공통 모듈: HTTP 조회(`fetch`), 파일 캐시(`download`), 비밀값(`env`), AWS 가격 파일 파서(`aws_offer`, `aws_savings`) |
 | `tests/erd/` | 사업자별·스키마 테스트. `support.py`가 임시 DB를 만들고 지운다 |
@@ -24,10 +24,10 @@
 | Azure | Retail Prices API | GitHub 일별 스냅샷 |
 | Verda | 공개 API(인스턴스 가격, 약정 할인율) | Wayback 저장본 |
 | Nebius | 문서 가격표, 공개 스팟 가격 시계열 API(1시간 간격) | 스팟 30일, 문서 Wayback 저장본 |
-| Oracle | 공개 정가 API(GPU 1장·시간 온디맨드, 리전 단일가) | 없음(예정: Wayback 가격 페이지) |
+| Oracle | 공개 정가 API(GPU 1장·시간 온디맨드, 리전 단일가) | Wayback 정가 API 응답 저장본(2026-05~) |
 | 환율(`fx`) | 한국수출입은행 현재환율 API(매매기준율) | 같은 API의 과거 영업일 조회 |
 
-**Oracle:** OCI 문서가 안내하는 공개 정가 API에서 `OCI - Compute - GPU - {모델}` 품목(B300·GB300·B200·GB200·H200·H100)의 USD Pay As You Go 단가를 적재한다. GPU 1장·시간 가격이라 GPU 수로 나누지 않고, 리전 구분이 없어 `region_code`는 비운다. 상품은 모델별 베어메탈 구성(`BM.GPU.B300.8` 등)이고 GPU 수·메모리는 Compute Shapes 문서를 사양 근거로 연결한다(상호연결 문구가 없어 미확인). NVIDIA AI Enterprise(라이선스)·H100T 품목은 제외한다. 스팟·약정은 API에 없다.
+**Oracle:** OCI 문서가 안내하는 공개 정가 API에서 `OCI - Compute - GPU - {모델}` 품목(B300·GB300·B200·GB200·H200·H100)의 USD Pay As You Go 단가를 적재한다. GPU 1장·시간 가격이라 GPU 수로 나누지 않고, 리전 구분이 없어 `region_code`는 비운다. 상품은 모델별 베어메탈 구성(`BM.GPU.B300.8` 등)이고 GPU 수·메모리는 Compute Shapes 문서를 사양 근거로 연결한다(상호연결 문구가 없어 미확인). NVIDIA AI Enterprise(라이선스)·H100T 품목은 제외한다. 스팟·약정은 API에 없고, 선점형 인스턴스(50% 할인)는 지원 구성에 대상 GPU가 없다(P100·V100만). 과거 이력은 Wayback에 저장된 정가 API 응답(USD 전체 목록, 2026-05부터)만 쓴다. oracle.com 가격 페이지는 가격 칸을 브라우저에서 같은 API로 채워 HTML 저장본에 값이 없다.
 
 **환율:** 응답의 통화 전부(22개, KRW 제외)의 매매기준율을 `{통화}→KRW`로 `exchange_rate`에 적재한다. `JPY(100)`·`IDR(100)`은 1단위로 나눠 저장하고, 교차환율(EUR→USD 등)은 저장하지 않고 환산할 때 계산한다. INR은 제공되지 않는다. 영업일 11시 전후에 그날 환율이 나오고 비영업일·갱신 전은 빈 응답이라, 매일 수집은 수집 기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재한다(주말은 호출하지 않음). 기준일이 4일 넘게 지나면 `fx_stale`, 실패하면 `fx_failed` 알림을 남긴다. 하루 1,000회 제한이라 백필은 `--max-calls`(기본 900)에서 멈추고, 다시 실행하면 적재하지 않은 날짜부터 이어서 적재한다.
 
