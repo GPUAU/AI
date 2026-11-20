@@ -16,6 +16,10 @@
   python -m gpu_collector.erd collect nebius [--date ...] [--trigger ...]  Nebius 문서 가격표(온디맨드·약정 상태) + 공개 스팟 API
   python -m gpu_collector.erd backfill nebius [--days 29] [--only spot,docs] [--no-verify]
                                                        스팟 30일 이력(공식 API) + 문서 Wayback 저장본(집계)
+  python -m gpu_collector.erd collect fx [--date ...] [--trigger ...]      한국수출입은행 현재환율 API(매매기준율, 응답 통화 전부→KRW)
+                                                       기준일부터 거슬러 올라가 가장 가까운 영업일 환율을 적재
+  python -m gpu_collector.erd backfill fx --since 2023-07-01 [--until 2026-11-20] [--max-calls 900]
+                                                       과거 영업일 환율(이미 적재한 날짜는 건너뜀, 하루 1,000회 제한)
   python -m gpu_collector.erd status record            랙스케일·출시 예정 모델 공개 상태 수기 확인 기록(erd/status.py, 월 1회)
   python -m gpu_collector.erd specs aws                 이미 적재한 AWS 상품에 모델 원문·사양 근거(상호연결)를 채운다(1회)
   python -m gpu_collector.erd report [--model B300]    최신 가격과 대상별 마지막 점검 상태
@@ -31,7 +35,7 @@
            3 설정 오류(다시 시도해도 같음), 75 같은 사업자 실행 중.
 
 환경 변수: DATABASE_URL(필수, 적재 대상 DB), CACHE_DIR(선택, 원천 파일 캐시. 기본 ./var/cache).
-AWS 가격 API는 AWS_ACCESS_KEY_ID·AWS_SECRET_ACCESS_KEY 환경 변수가 필요하다.
+AWS 가격 API는 AWS_ACCESS_KEY_ID·AWS_SECRET_ACCESS_KEY, 환율은 KOREAEXIM_API_KEY 환경 변수가 필요하다.
 """
 import argparse
 import json
@@ -47,6 +51,7 @@ from .aws import collect as aws, history as aws_history
 from .azure import collect as azure, history as azure_history
 from .verda import collect as verda, history as verda_history
 from .nebius import collect as nebius, history as nebius_history
+from .fx import collect as fx
 from . import runs, status
 
 SQL = resources.files("gpu_collector") / "sql"
@@ -58,7 +63,7 @@ EXIT_BY_STATUS = {"success": EXIT_OK, "partial_failure": EXIT_PARTIAL, "failed":
 # DB 시간 제한: 접속 10초, 문 하나 10분, 잠금 대기 30초. 네트워크 단절·잠금 대기로 무한히 멈추지 않게 한다.
 CONNECT_TIMEOUT_S = 10
 DB_OPTIONS = "-c statement_timeout=600000 -c lock_timeout=30000"
-COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius}
+COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius, "fx": fx}
 
 
 class Terminated(Exception):
@@ -93,9 +98,10 @@ def parse(argv):
     c.add_argument("--trigger", default="manual", choices=["manual", "scheduled", "retry"])
     b = sub.add_parser("backfill")
     b.add_argument("provider", choices=sorted(COLLECTORS))
-    b.add_argument("--since", help="YYYY-MM부터 (aws·azure·verda 필수)")
+    b.add_argument("--since", help="YYYY-MM부터 (aws·azure·verda 필수). fx는 YYYY-MM-DD")
     b.add_argument("--days", type=int, default=29, help="Nebius 스팟 이력 일수(최대 29)")
-    b.add_argument("--until", help="YYYY-MM까지(생략하면 이번 달)")
+    b.add_argument("--until", help="YYYY-MM까지(생략하면 이번 달). fx는 YYYY-MM-DD(생략하면 오늘)")
+    b.add_argument("--max-calls", type=int, default=fx.MAX_CALLS, help="fx: 이번 실행의 API 호출 상한")
     b.add_argument("--only", help="쉼표로 구분한 과거 자료 data_source.source_name")
     b.add_argument("--regions", help="쉼표로 구분한 리전(생략하면 대상 전체)")
     b.add_argument("--spot-days", type=int, default=aws_history.SPOT_DAYS)
@@ -175,8 +181,9 @@ def run(conn, args, abandoned):
     else:
         summary = backfill(conn, args)
         failed = [g for g in summary["groups"] if g["status"] != "success"]
-        summary = {"run_id": summary["run_id"], "status": summary["status"], "groups": len(summary["groups"]),
-                   "failed": failed}
+        extra = {k: v for k, v in summary.items() if k not in ("run_id", "status", "groups")}
+        summary = {"run_id": summary["run_id"], "status": summary["status"], **extra,
+                   "groups": len(summary["groups"]), "failed": failed}
     if abandoned:
         summary = {**summary, "closed_abandoned_runs": abandoned}
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
@@ -185,6 +192,8 @@ def run(conn, args, abandoned):
 
 def backfill(conn, args):
     only = set(args.only.split(",")) if args.only else None
+    if args.provider == "fx":
+        return fx.backfill(conn, since=args.since, until=args.until, max_calls=args.max_calls)
     if args.provider == "nebius":
         return nebius_history.backfill(conn, days=args.days, verify=not args.no_verify, only=only)
     if args.provider == "verda":
