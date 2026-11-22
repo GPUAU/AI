@@ -7,7 +7,9 @@
 - 공식 문서·API 명세가 프로그램 조회를 안내하면 ✅
 - 약관에 자동 접근(robot·scraper·data mining) 명시 금지 → ❌
 - 지식재산·이용 제한 고지만 있으면 ⚠️ (팀 결정)
-- Wayback·GitHub 같은 제3자 저장본은 `aggregator`, `unknown`으로 기록
+- DB `data_source`에 출처 유형(`source_type`)과 이용 조건(`terms_status`)을 기록한다
+  - 사업자 API: `official_api` / 사업자 문서·페이지: `official_page` / 환율: `fx_source` → 대부분 `allowed`
+  - Wayback·GitHub 같은 제3자 저장본: `aggregator`, `unknown`. 관측 근거(`source_evidence.evidence_role`)도 `aggregator`
 - 내부 분석용, 원시 데이터 재배포 안 함
 
 ## 적재 중
