@@ -11,6 +11,7 @@
 | `src/gpu_collector/erd/{aws,azure,verda,nebius}/` | 사업자별 매일 수집(`collect.py`)·과거 이력 백필(`history.py`) |
 | `src/gpu_collector/erd/oracle/` | Oracle 매일 수집(`collect.py`)·과거 이력 백필(`history.py` Wayback, `skypilot.py` SkyPilot 카탈로그) |
 | `src/gpu_collector/erd/scaleway/` | Scaleway 매일 수집(`collect.py`)·과거 이력 백필(`history.py`) |
+| `src/gpu_collector/erd/hyperstack/` | Hyperstack 매일 수집(`collect.py`)·과거 이력 백필(`history.py`) |
 | `src/gpu_collector/erd/fx/` | 환율 매일 수집·백필(한국수출입은행, `collect.py`) |
 | `src/gpu_collector/` | 공통 모듈: HTTP 조회(`fetch`), 파일 캐시(`download`), 비밀값(`env`), AWS 가격 파일 파서(`aws_offer`, `aws_savings`) |
 | `tests/erd/` | 사업자별·스키마 테스트. `support.py`가 임시 DB를 만들고 지운다 |
@@ -27,6 +28,7 @@
 | Nebius | 문서 가격표, 공개 스팟 가격 시계열 API(1시간 간격) | 스팟 30일, 문서 Wayback 저장본 |
 | Oracle | 공개 정가 API(GPU 1장·시간 온디맨드, 리전 단일가) | Wayback 정가 API 응답 저장본(2026-05~), SkyPilot 카탈로그 커밋 이력(H100·H200 2025-01~) |
 | Scaleway | 공개 카탈로그 API(B300·H100 Instance 분 단가, Elastic Metal H100 시간 단가, EUR) | Wayback GPU 가격 페이지(2024-05~, H100 SXM 2025-06~, B300 2026-01~) |
+| Hyperstack | pricebook·flavors API(API 키, B300·B200·H200·H100 온디맨드·스팟, GPU 장당) | Wayback 가격 페이지(2023-11~, B200 2026-07~, B300 2026-07~) |
 | 환율(`fx`) | 한국수출입은행 현재환율 API(매매기준율) | 같은 API의 과거 영업일 조회 |
 
 이용 조건 판단과 검토했지만 안 쓴 원천은 [`docs/collection-sources.md`](../docs/collection-sources.md), 테이블 설계는 [`docs/erd.md`](../docs/erd.md).
@@ -34,6 +36,8 @@
 **Oracle:** OCI 문서가 안내하는 공개 정가 API에서 `OCI - Compute - GPU - {모델}` 품목(B300·GB300·B200·GB200·H200·H100)의 USD Pay As You Go 단가를 적재한다. GPU 1장·시간 가격이라 GPU 수로 나누지 않고, 리전 구분이 없어 `region_code`는 비운다. 상품은 모델별 베어메탈 구성(`BM.GPU.B300.8` 등)이고 GPU 수·메모리는 Compute Shapes 문서를 사양 근거로 연결한다. vCPU는 가격 페이지의 "1 OCPU = 2 vCPUs for x86" 문구로 x86 구성(H100·H200·B200·B300)만 채우고 Grace(GB200·GB300)는 비운다. NVLink는 Oracle 원문으로 6개 모델 모두 확인한다: OCI GPU Quick Start 문서(H100·H200·B300·GB200·GB300의 NVLink 검증 절차·NVL72 설명), compute 가격 페이지 GPU 표 `GPU Interconnect: NVIDIA NVLINK`(H100·H200·B200·GB200, 2026-01-16 저장본), GPU Memory Fabric 문서(GB200·GB300). 근거에는 모델마다 실제로 문구가 있는 출처만 남긴다. 예전에 비워 둔 값은 `specs oracle`(또는 다음 수집·백필)이 구성 버전을 올리지 않고 그 행에 채운다. NVIDIA AI Enterprise(라이선스)·H100T 품목은 제외한다. 스팟·약정은 API에 없고, 선점형 인스턴스(50% 할인)는 지원 구성에 대상 GPU가 없다(P100·V100만). 과거 이력은 Wayback에 저장된 정가 API 응답(USD 전체 목록, 2026-05부터)과 SkyPilot 카탈로그의 OCI `vms.csv` 커밋 이력(같은 정가 API로 만든 노드 가격, GPU 수로 나눔, 관측 시각은 커밋 시각)을 집계 출처로 쓴다. `backfill oracle`이 둘을 차례로 적재하고 `--only`로 고를 수 있다. 매일 수집을 먼저 실행해야 같은 상품에 붙는다. oracle.com 가격 페이지는 가격 칸을 브라우저에서 같은 API로 채워 HTML 저장본에 값이 없다.
 
 **Scaleway:** 공식 Go SDK가 제공하는 공개 카탈로그 API(`v2alpha1`, 인증 없음) 전 페이지에서 GPU Instance(B300-SXM-8, H100-SXM-8/4/2, H100 PCIe 1/2, zone별)와 Elastic Metal H100 시간 요금을 적재한다. 가격은 EUR(Instance 분 단위)이고, USD 환산(규칙 v4)은 수출입은행 교차환율(EUR→KRW ÷ USD→KRW, 관측일 이하 최신 기준일)로 하며 쓴 환율 ID를 `calculation_inputs`에 남긴다. 그래서 매일 순서는 `collect fx` → `collect scaleway` → `convert krw`이고, 원화 환산값은 EUR 시간 단가 × EUR→KRW와 같다. 환율이 없으면 환산은 `not_computable`. Elastic Metal 월 요금·설치비와 Dedibox는 기한 없는 월 구독의 1회 설치비라 수집하지 않는다. GPU 메모리·NVLink는 가격 페이지 내장 JSON을 사람이 확인한 근거, 노드 간 네트워크는 일반 VPC 대역폭이라 비운다. www.scaleway.com은 봇 확인(BunnyCDN)으로 자동 접근을 막아 매일 수집은 API만 쓴다. 과거 이력(`backfill scaleway`)은 Wayback의 GPU 가격 페이지 저장본(집계 출처)이다: 2025년 이후는 내장 JSON(`__NEXT_DATA__`)의 리전별 분 단가(저장본이 중간에 잘려 있으면 완결된 상품 객체만 읽음), 2024~2025 초는 HTML 표 시간 단가(리전 미표기 → 리전 미상 상품). 매일 수집 상품의 구성을 이어받고, Wayback 연결이 끊기면 다시 실행해 이어서 적재한다.
+
+**Hyperstack:** pricebook(GPU 종류별 장당 시간가, 리전 단일가)을 flavors(리전별 구성)의 `gpu` 값으로 붙인다. 상품 = flavor × 리전, 가격은 GPU 장당이라 나누지 않는다. 계정 할인가(`discount_applied`)는 공개 정가가 아니라 적재하지 않는다. 스팟은 `-spot` GPU 종류(온디맨드의 80%). 예약가는 API에 없어 수집하지 않고, bigroot 변형은 같은 가격이라 뺀다. VRAM·NVLink는 상품 페이지 문구를 사람이 확인한 근거(문구가 없는 H200·H100 PCIe 일반형은 연결 미확인). 과거 이력(`backfill hyperstack`)은 Wayback 가격 페이지(집계)의 온디맨드·스팟 장당 가격이고, 리전·구성이 없어 GPU 종류별 리전 미상 상품으로 둔다. 예약 'Starts from'은 읽지 않는다.
 
 **환율:** 응답의 통화 전부(22개, KRW 제외)의 매매기준율을 `{통화}→KRW`로 `exchange_rate`에 적재한다. `JPY(100)`·`IDR(100)`은 1단위로 나눠 저장하고, 교차환율(EUR→USD 등)은 저장하지 않고 환산할 때 계산한다. INR은 제공되지 않는다. 영업일 11시 전후에 그날 환율이 나오고 비영업일·갱신 전은 빈 응답이라, 매일 수집은 수집 기준일 환율과 함께 마지막 적재일 다음날부터 빠진 영업일 환율도 채운다(최대 10일, 주말은 호출하지 않음). 며칠 실패한 뒤 성공해도 그 사이가 비지 않는다. 기준일이 4일 넘게 지나면 `fx_stale`, 실패하면 `fx_failed` 알림을 남긴다. 하루 1,000회 제한이라 백필은 `--max-calls`(기본 900)에서 멈추고, 다시 실행하면 적재하지 않은 날짜부터 이어서 적재한다.
 
@@ -131,4 +135,5 @@ pytest
 | `TEST_DATABASE_URL` | 테스트가 접속하는 관리용 DB(`postgres`). 여기서 임시 DB를 만들어 시험하고 지운다. 실제 데이터 DB를 건드리지 않도록 따로 둔다 |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS 가격 API 호출(IAM 사용자 `gpu-price-collector`, 가격 조회 권한만). EKS에서는 Kubernetes Secret으로 주입하고 이미지·저장소에 넣지 않는다 |
 | `KOREAEXIM_API_KEY` | 한국수출입은행 현재환율 API 인증키(`collect fx`·`backfill fx`). 발급 2년 뒤 파기되므로(등록 이메일로 재동의하면 연장) 종료 코드 3과 `result_3`이 나오면 키 만료를 먼저 확인한다. EKS에서는 Kubernetes Secret으로 주입한다 |
+| `HYPERSTACK_API_KEY` | Hyperstack API 키(`collect hyperstack`, 헤더 `api_key`). 콘솔에서 발급. 없으면 종료 코드 3 |
 | `CACHE_DIR` | 원천 파일 캐시 위치. 선택, 기본 `./var/cache` |

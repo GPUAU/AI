@@ -63,13 +63,14 @@ class FetchResult:
     size: int
 
 
-def get_json(url, config):
-    """작은 목록 파일을 받는다."""
+def get_json(url, config, headers=None):
+    """작은 목록 파일을 받는다. headers: 인증 헤더 등(값은 오류 메시지에 남기지 않는다)."""
     timeout = (config.get("connect_timeout_s", 15), config.get("read_idle_timeout_s", 60))
+    sent = {"User-Agent": USER_AGENT, **(headers or {})}
     try:
-        response = send(lambda: requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout))
+        response = send(lambda: requests.get(url, headers=sent, timeout=timeout))
     except requests.RequestException as error:
-        raise FetchError(f"request_failed: {type(error).__name__}") from error
+        raise FetchError(f"request_failed: {type(error).__name__}") from (None if headers else error)
     if response.status_code != 200:
         raise FetchError(f"http_{response.status_code}")
     try:
