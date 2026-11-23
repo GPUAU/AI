@@ -7,7 +7,7 @@
 - 스팟 시계열: 1시간 간격의 마지막 가격(METHOD_LAST_PRICE). 점의 시각(간격 끝)을 관측 시각으로 쓰고, 같은 플랫폼의 프리셋마다
   같은 값을 붙인다. 같은 오퍼·시각은 다시 적재하지 않아 매일 실행해도 새 점만 쌓인다. 30일이 지나면 원천에서 사라진다.
 - 문서 저장본: 매일 수집과 같은 해석(parse_pricing)으로 저장 시각에 적용되던 USD 표만 쓴다. 온디맨드와, 시작가('From')가
-  아닌 고정 선점형 가격(과거 스팟)을 적재한다. 근거 역할은 aggregator, 지금 문서 값과 같으면 원천 확인(true).
+  아닌 고정 선점형 가격(과거 스팟)을 적재한다. 근거 역할은 aggregator. 원천 확인은 적재 뒤 erd/verify.py가 판정한다.
 - 오래된 것부터 처리한다. 과거 자료로는 알림을 만들지 않는다.
 """
 import sys
@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from ... import fetch
-from .. import db
+from .. import db, verify as verifier
 from . import collect as nebius
 
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-nebius-history 1"
@@ -50,7 +50,7 @@ def backfill(conn, *, days=MAX_DAYS, only=None, now=None, get_json=fetch.get_jso
         if "spot" in only and series_targets:
             outcomes.extend(spot_series(conn, context, series_targets, min(days, MAX_DAYS), get_json, pause, log))
         if "docs" in only and wayback_targets:
-            outcomes.extend(docs_captures(conn, context, wayback_targets, get_json, get_text, pause, verify, log))
+            outcomes.extend(docs_captures(conn, context, wayback_targets, get_json, get_text, pause, log))
     except Exception as error:
         conn.rollback()
         db.finish_run(conn, context["run_id"], now(), "failed", f"unexpected: {type(error).__name__}")
@@ -59,9 +59,10 @@ def backfill(conn, *, days=MAX_DAYS, only=None, now=None, get_json=fetch.get_jso
     ok = sum(1 for outcome in outcomes if outcome["status"] == "success")
     status = "success" if ok == len(outcomes) else ("failed" if ok == 0 else "partial_failure")
     failed = [f"{o['group']}: {o['reason']}" for o in outcomes if o["status"] != "success"]
+    checked = verifier.reverify(conn, sources={SOURCE_WAYBACK}) if verify and "docs" in only else None
     db.finish_run(conn, context["run_id"], now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": context["run_id"], "status": status, "groups": outcomes}
+    return {"run_id": context["run_id"], "status": status, "verification": checked, "groups": outcomes}
 
 
 # 스팟 30일 시계열 (공식) ------------------------------------------------------------
@@ -162,14 +163,7 @@ def _write_series(conn, context, target, item, platform, captured):
 
 # 문서 Wayback 저장본 (집계) -----------------------------------------------------------
 
-def docs_captures(conn, context, targets, get_json, get_text, pause, verify, log):
-    verified = None
-    if verify:
-        try:
-            current = nebius.parse_pricing(get_text(nebius.PRICING_URL, nebius.REQUEST_CONFIG), context["now"]())
-            verified = {"keys": _price_keys(current), "at": context["now"]()}
-        except nebius.EXPECTED_ERRORS as error:
-            log(f"원천 확인 안 함: {type(error).__name__}: {error}")
+def docs_captures(conn, context, targets, get_json, get_text, pause, log):
     body = get_json(CDX_URL.format(url=ARCHIVED_URL), REQUEST_CONFIG)
     if not isinstance(body, list):
         raise nebius.SourceInvalid("unexpected_cdx_format")
@@ -188,7 +182,7 @@ def docs_captures(conn, context, targets, get_json, get_text, pause, verify, log
             version = f"wayback {capture['timestamp']} digest:{capture.get('digest')}"
             results = nebius.docs_results(targets, sections, VIEW_URL.format(**capture), version,
                                           f"문서 저장본 {capture['timestamp']}")
-            counts = _write_capture(conn, context, targets, results, capture, at, verified)
+            counts = _write_capture(conn, context, targets, results, capture, at)
             conn.commit()
             outcomes.append({"group": label, "status": "success", **counts})
         except nebius.EXPECTED_ERRORS + (db.HistoryOrderError,) as error:
@@ -201,9 +195,9 @@ def docs_captures(conn, context, targets, get_json, get_text, pause, verify, log
     return outcomes
 
 
-def _write_capture(conn, context, targets, results, capture, at, verified):
+def _write_capture(conn, context, targets, results, capture, at):
     run_id, captured = context["run_id"], context["now"]()
-    counts = {"added": 0, "verified": 0, "unverified": 0, "skipped": 0}
+    counts = {"added": 0, "skipped": 0}
     for target in targets:
         key = _capture_key(target, capture)
         if db.check_exists(conn, key):
@@ -216,14 +210,8 @@ def _write_capture(conn, context, targets, results, capture, at, verified):
             check_id, _ = db.add_check(conn, run_id, target["target_id"], "offer", at, "public", "success", True,
                                        f"{key}:offer:{offer_id}", product_id=product_id, offer_id=offer_id)
             nebius.ensure_spec_evidence(conn, context, target, product_id, hit, captured)
-            primary = verified_at = None
-            if verified is not None:
-                primary = _hit_key(hit) in verified["keys"]
-                verified_at = verified["at"] if primary else None
-                counts["verified" if primary else "unverified"] += 1
             db.add_evidence(conn, check_id, target["source_id"], "aggregator", hit.source_url, hit.source_version,
-                            {**hit.excerpt, "primary_source": nebius.PRICING_URL}, captured,
-                            primary_verified=primary, verified_at=verified_at)
+                            {**hit.excerpt, "primary_source": nebius.PRICING_URL}, captured)
             nebius.write_observation(conn, context, offer_id, check_id, hit, at, captured)
             counts["added"] += 1
         found = bool(result.hits) or result.disclosure is not None
@@ -237,21 +225,6 @@ def _write_capture(conn, context, targets, results, capture, at, verified):
     return counts
 
 
-def _price_keys(sections):
-    keys = set()
-    for platform, section in sections.items():
-        for kind, name in (("on_demand", "on_demand"), ("spot", "spot_fixed")):
-            if section[name] is not None:
-                for region in section["regions"]:
-                    keys.add((platform, region, kind, format(section[name]["amount"].normalize(), "f")))
-    return keys
-
-
-def _hit_key(hit):
-    return (hit.excerpt["platform"], hit.excerpt["region"], hit.kind,
-            format(hit.components[0]["amount"].normalize(), "f"))
-
-
 def _capture_key(target, capture):
     return f"wayback:{target['target_id']}:{capture['timestamp']}"
 
@@ -259,5 +232,4 @@ def _capture_key(target, capture):
 def _line(outcome):
     if outcome["status"] != "success":
         return f"{outcome['group']}: {outcome['status']} {outcome.get('reason', '')}"
-    extra = (f" (원천 확인 {outcome['verified']} / 미확인 {outcome['unverified']})" if "verified" in outcome else "")
-    return f"{outcome['group']}: success 추가 {outcome['added']} 건너뜀 {outcome['skipped']}{extra}"
+    return f"{outcome['group']}: success 추가 {outcome['added']} 건너뜀 {outcome['skipped']}"

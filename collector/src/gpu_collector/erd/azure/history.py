@@ -5,8 +5,8 @@
 
 Microsoft는 Retail Prices API의 과거 가격을 제공하지 않는다. 이 저장소가 매일 받아 둔 CSV가 유일한 과거 자료다.
 
-- 집계 출처라 근거 역할은 aggregator다. 스냅샷 값(가격·적용 시작일)이 지금 공식 API 값과 같으면 원천 확인
-  (primary_verified=true)으로, 지금 API에 없는 과거 값이면 원천 미확인(false)으로 남긴다.
+- 집계 출처라 근거 역할은 aggregator다. 원천 확인(primary_verified)은 적재 뒤 erd/verify.py가 판정한다
+  (그 무렵 매일 수집, 또는 적용 시작일이 스냅샷 이전인 매일 수집과 같은지).
 - 관측 시각(collected_at)은 릴리스 공개 시각, 적용 시각(effective_from)은 행의 effectiveStartDate다.
   실제로 받은 시각은 근거의 captured_at과 실행 기록에 남는다.
 - 행 선택·검증·환산은 매일 수집(azure/collect.py)과 같다. 스냅샷에도 이상값(예: 2026-05-03의 10년 예약)이 있어 같은
@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ... import fetch
-from .. import db
+from .. import db, verify as verifier
 from . import collect as azure
 
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-azure-snapshot 1"
@@ -50,8 +50,6 @@ def backfill(conn, *, since, until=None, every="month", cache_dir="var/cache", k
     conn.commit()
     context["cache_dir"].mkdir(parents=True, exist_ok=True)
 
-    verified, verify_note = primary_rows(targets, get_json, now) if verify else (None, "원천 확인 안 함(--no-verify)")
-    log(f"원천 확인 기준: {verify_note}")
     releases = pick(list_releases(get_json), since, until, every)
     jobs = [r for r in releases if not all(db.check_exists(conn, _target_key(t, r["tag"])) for t in targets)]
     log(f"스냅샷 {len(jobs)}개 처리 예정 ({since}~{until}, {every}). 이미 적재한 스냅샷은 건너뜀")
@@ -71,15 +69,16 @@ def backfill(conn, *, since, until=None, every="month", cache_dir="var/cache", k
         while pending:
             job, future = pending.popleft()
             fill()
-            outcomes.append(_process(conn, context, targets, job, future, verified))
+            outcomes.append(_process(conn, context, targets, job, future))
             log(_line(outcomes[-1]))
 
     ok = sum(1 for outcome in outcomes if outcome["status"] == "success")
     status = "success" if ok == len(outcomes) else ("failed" if ok == 0 else "partial_failure")
     failed = [f"{o['tag']}: {o['reason']}" for o in outcomes if o["status"] != "success"]
+    checked = verifier.reverify(conn, sources={SOURCE_SNAPSHOT}) if verify else None
     db.finish_run(conn, context["run_id"], now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": context["run_id"], "status": status, "groups": outcomes}
+    return {"run_id": context["run_id"], "status": status, "verification": checked, "groups": outcomes}
 
 
 # 스냅샷 고르기 -------------------------------------------------------------------
@@ -117,19 +116,6 @@ def pick(releases, since, until, every):
     return chosen
 
 
-def primary_rows(targets, get_json, now):
-    """지금 공식 API에 있는 행의 (SKU, 리전, 가격 유형, 기간, 가격, 적용 시작일) 모음. 받지 못하면 (None, 사유)."""
-    try:
-        rows = azure.fetch_rows(azure.api_url(azure.price_filter(targets)), get_json, lambda _s: None)
-    except (fetch.FetchError, azure.SourceInvalid) as error:
-        return None, f"공식 API를 받지 못해 원천 확인을 미확인(NULL)으로 남김: {type(error).__name__}: {error}"
-    checked = now()
-    chosen, _excluded, _superseded = azure.select_rows(rows, checked)
-    keys = {azure.make_hit({"provider_id": None, "gpu_model_id": None}, azure.MODEL_BY_SKU[k[0]], row, k, "", None).row_key
-            for k, row in chosen.items()}
-    return {"keys": keys, "at": checked}, f"{checked:%Y-%m-%d %H:%M} UTC 공식 API {len(keys)}행"
-
-
 # 처리 ------------------------------------------------------------------------
 
 def _fetch(context, job):
@@ -153,7 +139,7 @@ def read_rows(path):
     return keep
 
 
-def _process(conn, context, targets, job, future, verified):
+def _process(conn, context, targets, job, future):
     outcome = {"tag": job["tag"], "published": job["published"].isoformat() if job["published"] else None}
     fetched, existed = None, True
     try:
@@ -164,7 +150,7 @@ def _process(conn, context, targets, job, future, verified):
         version = f"{job['tag']} sha256:{fetched.sha256[:16]}" if fetched.sha256 else job["tag"]
         results = azure.target_results(targets, price_rows, rows, as_of, job["url"], job["url"], version,
                                        f"스냅샷 {job['date']}")
-        counts = _write(conn, context, targets, results, as_of, job["tag"], verified)
+        counts = _write(conn, context, targets, results, as_of, job["tag"])
         conn.commit()
         outcome.update(status="success", **counts)
     except azure.EXPECTED_ERRORS as error:
@@ -184,9 +170,9 @@ def _process(conn, context, targets, job, future, verified):
     return outcome
 
 
-def _write(conn, context, targets, results, as_of, tag, verified):
+def _write(conn, context, targets, results, as_of, tag):
     run_id, captured = context["run_id"], context["now"]()
-    counts = {"targets": 0, "offers": 0, "verified": 0, "unverified": 0, "skipped": 0, "not_found": 0}
+    counts = {"targets": 0, "offers": 0, "skipped": 0, "not_found": 0}
     for target in targets:
         key = _target_key(target, tag)
         if db.check_exists(conn, key):
@@ -204,15 +190,8 @@ def _write(conn, context, targets, results, as_of, tag, verified):
             check_id, _ = db.add_check(conn, run_id, target["target_id"], "offer", as_of, "public", "success", True,
                                        f"{key}:offer:{offer_id}", product_id=product_id, offer_id=offer_id)
             azure.ensure_spec_evidence(conn, context, target, product_id, captured)
-            if verified is None:
-                primary, verified_at = None, None
-            else:
-                primary = hit.row_key in verified["keys"]
-                verified_at = verified["at"] if primary else None
-                counts["verified" if primary else "unverified"] += 1
             db.add_evidence(conn, check_id, target["source_id"], "aggregator", hit.source_url, hit.source_version,
-                            {**hit.excerpt, "primary_source": azure.API_URL}, captured,
-                            primary_verified=primary, verified_at=verified_at)
+                            {**hit.excerpt, "primary_source": azure.API_URL}, captured)
             azure.write_observation(conn, context, offer_id, check_id, hit, as_of, captured)
         counts["offers"] += len(result.hits)
         found = bool(result.hits) or result.disclosure is not None
@@ -235,5 +214,5 @@ def _line(outcome):
     if outcome["status"] != "success":
         return f"{outcome['tag']}: {outcome['status']} {outcome.get('reason', '')}"
     return (f"{outcome['tag']}: success 대상 {outcome['targets']} 오퍼 {outcome['offers']} "
-            f"(원천 확인 {outcome['verified']} / 미확인 {outcome['unverified']}) 미발견 {outcome['not_found']} "
+            f"미발견 {outcome['not_found']} "
             f"건너뜀 {outcome['skipped']}")

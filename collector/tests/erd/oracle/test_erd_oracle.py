@@ -203,7 +203,7 @@ class History(OracleDb):
             """SELECT ob.collected_at::date::text, bool_and(e.primary_verified) FROM source_evidence e
                JOIN price_observation ob USING (check_id)
                WHERE e.evidence_role = 'aggregator' GROUP BY 1""").fetchall())
-        self.assertEqual(rows, {"2026-05-11": False, "2026-08-12": True})     # 05-11은 B300 가격이 지금과 다름
+        self.assertEqual(rows, {"2026-05-11": None, "2026-08-12": None})      # 그 무렵 매일 수집 없음 → 대조 불가
         self.assertEqual(count(self.conn, "SELECT count(*) FROM collection_alert"), 0)
 
     def test_rerun_skips_loaded_captures_and_shares_products_with_daily(self):

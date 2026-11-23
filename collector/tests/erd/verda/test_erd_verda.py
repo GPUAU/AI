@@ -256,15 +256,16 @@ class BackfillTests(VerdaDb):
         # 약정 할인율 저장본은 없어 약정은 적재하지 않는다
         self.assertEqual(self.conn.execute("SELECT count(*) FROM offer WHERE contract_type = 'commitment'").fetchone()[0], 0)
 
-    def test_primary_verified_against_current_api(self):
+    def test_primary_verified_against_nearby_daily(self):
+        self.collect()                                                # 11-18 매일 수집, 저장본 11-15와 3일 차이
         self.backfill()
         rows = dict(self.conn.execute(
             """SELECT p.region_code || ':' || p.original_product_name || ':' || o.contract_type, se.primary_verified
                FROM source_evidence se JOIN collection_check c USING (check_id) JOIN offer o ON o.offer_id = c.offer_id
                JOIN product p ON p.product_id = o.product_id
                WHERE se.evidence_role = 'aggregator' AND p.region_code IS NOT NULL""").fetchall())
-        self.assertTrue(rows["FIN-02:1B300.30V:on_demand"])          # 지금도 12.41
-        self.assertFalse(rows["FIN-01:1B300.30V:on_demand"])         # 저장본 12.41, 지금 12.66
+        self.assertTrue(rows["FIN-02:1B300.30V:on_demand"])          # 3일 뒤 매일 수집도 12.41
+        self.assertIsNone(rows["FIN-01:1B300.30V:on_demand"])        # 12.41 vs 12.66, 1일 넘게 차이 → 대조 불가
 
     def test_rerun_skips_loaded_captures_and_daily_collect_reuses_products(self):
         self.backfill()

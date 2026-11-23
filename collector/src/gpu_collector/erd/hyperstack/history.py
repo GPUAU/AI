@@ -7,9 +7,8 @@
   리전 미상 상품(original_product_name = pricebook GPU 종류)으로 둔다.
 - 형식: 2023~2024 초 '$ 4.30 per GPU', 2024~2025 초 '$ 3.44 per Hour'(+ 예약 'Starts from'), 2025-07~ 온디맨드·예약·스팟 표.
   온디맨드·스팟만 읽는다. 예약 'Starting from'·'Starts from'은 시작가라 읽지 않는다.
-- 집계 출처라 근거 역할은 aggregator. 저장 시각 ±7일 안에 같은 GPU 종류·계약의 매일 수집 가격이 있으면 그 값과 같을 때
-  원천 확인(true), 다르면 false. 그런 매일 수집이 없으면 확인할 수 없어 NULL(과거 가격을 오늘 가격과 비교하지 않는다).
-  비교한 매일 수집의 시각·금액은 근거에 남긴다.
+- 집계 출처라 근거 역할은 aggregator. 원천 확인(primary_verified)은 적재 뒤 erd/verify.py가 판정한다
+  (같은 GPU 종류·계약의 그 무렵 매일 수집과 같은지, 과거 가격을 오늘 가격과 비교하지 않는다).
 - 2024-02 이전 페이지는 vCPU·RAM·로컬 NVMe가 별도 과금(Add-ons)이라 그 사실을 raw_terms에 남긴다.
 - 오래된 것부터 처리한다. 급변·구성 변경 알림은 만들지 않는다(저장본을 받지 못하면 수집 실패로는 기록한다).
 """
@@ -18,13 +17,13 @@ import html as html_lib
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import requests
 
 from ... import fetch
-from .. import db, runs
+from .. import db, runs, verify as verifier
 from . import collect as hyperstack
 
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-hyperstack-wayback 1"
@@ -43,7 +42,6 @@ ON_DEMAND_ROW = re.compile(r"(?:^| \| )(?P<label>[A-Za-z][^|]{0,45}?) \| (?P<vra
 SPOT_SECTION = re.compile(r"Spot VM \| Pricing \| (?P<body>.*?)(?= \| On-Demand CPU| \| Storage \| Pricing| \| Spot VM \| Pricing|$)")
 SPOT_ROW = re.compile(r"(?:^| \| )(?P<label>[A-Za-z][^|$]{1,40}?) \| \$ ?(?P<price>\d+(?:\.\d+)?)")
 ADD_ONS = re.compile(r"Add-ons \| Price \| vCPU \| \$ ?[\d.]+ per GPU/hour")
-VERIFY_WINDOW = timedelta(days=7)
 TARGET_LABEL = re.compile(r"H100|H200|B200|B300", re.I)
 # 페이지 표기 → pricebook GPU 종류 ('NVIDIA '·'HGX '·' 80GB' 제거 후)
 GPU_BY_LABEL = {
@@ -98,9 +96,10 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
     ok = sum(1 for outcome in outcomes if outcome["status"] == "success")
     status = "success" if ok == len(outcomes) else ("failed" if ok == 0 else "partial_failure")
     failed = [f"{o['timestamp']}: {o['reason']}" for o in outcomes if o["status"] != "success"]
+    checked = verifier.reverify(conn, sources={SOURCE_WAYBACK})
     db.finish_run(conn, context["run_id"], now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": context["run_id"], "status": status, "groups": outcomes}
+    return {"run_id": context["run_id"], "status": status, "verification": checked, "groups": outcomes}
 
 
 # 저장본 목록·원문 ---------------------------------------------------------------
@@ -230,25 +229,11 @@ def make_hit(spec, row, view_url):
          "parsed_from": row["format"], "view_url": view_url}, row["gpu"])
 
 
-def nearest_daily(conn, provider_id, gpu, kind, as_of):
-    """저장 시각 ±7일 안의 같은 GPU 종류·계약 매일 수집 장당 가격(어느 flavor·리전이든 pricebook 값은 같다).
-    반환: (수집 시각, 금액) 또는 None."""
-    return conn.execute(
-        """SELECT ob.collected_at, pc.amount FROM price_observation ob
-           JOIN collection_check c ON c.check_id = ob.check_id AND c.deduplication_key LIKE 'daily:%%'
-           JOIN offer o ON o.offer_id = ob.offer_id AND o.contract_type = %s
-           JOIN product p ON p.product_id = o.product_id AND p.provider_id = %s AND p.original_model_name = %s
-           JOIN price_component pc ON pc.observation_id = ob.observation_id
-           WHERE ob.collected_at BETWEEN %s AND %s
-           ORDER BY abs(extract(epoch FROM ob.collected_at - %s)) LIMIT 1""",
-        (kind, provider_id, gpu, as_of - VERIFY_WINDOW, as_of + VERIFY_WINDOW, as_of)).fetchone()
-
-
 def _write(conn, context, targets, capture, rows):
     run_id, captured, as_of = context["run_id"], context["now"](), capture["at"]
     view_url = VIEW_URL.format(**capture)
     version = f"wayback {capture['timestamp']} digest:{capture['digest']}"
-    counts = {"targets": 0, "offers": 0, "verified": 0, "unverified": 0, "skipped": 0, "not_found": 0}
+    counts = {"targets": 0, "offers": 0, "skipped": 0, "not_found": 0}
     for target in targets:
         key = _target_key(target, capture)
         if db.check_exists(conn, key):
@@ -267,14 +252,8 @@ def _write(conn, context, targets, capture, rows):
             if not created:
                 raise hyperstack.SourceInvalid(f"duplicate_offer_in_capture: offer {offer_id}")
             hyperstack.ensure_spec_evidence(conn, context, target, product_id, row["gpu"], captured)
-            daily = nearest_daily(conn, target["provider_id"], row["gpu"], row["kind"], as_of)
-            primary = None if daily is None else daily[1] == row["amount"]
-            if primary is not None:
-                counts["verified" if primary else "unverified"] += 1
-            compared = {"compared_daily_at": daily[0].isoformat(), "compared_daily_amount": str(daily[1])} if daily else {}
             db.add_evidence(conn, check_id, target["source_id"], "aggregator", view_url, version,
-                            {**hit.excerpt, "primary_source": hyperstack.PRICEBOOK_URL, **compared}, captured,
-                            primary_verified=primary, verified_at=captured if primary else None)
+                            {**hit.excerpt, "primary_source": hyperstack.PRICEBOOK_URL}, captured)
             hyperstack.write_observation(conn, {**context, "target": target}, offer_id, check_id, hit, as_of, captured,
                                          alerts=False)
         counts["offers"] += len(found)
@@ -297,5 +276,5 @@ def _line(outcome):
     if outcome["status"] != "success":
         return f"{outcome['timestamp']}: {outcome['status']} {outcome.get('reason', '')}"
     return (f"{outcome['timestamp']}: success 대상 {outcome['targets']} 오퍼 {outcome['offers']} "
-            f"(원천 확인 {outcome['verified']} / 다름 {outcome['unverified']}) 미발견 {outcome['not_found']} "
+            f"미발견 {outcome['not_found']} "
             f"건너뜀 {outcome['skipped']}")

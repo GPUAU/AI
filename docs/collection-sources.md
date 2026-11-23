@@ -10,6 +10,7 @@
 - DB `data_source`에 출처 유형(`source_type`)과 이용 조건(`terms_status`)을 기록한다
   - 사업자 API: `official_api` / 사업자 문서·페이지: `official_page` / 환율: `fx_source` → 대부분 `allowed`
   - Wayback·GitHub 같은 제3자 저장본: `aggregator`, `unknown`. 관측 근거(`source_evidence.evidence_role`)도 `aggregator`
+- 제3자 저장본 값의 원천 확인(`primary_verified`)은 그 무렵 매일 수집과만 비교한다(같음 ±7일, 다름 ±1일, 그 외 NULL). `reverify` 명령으로 다시 판정
 - 내부 분석용, 원시 데이터 재배포 안 함
 
 ## 적재 중

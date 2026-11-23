@@ -11,7 +11,7 @@ SkyPilot의 OCI 수집기(skypilot-org/skypilot sky/catalog/data_fetchers/fetch_
 - OCI 가격은 리전마다 같다. 대상 구성의 리전별 가격이 서로 다르면 검증 실패로 남긴다.
 - 관측 시각(collected_at)은 커밋 시각이다. 가격이 적용된 시각이 아니라 카탈로그에 반영된 시각이다.
 - 같은 커밋이 여러 스키마 버전 파일을 바꿨으면 가장 높은 버전 하나만 쓴다. 같은 커밋은 다시 적재하지 않는다.
-- 상품은 매일 수집이 만든 같은 구성(같은 베어메탈 구성) 행에 붙인다. 카탈로그 가격이 지금 공식 API 값과 같으면 원천 확인.
+- 상품은 매일 수집이 만든 같은 구성(같은 베어메탈 구성) 행에 붙인다. 원천 확인은 적재 뒤 erd/verify.py가 판정한다(그 무렵 매일 수집과 같은지).
 - 과거 자료로는 알림을 만들지 않는다.
 """
 import csv
@@ -24,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 import requests
 
 from ... import fetch
-from .. import db, runs
+from .. import db, runs, verify as verifier
 from . import collect as oracle, history
 
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-oracle-skypilot 1"
@@ -58,8 +58,6 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
     oracle.fill_known_specs(conn, context["provider"])       # 미확인 vCPU를 먼저 채워 구성 비교가 어긋나지 않게
     conn.commit()
     try:
-        verified, verify_note = history.primary_prices(get_json, now) if verify else (None, "원천 확인 안 함(--no-verify)")
-        log(f"원천 확인 기준: {verify_note}")
         commits = [c for c in list_commits(get_json, pause) if since <= c["month"] <= until]
         repaired = repair_target_evidence(conn, targets, commits, now())
         conn.commit()
@@ -70,7 +68,7 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
         for index, commit in enumerate(jobs):
             if index:
                 pause(SECONDS_BETWEEN_REQUESTS)
-            outcomes.append(_process(conn, context, targets, commit, get_text, verified))
+            outcomes.append(_process(conn, context, targets, commit, get_text))
             log(_line(outcomes[-1]))
     except Exception as error:
         conn.rollback()
@@ -80,9 +78,11 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
     ok = sum(1 for outcome in outcomes if outcome["status"] == "success")
     status = "success" if ok == len(outcomes) else ("failed" if ok == 0 else "partial_failure")
     failed = [f"{o['sha'][:12]}: {o['reason']}" for o in outcomes if o["status"] != "success"]
+    checked = verifier.reverify(conn, sources={SOURCE_SKYPILOT}) if verify else None
     db.finish_run(conn, context["run_id"], now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": context["run_id"], "status": status, "evidence_repaired": repaired, "groups": outcomes}
+    return {"run_id": context["run_id"], "status": status, "verification": checked, "evidence_repaired": repaired,
+            "groups": outcomes}
 
 
 # 커밋 목록 ---------------------------------------------------------------------
@@ -147,11 +147,11 @@ def read_catalog(text):
 
 # 처리 ------------------------------------------------------------------------
 
-def _process(conn, context, targets, commit, get_text, verified):
+def _process(conn, context, targets, commit, get_text):
     outcome = {"sha": commit["sha"], "path": commit["path"], "at": commit["at"].isoformat()}
     try:
         catalog = read_catalog(get_text(RAW_URL.format(**commit), REQUEST_CONFIG))
-        counts = _write(conn, context, targets, commit, catalog, verified)
+        counts = _write(conn, context, targets, commit, catalog)
         conn.commit()
         outcome.update(status="success", **counts)
     except oracle.EXPECTED_ERRORS as error:
@@ -190,11 +190,11 @@ def make_hit(target, spec, gpus, price, commit):
     return oracle.Hit(spec, offer, observation, components, excerpt)
 
 
-def _write(conn, context, targets, commit, catalog, verified):
+def _write(conn, context, targets, commit, catalog):
     run_id, captured, as_of = context["run_id"], context["now"](), commit["at"]
     view_url = VIEW_URL.format(**commit)
     version = f"skypilot-catalog {commit['sha'][:12]} {commit['path']}"
-    counts = {"targets": 0, "offers": 0, "verified": 0, "unverified": 0, "skipped": 0, "not_found": 0}
+    counts = {"targets": 0, "offers": 0, "skipped": 0, "not_found": 0}
     for target in targets:
         key = _target_key(target, commit)
         if db.check_exists(conn, key):
@@ -216,15 +216,8 @@ def _write(conn, context, targets, commit, catalog, verified):
             check_id, _ = db.add_check(conn, run_id, target["target_id"], "offer", as_of, "public", "success", True,
                                        f"{key}:offer:{offer_id}", product_id=product_id, offer_id=offer_id)
             oracle.ensure_spec_evidence(conn, context, target, product_id, captured)
-            primary, verified_at = None, None
-            if verified is not None:
-                current = verified["prices"].get(target["model_name"])
-                primary = current is not None and current[1] == price / gpus
-                verified_at = verified["at"] if primary else None
-                counts["verified" if primary else "unverified"] += 1
             db.add_evidence(conn, check_id, target["source_id"], "aggregator", view_url, version,
-                            {**hit.excerpt, "primary_source": oracle.API_URL}, captured,
-                            primary_verified=primary, verified_at=verified_at)
+                            {**hit.excerpt, "primary_source": oracle.API_URL}, captured)
             oracle.write_observation(conn, context, offer_id, check_id, hit, as_of, captured)
             counts["offers"] += 1
         else:
@@ -268,5 +261,5 @@ def _line(outcome):
     if outcome["status"] != "success":
         return f"{outcome['sha'][:12]} {outcome['path']}: {outcome['status']} {outcome.get('reason', '')}"
     return (f"{outcome['at'][:10]} {outcome['sha'][:12]} {outcome['path']}: success 대상 {outcome['targets']} "
-            f"오퍼 {outcome['offers']} (원천 확인 {outcome['verified']} / 미확인 {outcome['unverified']}) "
+            f"오퍼 {outcome['offers']} "
             f"미발견 {outcome['not_found']} 건너뜀 {outcome['skipped']}")

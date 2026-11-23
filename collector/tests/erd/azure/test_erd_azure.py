@@ -223,6 +223,7 @@ class SnapshotTests(AzureDb):
                                       now=self.now, get_json=self.get_json, downloader=self.downloader)
 
     def test_monthly_snapshots_load_with_source_time_and_verification(self):
+        self.collect()                     # 매일 수집(적용 시작일 포함)이 있어야 원천 확인을 판정한다
         summary = self.backfill()
         self.assertEqual(summary["status"], "success")
         self.assertEqual(self.downloads, ["2026-01-01", "2026-02-01"])
@@ -234,9 +235,9 @@ class SnapshotTests(AzureDb):
                WHERE p.original_product_name = %s AND p.region_code = 'eastus' AND o.contract_type = 'spot'
                ORDER BY ob.collected_at""", (H100,)).fetchall()
         self.assertEqual(spot[0], (Decimal("19.02492") / 8, datetime(2026, 1, 1, 6, 30, tzinfo=timezone.utc),
-                                   datetime(2025, 12, 1, tzinfo=timezone.utc), False, "aggregator"))
+                                   datetime(2025, 12, 1, tzinfo=timezone.utc), None, "aggregator"))   # 그 무렵 공식 값 없음
         self.assertEqual(spot[1][0], Decimal("18.169536") / 8)
-        self.assertTrue(spot[1][3])        # 지금 API 값과 같다
+        self.assertTrue(spot[1][3])        # 매일 수집의 적용 시작일이 스냅샷 이전이고 값이 같다
         self.assertEqual(self.conn.execute("SELECT count(*) FROM collection_alert").fetchone()[0], 0)
         self.assertFalse(any(Path(self.temp.name, "azure", "snapshot").iterdir()))
 

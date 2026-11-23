@@ -364,8 +364,8 @@ erDiagram
 | `source_url` | TEXT | 예 | 당시 확인한 세부 URL |
 | `source_version` | TEXT | 아니요 | API·문서 등 원본 버전 |
 | `excerpt` | TEXT | 아니요 | 허용 범위 내 원문 발췌 |
-| `primary_verified` | BOOLEAN | 아니요 | 집계값의 공식 원천 확인 여부. 모르면 NULL |
-| `verified_at` | TIMESTAMP | 아니요 | 실제 공식 원천 확인 시각 |
+| `primary_verified` | BOOLEAN | 아니요 | 집계값의 공식 원천 확인 여부. 그 무렵 매일 수집(±7일, 또는 적용 시작일이 이전)과 같으면 true, ±1일 안 매일 수집과 다르면 false, 그 외 NULL(오늘 값과 비교하지 않음, `erd/verify.py`) |
+| `verified_at` | TIMESTAMP | 아니요 | 비교한 매일 수집 관측 시각 |
 | `captured_at` | TIMESTAMP | 예 | 해당 근거 수집 시각 |
 
 한 점검에 공식 원천과 집계 사이트를 각각 연결할 수 있다. 수집 당시 원문 저장·재배포는 출처별 조건을 확인한다.

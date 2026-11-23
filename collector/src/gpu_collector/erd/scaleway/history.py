@@ -8,8 +8,7 @@
   상품 구성은 매일 수집이 만든 같은 상품(offer_id × zone)의 최신 구성을 이어받는다(옛 sku 형식 /compute/…가 달라서).
   그런 상품이 없으면 저장본의 hardware로 만든다.
 - 2024년 저장본: 내장 JSON이 없고 HTML 표에 €/시간만 있다. 리전 표기가 없어 리전 미상(region_code NULL) 상품으로 둔다.
-- 집계 출처라 근거 역할은 aggregator다. 같은 오퍼의 최근 매일 수집 가격과 같으면 원천 확인(primary_verified=true),
-  다르면 false, 매일 수집 가격이 없으면 미확인(NULL).
+- 집계 출처라 근거 역할은 aggregator다. 원천 확인(primary_verified)은 적재 뒤 erd/verify.py가 판정한다.
 - 관측 시각은 저장 시각, USD 환산은 매일 수집과 같은 규칙 v4(저장일 이하 최신 교차환율). 알림은 만들지 않는다.
 - 같은 저장본은 다시 적재하지 않는다. 오래된 것부터 처리한다.
 """
@@ -25,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 import requests
 
 from ... import fetch
-from .. import db, runs
+from .. import db, runs, verify as verifier
 from . import collect as scaleway
 
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-scaleway-wayback 1"
@@ -80,9 +79,10 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
     ok = sum(1 for outcome in outcomes if outcome["status"] == "success")
     status = "success" if ok == len(outcomes) else ("failed" if ok == 0 else "partial_failure")
     failed = [f"{o['timestamp']}: {o['reason']}" for o in outcomes if o["status"] != "success"]
+    checked = verifier.reverify(conn, sources={SOURCE_WAYBACK})
     db.finish_run(conn, context["run_id"], now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
-    return {"run_id": context["run_id"], "status": status, "groups": outcomes}
+    return {"run_id": context["run_id"], "status": status, "verification": checked, "groups": outcomes}
 
 
 # 저장본 목록·원문 ---------------------------------------------------------------
@@ -299,15 +299,6 @@ def make_hit(spec, row, view_url):
          "parsed_from": row["source"], "view_url": view_url}, unit, "EUR")
 
 
-def latest_daily_amount(conn, offer_id):
-    row = conn.execute(
-        """SELECT pc.amount, pc.time_unit FROM price_observation ob
-           JOIN collection_check c ON c.check_id = ob.check_id AND c.deduplication_key LIKE 'daily:%%'
-           JOIN price_component pc ON pc.observation_id = ob.observation_id
-           WHERE ob.offer_id = %s ORDER BY ob.collected_at DESC LIMIT 1""", (offer_id,)).fetchone()
-    return row
-
-
 def _write(conn, context, targets, capture, rows):
     run_id, captured, as_of = context["run_id"], context["now"](), capture["at"]
     view_url = VIEW_URL.format(**capture)
@@ -315,7 +306,7 @@ def _write(conn, context, targets, capture, rows):
     by_model = {}
     for row in rows:
         by_model.setdefault(scaleway.SPECS[row["name"]]["model"], []).append(row)
-    counts = {"targets": 0, "offers": 0, "verified": 0, "unverified": 0, "skipped": 0, "not_found": 0}
+    counts = {"targets": 0, "offers": 0, "skipped": 0, "not_found": 0}
     for target in targets:
         key = _target_key(target, capture)
         if db.check_exists(conn, key):
@@ -331,13 +322,8 @@ def _write(conn, context, targets, capture, rows):
             check_id, _ = db.add_check(conn, run_id, target["target_id"], "offer", as_of, "public", "success", True,
                                        f"{key}:offer:{offer_id}", product_id=product_id, offer_id=offer_id)
             scaleway.ensure_spec_evidence(conn, context, target, product_id, row["name"], captured)
-            daily = latest_daily_amount(conn, offer_id)
-            primary = None if daily is None else (daily[1] == row["unit"] and daily[0] == row["amount"])
-            if primary is not None:
-                counts["verified" if primary else "unverified"] += 1
             db.add_evidence(conn, check_id, target["source_id"], "aggregator", view_url, version,
-                            {**hit.excerpt, "primary_source": scaleway.API_URL.format(page="N")}, captured,
-                            primary_verified=primary, verified_at=captured if primary else None)
+                            {**hit.excerpt, "primary_source": scaleway.API_URL.format(page="N")}, captured)
             scaleway.write_observation(conn, {**context, "target": target}, offer_id, check_id, hit, as_of, captured,
                                        alerts=False)
         counts["offers"] += len(found)
@@ -360,5 +346,5 @@ def _line(outcome):
     if outcome["status"] != "success":
         return f"{outcome['timestamp']}: {outcome['status']} {outcome.get('reason', '')}"
     return (f"{outcome['timestamp']}: success 대상 {outcome['targets']} 오퍼 {outcome['offers']} "
-            f"(원천 확인 {outcome['verified']} / 다름 {outcome['unverified']}) 미발견 {outcome['not_found']} "
+            f"미발견 {outcome['not_found']} "
             f"건너뜀 {outcome['skipped']}")

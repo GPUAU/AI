@@ -260,3 +260,44 @@ class Backfill(HyperstackDb):
         summary = history.backfill(self.conn, since="2023-11", until="2026-11", now=self.now, get_json=broken,
                                    get_bytes=None, pause=lambda s: None, log=lambda m: None)
         self.assertEqual(summary["status"], "failed")
+
+
+def page(rows):
+    cells = "".join(f"<tr><td>{label}</td><td>80</td><td>24</td><td>240</td><td>${price}</td></tr>" for label, price in rows)
+    return f"<h3>On-Demand GPU</h3><table>{cells}</table>".encode()
+
+
+class Verification(HyperstackDb):
+    """원천 확인 판정(erd/verify.py): 같음 ±7일, 다름 ±1일, 그 사이·공식 관측 없음은 대조 불가."""
+
+    def backfill(self, pages):
+        captures = [["timestamp", "original", "digest"]] + [[s, "https://www.hyperstack.cloud/gpu-pricing", s]
+                                                            for s in pages]
+        return history.backfill(self.conn, since="2026-11", until="2026-11", now=self.now,
+                                get_json=lambda url, config: captures,
+                                get_bytes=lambda url, config: pages[url.split("/web/")[1][:14]],
+                                pause=lambda s: None, log=lambda m: None)
+
+    def verdicts(self):
+        return dict(self.conn.execute(
+            """SELECT ob.collected_at::date::text || ' ' || p.original_product_name, e.primary_verified
+               FROM source_evidence e JOIN price_observation ob USING (check_id) JOIN offer o USING (offer_id)
+               JOIN product p USING (product_id) WHERE e.evidence_role = 'aggregator'""").fetchall())
+
+    def test_windows(self):
+        self.collect()                                              # 매일 수집 2026-11-23 03:00
+        self.backfill({"20261122120000": page([("NVIDIA H100 SXM", "3.50")]),     # 15시간 전, 값 다름
+                       "20261119000000": page([("NVIDIA H100 SXM", "3.00")]),     # 4일 전, 값 다름
+                       "20261117000000": page([("NVIDIA B300", "7.40")])})        # 6일 전, 값 같음
+        self.assertEqual(self.verdicts(), {"2026-11-22 H100-80G-SXM5": False, "2026-11-19 H100-80G-SXM5": None,
+                                           "2026-11-17 B300-SXM": True})
+
+    def test_reverify_after_daily_collect(self):
+        self.backfill({"20261122120000": page([("NVIDIA B300", "7.40")])})
+        self.assertEqual(self.verdicts(), {"2026-11-22 B300-SXM": None})        # 매일 수집 전: 대조 불가
+        self.collect()
+        from gpu_collector.erd import verify
+        self.assertEqual(verify.reverify(self.conn)["same"], 1)
+        self.assertEqual(self.verdicts(), {"2026-11-22 B300-SXM": True})
+        excerpt = count(self.conn, "SELECT excerpt FROM source_evidence WHERE primary_verified")
+        self.assertIn("compared_daily_at", excerpt)
