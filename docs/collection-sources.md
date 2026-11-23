@@ -22,6 +22,7 @@
 | Scaleway | 카탈로그 API v2alpha1 (EUR → USD) | Wayback 가격 페이지(2024-05~) | ✅ 공식 Go SDK. 웹은 봇 차단 |
 | Verda | instance-types, long-term periods API | Wayback API 응답(2026-08~) | ✅ 명세 `security: []` |
 | Nebius | 문서 가격표(docs.nebius.com), 스팟 API | 스팟 30일, Wayback 문서(2026-05~) | ✅ 자동 접근 금지 없음 |
+| Hyperstack | pricebook·flavors API(키), 온디맨드·스팟 | Wayback 가격 페이지(2023-11~) | ✅ 공식 문서가 pricebook 안내. 계정 할인가는 안 받음(T&C 8.1). 웹은 ⚠️(IP 조항 2.1·6.4) |
 | 환율 | 수출입은행 현재환율 API | 같은 API 과거 영업일(2023-07~) | ✅ |
 
 과거 데이터 상세는 각 `collector/src/gpu_collector/erd/*/history.py` 머리 주석.
@@ -38,12 +39,12 @@
 | Oracle | 가격 페이지 Wayback | 가격을 JS로 채워 HTML에 값 없음 |
 | Oracle | gpuhunt 카탈로그 | 보강 기간 짧음(GB200 약 6주) |
 | Scaleway | 카탈로그 API Wayback | 첫 페이지(100건)만 저장됨 |
+| Hyperstack | 예약가(가격 페이지) | API에 없음. 페이지는 "Starting from" 시작가, 기간 없음 |
 
 ## 검토한 사업자 (미적재)
 
 | 사업자 | 원천 | 상태 |
 | --- | --- | --- |
-| Hyperstack | pricebook·flavor API(키), 과거는 Wayback 가격 페이지(2023-11~) | 검토 완료. API ✅, 페이지 ⚠️(IP 조항 2.1·6.4). 예약가는 API에 없고 페이지도 "Starting from"이라 제외 예정 |
 | OVHcloud | 카탈로그 API(무인증), 과거는 Wayback 가격 페이지 | 보류. B300·B200 판매 상품 없음 |
 | Spheron, OpenRelay | — | 제외. 중개·분산 |
 | EmpirioLabs, Jarvislabs, Thunder Compute, Runpod | — | 제외. 직접 공급 확인 안 됨 |

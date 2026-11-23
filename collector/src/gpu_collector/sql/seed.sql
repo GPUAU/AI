@@ -538,6 +538,45 @@ WHERE NOT EXISTS (
     WHERE t.provider_id = p.provider_id AND t.gpu_model_id = m.gpu_model_id AND t.source_id = s.source_id
       AND t.region_filter IS NULL AND t.contract_filter IS NOT DISTINCT FROM v.contract);
 
+-- Hyperstack (NexGen Cloud) -----------------------------------------------------------------------------------------
+-- pricebook(GPU 종류별 장당 시간가, 리전 단일가)과 flavors(리전별 구성)로 B300·B200·H200·H100 온디맨드·스팟을 수집한다.
+-- GPU 특화(gpu_specialist): NexGen Cloud가 유럽·북미 자체 데이터센터에서 직접 운영한다. 예약가는 API에 없어 수집하지 않는다.
+INSERT INTO provider (provider_name, provider_type, official_url)
+VALUES ('Hyperstack', 'gpu_specialist', 'https://www.hyperstack.cloud')
+ON CONFLICT (provider_name) DO NOTHING;
+
+-- OR-02 이용 조건(2026-11-22 확인, agy 교차 검증): 공식 문서(docs.hyperstack.cloud/docs/billing/pricebook)가 "Current list
+-- prices for every GPU ... are published on the Pricebook API"로 안내하고 공식 Python·Go SDK가 같은 조회를 제공한다(API 키,
+-- 분당 500회 제한). 하루 1회 호출, 내부 분석 용도, 원시 데이터 재배포 없음. 계정 계약 할인가(discount_applied)는 T&C 8.1
+-- 기밀 소지가 있어 적재하지 않는다. 웹페이지는 자동 접근 금지 문구가 없고 IP 조항(2.1·6.4)만 있어 매일 수집하지 않고
+-- 사양 근거는 사람이 확인한 문구만 쓴다. 과거 가격은 Wayback 가격 페이지 저장본(집계, 미확인)이다.
+INSERT INTO data_source (source_name, source_type, base_url, collection_method, terms_status, terms_checked_at, terms_url)
+VALUES ('hyperstack_api', 'official_api', 'https://infrahub-api.nexgencloud.com/v1/pricebook', 'api', 'allowed',
+        '2026-11-22T00:00:00Z', 'https://docs.hyperstack.cloud/docs/billing/pricebook'),
+       ('hyperstack_product_pages', 'official_page', 'https://www.hyperstack.cloud/gpu-pricing', 'manual', 'allowed',
+        '2026-11-22T00:00:00Z', 'https://www.hyperstack.cloud/terms-and-conditions'),
+       ('hyperstack_gpu_pricing_wayback', 'aggregator', 'https://web.archive.org/web/*/www.hyperstack.cloud/gpu-pricing',
+        'page', 'unknown', NULL, 'https://archive.org/about/terms.php')
+ON CONFLICT (source_name) DO NOTHING;
+
+INSERT INTO collection_target (provider_id, gpu_model_id, source_id, region_filter, contract_filter, scope_description)
+SELECT p.provider_id, m.gpu_model_id, s.source_id, NULL, v.contract, v.description
+FROM (VALUES
+    ('hyperstack_api', 'on_demand', ARRAY['B300', 'B200', 'H200', 'H100'], 'pricebook GPU 장당 시간가 × flavor(리전별 구성)'),
+    ('hyperstack_api', 'spot', ARRAY['B300', 'B200', 'H200', 'H100'], 'pricebook 스팟 GPU 장당 시간가 × 스팟 flavor (없는 모델은 출시 감지용)'),
+    ('hyperstack_gpu_pricing_wayback', 'on_demand', ARRAY['B300', 'B200', 'H200', 'H100'], 'Wayback 가격 페이지 저장본의 온디맨드 GPU 장당 시간가 (집계, 과거 이력)'),
+    ('hyperstack_gpu_pricing_wayback', 'spot', ARRAY['H100'], 'Wayback 가격 페이지 저장본의 스팟 GPU 장당 시간가 (집계, 과거 이력)'),
+    ('hyperstack_product_pages', NULL, ARRAY['B300', 'B200', 'H200', 'H100'], '상품·가격 페이지의 GPU 메모리·NVLink 문구 (수기 확인 근거)')
+) AS v (source, contract, models, description)
+CROSS JOIN LATERAL unnest(v.models) AS mm (model)
+JOIN provider p ON p.provider_name = 'Hyperstack'
+JOIN gpu_model m ON m.model_name = mm.model
+JOIN data_source s ON s.source_name = v.source
+WHERE NOT EXISTS (
+    SELECT 1 FROM collection_target t
+    WHERE t.provider_id = p.provider_id AND t.gpu_model_id = m.gpu_model_id AND t.source_id = s.source_id
+      AND t.region_filter IS NULL AND t.contract_filter IS NOT DISTINCT FROM v.contract);
+
 -- 환율 (한국수출입은행) ----------------------------------------------------------------------------------------------
 -- 현재환율 API(data=AP01)의 매매기준율을 응답 통화 전부에 대해 '{통화}→KRW'로 적재한다(erd/fx/collect.py).
 -- OR-02 이용 조건(2026-11-20 확인, 같은 날 사용자 승인): API 페이지의 이용허락조건 표시는 공공누리 미적용이다
