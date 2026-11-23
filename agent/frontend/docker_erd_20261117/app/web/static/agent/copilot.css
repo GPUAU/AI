@@ -1,0 +1,66 @@
+.copilot-layout .feed { max-height: clamp(480px, 75dvh, 840px); }
+.copilot-layout .feed > .msg-u,
+.copilot-layout .feed > .msg-a { flex-shrink: 0; overflow-wrap: anywhere; }
+.copilot-layout .msg-u { background: #edf0f3; color: #414a55; border-radius: 6px 6px 2px 6px; }
+.copilot-layout .msg-a { overflow-x: visible; }
+.copilot-layout .agent-product-prices { margin-bottom: 8px; }
+.copilot-layout .agent-product-prices :is(th, td) { min-width: 150px; white-space: normal; }
+.copilot-layout .agent-period-prices :is(th, td) { vertical-align: top; white-space: normal; }
+.copilot-layout .agent-period-prices th { word-break: keep-all; }
+.copilot-layout .agent-period-prices td:nth-child(n+2) { white-space: nowrap; }
+.copilot-layout .agent-period-mobile-label { display: none; }
+.copilot-layout .agent-period-change-chart {
+  margin: 12px 0 16px; padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 6px; background: #fff;
+}
+.copilot-layout .agent-period-change-chart ul { list-style: none; padding: 0; margin: 0; }
+.copilot-layout .agent-period-change-row {
+  display: grid; grid-template-columns: minmax(90px, 37%) minmax(0, 1fr) 96px;
+  grid-template-areas: "offer bar value"; align-items: center; gap: 10px; padding: 5px 0;
+}
+.copilot-layout .agent-period-change-offer { grid-area: offer; min-width: 0; }
+.copilot-layout .agent-period-change-offer small { display: block; color: var(--ink-2); }
+.copilot-layout .agent-period-change-track {
+  grid-area: bar; position: relative; height: 14px; background: #f2f4f7; border-radius: 3px;
+}
+.copilot-layout .agent-period-change-track::before {
+  content: ""; position: absolute; inset: 0 auto 0 50%; width: 1px; background: #8794a1;
+}
+.copilot-layout .agent-period-change-bar { position: absolute; inset-block: 3px; width: var(--bar-width); border-radius: 2px; }
+.copilot-layout .agent-period-change-bar.increase { left: 50%; background: #9e3f2d; }
+.copilot-layout .agent-period-change-bar.decrease { right: 50%; background: #285e83; }
+.copilot-layout .agent-period-change-value {
+  grid-area: value; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.copilot-layout .msg-a .agent-product-quote { margin: 0; padding: 0; border: 0; }
+.copilot-layout .msg-a .agent-product-quote + .agent-product-quote {
+  margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line);
+}
+@media (max-width: 600px) {
+  .copilot-layout .agent-period-change-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "offer value" "bar bar"; gap: 3px 8px; padding: 5px 0 8px;
+  }
+  .copilot-layout .agent-period-prices :is(table, tbody) { display: block; margin: 0; }
+  .copilot-layout .agent-period-prices thead {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
+  }
+  .copilot-layout .agent-period-prices tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas: "offer delta" "before after";
+    gap: 8px; padding: 12px; border-bottom: 1px solid var(--line);
+  }
+  .copilot-layout .agent-period-prices tr:last-child { border-bottom: 0; }
+  .copilot-layout .agent-period-prices td { padding: 0 !important; border: 0; }
+  .copilot-layout .agent-period-prices td:nth-child(1) { grid-area: offer; }
+  .copilot-layout .agent-period-prices td:nth-child(2) { grid-area: before; }
+  .copilot-layout .agent-period-prices td:nth-child(3) { grid-area: after; }
+  .copilot-layout .agent-period-prices td:nth-child(4) { grid-area: delta; }
+  .copilot-layout .agent-period-mobile-label { display: block; font-size: .9em; color: var(--ink-2); }
+  .copilot-layout .agent-commitment-overview table { width: 100%; table-layout: fixed; }
+  .copilot-layout .agent-commitment-overview th,
+  .copilot-layout .agent-commitment-overview td { white-space: normal; }
+  .copilot-layout .agent-commitment-overview th:first-child { width: 24%; }
+  .copilot-layout .agent-commitment-overview th:last-child { width: 22%; }
+}

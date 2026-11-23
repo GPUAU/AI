@@ -1,0 +1,22 @@
+{
+  "backend": {
+    "src/main/java/com/gpumarket/domain/agent/controller/AgentMessageController.java": "ecf44f7072678ebc56736043b5a2a4c726eff65028f38397e50464a7773b3e49",
+    "src/main/java/com/gpumarket/domain/agent/dto/AgentMessageRequestDto.java": "1de1d6cf83e5ade86fe98c74c970d7df9507409c08f3de866d316fc07568ce61",
+    "src/main/java/com/gpumarket/domain/agent/dto/AgentMessageResponseDto.java": "97a6a1d4bbcd1d64b11d59924b616c1b7eea1906f798a1d2d49bd21ef7902c82",
+    "src/main/java/com/gpumarket/domain/agent/dto/PublicContextDto.java": "d141a35b3c0eb1b28139c36a2e2b9c6015239376337a715cd8490182b517b9af",
+    "src/main/java/com/gpumarket/domain/agent/package-info.java": "af9ba4cc2cbab1672396583c9e64bc9857989a8025ed6e481ac000635a9de258",
+    "src/main/java/com/gpumarket/domain/agent/service/AgentMarketTools.java": null,
+    "src/main/java/com/gpumarket/domain/agent/service/AgentMessageService.java": "dc555f60b4b6c7338b9faf83851b6655256b4245b2d286f88c7795dbf6c32809",
+    "src/main/java/com/gpumarket/domain/agent/service/AgentQueryScope.java": null,
+    "src/main/java/com/gpumarket/domain/agent/service/AgentSessionStore.java": "be52f36b08f7efa19cb723aaa97f2815779a529a82c4488c10ccada3866ba71d",
+    "src/test/java/com/gpumarket/domain/agent/AgentMessageApiTest.java": "b63000963e2998e45f8c95e1afe2999bbd946d83d5402707af8f09caf8502b73",
+    "src/test/java/com/gpumarket/domain/agent/AgentMessageServiceTest.java": "600742117e8c51944539e5d6247b91ce9e28fa1c414cbe7c331347db8a87aae3",
+    "src/test/java/com/gpumarket/domain/agent/service/AgentMarketToolsTest.java": null,
+    "src/test/java/com/gpumarket/domain/agent/service/AgentSessionStoreTest.java": "f27a9e3390d668d8c076e7a556a0f25b3145b17c453e2c95314140e9b351a5af",
+    "scripts/evaluate_agent.py": null
+  },
+  "frontend": {
+    "docker_erd_20261117/app/web/static/agent/copilot.js": null,
+    "docker_erd_20261117/app/web/static/agent/copilot.css": null
+  }
+}
