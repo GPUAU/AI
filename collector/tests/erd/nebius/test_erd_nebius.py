@@ -263,7 +263,7 @@ class BackfillTests(NebiusDb):
         verified = self.conn.execute(
             """SELECT DISTINCT se.primary_verified FROM source_evidence se JOIN collection_check c USING (check_id)
                JOIN offer o ON o.offer_id = c.offer_id WHERE se.evidence_role = 'aggregator'""").fetchall()
-        self.assertEqual(verified, [(False,)])     # 지금 문서(9.50·시작가)와 다름
+        self.assertEqual(verified, [(None,)])      # 저장본 무렵의 매일 수집이 없어 대조 불가(지금 값과 비교하지 않음)
         self.assertEqual(self.backfill(only={"docs"})["groups"], [])
 
     def test_history_then_daily_collect_share_products(self):

@@ -69,6 +69,7 @@ python -m gpu_collector.erd collect aws --date 2026-11-20     # 수집 기준일
 python -m gpu_collector.erd backfill aws --since 2023-07      # 과거 이력 (사업자별 옵션은 --help)
 python -m gpu_collector.erd backfill fx --since 2023-07-01    # 과거 환율(날짜는 YYYY-MM-DD, 하루 1,000회 제한)
 python -m gpu_collector.erd convert krw                       # USD 환산값을 원화로(원화 환산이 없는 행만)
+python -m gpu_collector.erd reverify              # 제3자 저장본 과거 관측의 원천 확인 다시 판정(매일 수집이 쌓인 뒤)
 python -m gpu_collector.erd status record         # 랙스케일·출시 예정 모델 수기 상태 기록
 python -m gpu_collector.erd report --model B300   # 최신 가격과 대상별 마지막 점검
 ```

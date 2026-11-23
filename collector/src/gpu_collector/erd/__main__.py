@@ -35,6 +35,7 @@
   python -m gpu_collector.erd convert krw [--since 2023-07-01]
                                                        USD 환산값을 원화로(관측일 이하 최신 USD→KRW 매매기준율, 그날 환율이
                                                        확정된 관측만. 원화 환산이 없는 행만 적재)
+  python -m gpu_collector.erd reverify [--only 출처,...]  제3자 저장본 과거 관측의 원천 확인을 다시 판정(erd/verify.py)
   python -m gpu_collector.erd status record            랙스케일·출시 예정 모델 공개 상태 수기 확인 기록(erd/status.py, 월 1회)
   python -m gpu_collector.erd specs aws                 이미 적재한 AWS 상품에 모델 원문·사양 근거(상호연결)를 채운다(1회)
   python -m gpu_collector.erd specs oracle              이미 적재한 Oracle 상품에 vCPU(x86)·NVLink 근거를 채운다(1회, 구성 버전 유지)
@@ -72,7 +73,7 @@ from .fx import collect as fx, convert as krw
 from .oracle import collect as oracle, history as oracle_history, skypilot as oracle_skypilot
 from .scaleway import collect as scaleway, history as scaleway_history
 from .hyperstack import collect as hyperstack, history as hyperstack_history
-from . import runs, status
+from . import runs, status, verify
 
 SQL = resources.files("gpu_collector") / "sql"
 DDL = SQL / "ddl.sql"
@@ -130,11 +131,13 @@ def parse(argv):
     b.add_argument("--keep-files", action="store_true", help="받은 과거 가격 파일을 지우지 않는다")
     b.add_argument("--workers", type=int, default=3, help="미리 받을 파일 수")
     b.add_argument("--every", default="month", choices=["month", "week", "day"], help="Azure 스냅샷 간격")
-    b.add_argument("--no-verify", action="store_true", help="Azure·Verda·Oracle: 공식 API와 대조하지 않는다")
+    b.add_argument("--no-verify", action="store_true", help="Azure·Verda·Nebius·Oracle: 원천 확인 판정을 건너뛴다(나중에 reverify)")
     cv = sub.add_parser("convert")
     cv.add_argument("target", choices=["krw"])
     cv.add_argument("--since", help="관측일(KST) YYYY-MM-DD부터만 (생략하면 전체)")
     cv.add_argument("--trigger", default="manual", choices=["manual", "scheduled", "retry"])
+    rv = sub.add_parser("reverify")
+    rv.add_argument("--only", help="쉼표로 구분한 집계 출처 data_source.source_name (생략하면 전체)")
     st = sub.add_parser("status")
     st.add_argument("action", choices=["record"])
     sp = sub.add_parser("specs")
@@ -155,6 +158,8 @@ def lock_name(args):
         return krw.LOCK
     if args.command == "status":
         return "status"
+    if args.command == "reverify":
+        return "reverify"
     return None
 
 
@@ -197,7 +202,11 @@ def run(conn, args, abandoned):
     if args.command == "report":
         report(conn, args.model)
         return EXIT_OK
-    if args.command == "status":
+    if args.command == "reverify":
+        counts = verify.reverify(conn, sources=set(args.only.split(",")) if args.only else None)
+        conn.commit()
+        summary = {"status": "success", **counts}
+    elif args.command == "status":
         summary = status.record(conn)
     elif args.command == "convert":
         summary = krw.convert(conn, since=args.since, trigger_type=args.trigger)
