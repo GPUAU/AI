@@ -4,7 +4,7 @@
 | verda_api_wayback | web.archive.org 저장본: api.datacrunch.io(옛 도메인)·api.verda.com /v1/instance-types | 저장된 날만(불규칙) |
 
 Verda는 가격 이력 API(/v1/instance-types/price-history)를 410으로 없앴고, 과거 가격 문서도 없다.
-Wayback 저장본이 유일한 과거 자료다. 약정 할인율 API 저장본은 없어 약정은 적재하지 않는다.
+Wayback 저장본이 유일한 과거 자료다. 약정 할인율 API 저장본은 없어, 약정은 가격 페이지 저장본의 할인율로 추정한다(verda/rates.py).
 
 - 집계 출처라 근거 역할은 aggregator다. 원천 확인(primary_verified)은 적재 뒤 erd/verify.py가 판정한다
   (그 무렵 매일 수집과 같은지).
@@ -24,7 +24,7 @@ import requests
 
 from ... import fetch
 from .. import db, verify as verifier
-from . import collect as verda
+from . import collect as verda, rates
 
 COLLECTOR_VERSION = "gpu-collector 0.1.0 / erd-verda-wayback 1"
 SOURCE_WAYBACK = "verda_api_wayback"
@@ -63,10 +63,11 @@ def backfill(conn, *, since, until=None, now=None, get_json=fetch.get_json, get_
         outcomes.append(_process(conn, context, targets, capture, get_bytes))
         log(_line(outcomes[-1]))
 
+    outcomes += rates.backfill(conn, context, get_json=get_json, get_bytes=get_bytes, pause=pause, log=log)
     ok = sum(1 for outcome in outcomes if outcome["status"] == "success")
     status = "success" if ok == len(outcomes) else ("failed" if ok == 0 else "partial_failure")
     failed = [f"{o['timestamp']}: {o['reason']}" for o in outcomes if o["status"] != "success"]
-    checked = verifier.reverify(conn, sources={SOURCE_WAYBACK}) if verify else None
+    checked = verifier.reverify(conn, sources={SOURCE_WAYBACK, rates.SOURCE_RATES}) if verify else None
     db.finish_run(conn, context["run_id"], now(), status, "; ".join(failed)[:2000] or None)
     conn.commit()
     return {"run_id": context["run_id"], "status": status, "verification": checked, "groups": outcomes}

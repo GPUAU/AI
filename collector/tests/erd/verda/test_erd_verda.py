@@ -286,3 +286,62 @@ class BackfillTests(VerdaDb):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+RATES_PAGE = ("<h2>Reserved</h2><p>Long-term discounts on self-service deployments.</p><table>"
+              "<tr><td>1 month</td><td>2% off on-demand</td></tr><tr><td>3 months</td><td>3% off on-demand</td></tr>"
+              "<tr><td>6 months</td><td>4% off on-demand</td></tr><tr><td>1 year</td><td>8% off on-demand</td></tr>"
+              "<tr><td>2 years</td><td>25% off on-demand</td></tr></table>").encode()
+
+
+class RatesTests(VerdaDb):
+    """과거 약정 추정: 가격 페이지 저장본 할인율을 그 이후 과거 온디맨드 관측에 적용(verda/rates.py)."""
+
+    def setUp(self):
+        super().setUp()                                    # BackfillTests와 같은 API 저장본(08-31 최상위 가격, 11-15 지역별)
+        old = [row("1B300.30V", "B300", 1, 268, ("7.50", "3.75"), None),
+               row("8B300.240V", "B300", 8, 2144, ("60.00", "30.00"), None)]
+        self.captures = {"20260831072519": gzip.compress(json.dumps(old).encode()),
+                         "20261115164215": json.dumps(instances("12.41")).encode()}
+        self.pages = {"20260901000000": RATES_PAGE}       # 08-31 온디맨드 뒤, 11-15 온디맨드 앞
+
+    def get_json(self, url, config):
+        if "cdx/search" in url and "verda.com%2Fpricing" in url or "url=verda.com/pricing" in url:
+            return [["timestamp", "original", "digest"]] + [[s, "https://verda.com/pricing", f"P{s}"] for s in self.pages]
+        return super().get_json(url, config)
+
+    def get_bytes(self, url, config):
+        stamp = url.split("/web/")[1][:14]
+        return self.pages[stamp] if stamp in self.pages else super().get_bytes(url, config)
+
+    def commitments(self):
+        return self.conn.execute(
+            """SELECT p.original_product_name, p.region_code, o.commitment_months, ob.collected_at::date::text,
+                      n.effective_usd_gpu_hour, n.result_status
+               FROM price_observation ob JOIN offer o USING (offer_id) JOIN product p USING (product_id)
+               JOIN price_normalization n USING (observation_id) WHERE o.contract_type = 'commitment'
+               ORDER BY 1, 2, 3""").fetchall()
+
+    def test_rates_applied_only_after_page_capture(self):
+        summary = self.backfill()
+        self.assertEqual(summary["status"], "success")
+        rows = self.commitments()
+        self.assertEqual({r[3] for r in rows}, {"2026-11-15"})              # 08-31은 그 이전 할인율 저장본 없음
+        self.assertEqual({r[5] for r in rows}, {"assumption"})
+        two_years = [r for r in rows if r[0] == "1B300.30V" and r[1] == "FIN-02" and r[2] == 24][0]
+        self.assertEqual(two_years[4], Decimal("12.41") * Decimal("0.75"))
+        self.assertEqual({r[2] for r in rows}, {1, 3, 6, 12, 24})
+
+    def test_rerun_does_not_duplicate(self):
+        self.backfill()
+        before = len(self.commitments())
+        self.assertGreater(before, 0)
+        self.backfill()
+        self.assertEqual(len(self.commitments()), before)
+
+    def test_page_without_rates_fails_validation(self):
+        self.pages = {"20260901000000": b"<html>no table</html>"}
+        summary = self.backfill()
+        self.assertEqual([g["status"] for g in summary["groups"] if str(g.get("timestamp", "")).startswith("rates")],
+                         ["validation_failed"])
+        self.assertEqual(self.commitments(), [])
