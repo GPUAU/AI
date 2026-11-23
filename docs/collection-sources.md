@@ -18,10 +18,10 @@
 | 사업자 | 현재 | 과거 | 이용 조건 |
 | --- | --- | --- | --- |
 | AWS | Price List API, Savings Plans API, 스팟 API (IAM 키) | 가격 파일 과거 버전(2023-07~), 스팟 90일 | ✅ 공식 API. 웹 페이지는 ❌(Site Terms: data mining·robots 금지) |
-| Azure | Retail Prices API | GitHub 일별 스냅샷(2025-10~, 월 1개 적재) | ✅ |
+| Azure | Retail Prices API | GitHub 일별 스냅샷(2025-10~, 주 1개 + 2026-11 일 단위) | ✅ |
 | Oracle | 정가 API(apexapps) | Wayback API 응답(2026-05~), SkyPilot 카탈로그(2025-01~) | ✅ OCI 문서가 curl 안내. 웹 페이지는 ❌(약관 7조) |
 | Scaleway | 카탈로그 API v2alpha1 (EUR → USD) | Wayback 가격 페이지(2024-05~) | ✅ 공식 Go SDK. 웹은 봇 차단 |
-| Verda | instance-types, long-term periods API | Wayback API 응답(2026-08~) | ✅ 명세 `security: []` |
+| Verda | instance-types, long-term periods API | Wayback API 응답(2026-08~), 약정은 가격 페이지 Wayback 할인율로 추정 | ✅ 명세 `security: []` |
 | Nebius | 문서 가격표(docs.nebius.com), 스팟 API | 스팟 30일, Wayback 문서(2026-05~) | ✅ 자동 접근 금지 없음 |
 | Hyperstack | pricebook·flavors API(키), 온디맨드·스팟 | Wayback 가격 페이지(2023-11~) | ✅ 공식 문서가 pricebook 안내. 계정 할인가는 안 받음(T&C 8.1). 웹은 ⚠️(IP 조항 2.1·6.4) |
 | 환율 | 수출입은행 현재환율 API | 같은 API 과거 영업일(2023-07~) | ✅ |
