@@ -36,7 +36,7 @@ MAX_RELEASE_PAGES = 20
 
 def backfill(conn, *, since, until=None, every="month", cache_dir="var/cache", keep_files=False, now=None,
              get_json=fetch.get_json, downloader=fetch.download, verify=True, log=None):
-    """since·until: 'YYYY-MM'(스냅샷 날짜). every: month(달마다 첫 스냅샷) / week / day. 반환: 실행 요약."""
+    """since·until: 'YYYY-MM' 또는 'YYYY-MM-DD'(스냅샷 날짜). every: month(달마다 첫 스냅샷) / week / day. 반환: 실행 요약."""
     now = now or (lambda: datetime.now(timezone.utc))
     log = log or (lambda message: print(message, file=sys.stderr, flush=True))
     until = until or now().strftime("%Y-%m")
@@ -104,9 +104,10 @@ def list_releases(get_json):
 
 
 def pick(releases, since, until, every):
+    """since·until: 'YYYY-MM' 또는 'YYYY-MM-DD'(그 날짜까지 포함)."""
     chosen, seen = [], set()
     for release in releases:
-        if not since <= release["date"][:7] <= until:
+        if not since <= release["date"][:len(since)] or not release["date"][:len(until)] <= until:
             continue
         day = datetime.strptime(release["date"], "%Y-%m-%d")
         bucket = {"month": release["date"][:7], "week": tuple(day.isocalendar()[:2]), "day": release["date"]}[every]

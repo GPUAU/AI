@@ -24,16 +24,16 @@ BY_MODEL = {"Hyperstack"}       # 과거 상품을 GPU 종류로 매일 수집 �
 def signature(conn, observation_id):
     """관측 가격을 비교 가능한 형태로. 맞출 수 없으면(GPU 수 미상 등) None."""
     rows = conn.execute(
-        """SELECT pc.component_type, pc.amount, pc.currency, pc.time_unit, pc.applies_to, p.gpu_count
+        """SELECT pc.component_type, pc.amount, pc.currency, pc.time_unit, pc.applies_to, p.gpu_count, pc.discount_rate
            FROM price_component pc JOIN price_observation ob USING (observation_id)
            JOIN offer o ON o.offer_id = ob.offer_id JOIN product p ON p.product_id = o.product_id
            WHERE pc.observation_id = %s""", (observation_id,)).fetchall()
     if not rows:
         return None
     items = []
-    for kind, amount, currency, unit, applies_to, gpu_count in rows:
+    for kind, amount, currency, unit, applies_to, gpu_count, rate in rows:
         if amount is None:
-            items.append((kind, None, currency, unit))
+            items.append((kind, rate.normalize() if rate is not None else None, currency, unit))
         elif kind in ("hourly_rate", "list_price") and unit in ("hour", "minute"):
             value = amount * 60 if unit == "minute" else amount
             if applies_to != "gpu":

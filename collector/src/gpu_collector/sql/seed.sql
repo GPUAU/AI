@@ -277,7 +277,9 @@ VALUES ('verda_instance_types_api', 'official_api', 'https://api.verda.com/v1/in
        ('verda_product_pages', 'official_page', 'https://verda.com/',
         'manual', 'allowed', '2026-11-18T00:00:00Z', 'https://verda.com/terms-and-conditions'),
        ('verda_api_wayback', 'aggregator', 'https://web.archive.org/web/*/api.datacrunch.io/v1/instance-types',
-        'api', 'unknown', NULL, 'https://archive.org/about/terms.php')
+        'api', 'unknown', NULL, 'https://archive.org/about/terms.php'),
+       ('verda_pricing_page_wayback', 'aggregator', 'https://web.archive.org/web/*/verda.com/pricing',
+        'page', 'unknown', NULL, 'https://archive.org/about/terms.php')
 ON CONFLICT (source_name) DO NOTHING;
 
 INSERT INTO collection_target (provider_id, gpu_model_id, source_id, region_filter, contract_filter, scope_description)
@@ -287,7 +289,8 @@ FROM (VALUES
     ('verda_instance_types_api', 'spot', 'instance-types 지역별 Spot 시간당 가격 (전 지역, 기밀 컴퓨팅 포함)'),
     ('verda_long_term_periods_api', 'commitment', 'long-term/periods/instances 기간별 할인율을 같은 실행 온디맨드에 적용한 가정 시나리오 (선납)'),
     ('verda_api_wayback', 'on_demand', 'Wayback 저장본(instance-types API 응답)의 Pay As You Go 가격 (집계, 과거 이력)'),
-    ('verda_api_wayback', 'spot', 'Wayback 저장본(instance-types API 응답)의 Spot 가격 (집계, 과거 이력)')
+    ('verda_api_wayback', 'spot', 'Wayback 저장본(instance-types API 응답)의 Spot 가격 (집계, 과거 이력)'),
+    ('verda_pricing_page_wayback', 'commitment', 'Wayback 가격 페이지 저장본의 약정 할인율을 과거 온디맨드 관측에 적용한 가정 시나리오 (집계, 선납)')
 ) AS v (source, contract, description)
 CROSS JOIN (VALUES ('B300'), ('GB300'), ('B200'), ('H200'), ('H100')) AS mm (model)
 JOIN provider p ON p.provider_name = 'Verda'
