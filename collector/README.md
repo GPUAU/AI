@@ -98,15 +98,15 @@ python -m gpu_collector.erd report --model B300   # 최신 가격과 대상별 �
 
 | 덤프 | 내용 | sha256 |
 | --- | --- | --- |
-| `gpu_erd_20261119.sql.gz` | 현재 스키마(상품·오퍼 UNIQUE 포함). AWS 2023-07~, Azure 2025-10~, Verda 2026-08~, Nebius 2026-05~ 과거 이력과 2026-11-19까지 매일 수집분(실행 21건) | `9849c2b054da749083148842b967d20302c5ed3b0e14d2ffcdb2aa43a0fb89ba` |
+| `gpu_erd_20261123.sql.gz` | 현재 스키마. 7개 사업자(AWS·Azure·Oracle·Scaleway·Verda·Nebius·Hyperstack) 과거 이력과 2026-11-23까지 매일 수집분, 환율·원화 환산, 원천 확인 재판정(#29) 반영. 관측 36,794건, 실행 75건 | `e90a9cff6bfbd512e694340a2624dcd64a6ee60430e4ae531c049f91aac2be64` |
 
 ```bash
-shasum -a 256 gpu_erd_20261119.sql.gz                        # 위 값과 같은지 확인
+shasum -a 256 gpu_erd_20261123.sql.gz                        # 위 값과 같은지 확인
 psql "postgresql://postgres:postgres@127.0.0.1:5435/postgres" -c "CREATE DATABASE gpu_erd"   # 비어 있는 DB
-gunzip -c gpu_erd_20261119.sql.gz | psql -v ON_ERROR_STOP=1 "$DATABASE_URL"
+gunzip -c gpu_erd_20261123.sql.gz | psql -v ON_ERROR_STOP=1 "$DATABASE_URL"
 ```
 
-- 2026-11-19 이전에 공유한 덤프는 제약 보강 전 스키마라 쓰지 않는다.
+- 2026-11-19 덤프는 같은 스키마지만 사업자 4곳·11-19까지라 새 덤프를 쓴다. 그 이전 덤프는 제약 보강 전 스키마라 쓰지 않는다.
 - 이미 `gpu_erd`가 있으면 `DROP DATABASE gpu_erd WITH (FORCE)` 후 다시 만든다.
 
 ### 예전 스키마 DB를 현재 스키마로 옮기기
