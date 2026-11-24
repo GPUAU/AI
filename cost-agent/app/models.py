@@ -98,6 +98,9 @@ class DocumentMapping(BaseModel):
     currency: Currency | None = None
     default_period: Period | None = None
     rows: list[RowMapping]
+    llm_input: str | None = None  # 외부(또는 사내) LLM으로 실제 보낸 내용 — 담당자 확인용
+    llm_destination: str | None = None
+    llm_masked: bool | None = None
 
 
 class MappedLine(BaseModel):
@@ -124,6 +127,7 @@ class Issue(BaseModel):
     code: str
     message: str
     ref: str | None = None
+    items: list[ItemType] = Field(default_factory=list)  # 관련 원가 항목 (누락 표시용)
 
 
 class CostItemDraft(BaseModel):
@@ -160,6 +164,16 @@ class BillDraft(BaseModel):
     cost_items: list[CostItemDraft]
     issues: list[Issue]
     needs_review: bool
+    missing_items: list[ItemType] = Field(default_factory=list)  # 청구서에 없는 큰 비용 (화면에서 빨간 표시)
+    llm: "LLMDisclosure | None" = None
+
+
+class LLMDisclosure(BaseModel):
+    """이번 매핑에서 LLM에 무엇을 보냈는지. 담당자가 직접 확인할 수 있게 그대로 돌려준다."""
+
+    destination: str
+    masked: bool
+    sent: str
 
 
 class LineCorrection(BaseModel):
@@ -187,3 +201,5 @@ class SimulationInput(BaseModel):
     pricing_method: str = Field(default="COST_MARKUP", pattern="REVENUE_MARGIN|COST_MARKUP")
     target_rate: float = 0.3
     fx_krw_per_usd: float | None = Field(default=None, gt=0)
+
+BillDraft.model_rebuild()

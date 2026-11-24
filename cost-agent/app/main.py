@@ -22,11 +22,15 @@ from .service import BillService
 
 
 def build_service(settings: Settings) -> BillService:
-    use_llm = settings.mapper == "openai" or (settings.mapper == "auto" and settings.openai_api_key)
+    has_llm = bool(settings.openai_api_key or settings.openai_base_url)
+    use_llm = settings.mapper == "openai" or (settings.mapper == "auto" and has_llm)
     if use_llm:
-        if not settings.openai_api_key:
-            raise RuntimeError("MAPPER=openai 이면 OPENAI_API_KEY가 필요합니다.")
-        mapper = LLMMapper(openai_completion(settings.openai_api_key, settings.openai_model))
+        if not has_llm:
+            raise RuntimeError("MAPPER=openai 이면 OPENAI_API_KEY 또는 OPENAI_BASE_URL(사내 sLLM)이 필요합니다.")
+        destination = f"사내 LLM ({settings.openai_base_url})" if settings.openai_base_url else f"OpenAI ({settings.openai_model})"
+        mapper = LLMMapper(openai_completion(settings.openai_api_key or "", settings.openai_model,
+                                             base_url=settings.openai_base_url),
+                           mask=settings.llm_mask, destination=destination)
     else:
         mapper = RulesMapper()
     return BillService(mapper, TemplateStore(settings.template_dir))
@@ -44,7 +48,8 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "mapper": service.mapper.name}
+        return {"status": "ok", "mapper": service.mapper.name,
+                "llm_masked": getattr(service.mapper, "mask", None)}
 
     @app.post("/v1/bills", response_model=BillDraft)
     async def upload(file: UploadFile = File(...), s: BillService = Depends(svc)):

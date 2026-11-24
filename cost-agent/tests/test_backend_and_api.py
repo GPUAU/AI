@@ -66,15 +66,16 @@ def test_api_end_to_end(tmp_path, samples):
         seen["body"] = json.loads(request.content)
         return httpx.Response(200, json={"isSuccess": True, "result": {"candidatePrice": "2.50", "unit": "USD/GPU-hour"}})
 
-    settings = Settings(openai_api_key=None, openai_model="x", mapper="rules", spring_url="http://be",
+    settings = Settings(openai_api_key=None, openai_model="x", openai_base_url=None, llm_mask=True, mapper="rules", spring_url="http://be",
                         template_dir=str(tmp_path / "t"), max_upload_bytes=1024 * 1024)
     client = TestClient(create_app(settings, backend=mock_backend(handler)))
-    assert client.get("/health").json() == {"status": "ok", "mapper": "rules"}
+    assert client.get("/health").json()["mapper"] == "rules"
 
     with open(samples["c"], "rb") as f:
         r = client.post("/v1/bills", files={"file": ("bill_c.xlsx", f)})
     assert r.status_code == 200, r.text
     draft = r.json()
+    assert "OPERATIONS" in draft["missing_items"]
     card = next(l for l in draft["lines"] if "출입 카드" in l["label"])
 
     r = client.put(f"/v1/bills/{draft['id']}/lines",

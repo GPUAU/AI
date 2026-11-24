@@ -149,12 +149,25 @@ def map_row(row: SheetRow, preferred_col: int | None) -> RowMapping:
     )
 
 
+YEAR_WORDS = ["연간", "년간", "연 청구", "annual", "yearly", "per year", "/yr"]
+MONTH_WORDS = ["월분", "월 청구", "월간", "월 이용", "매월", "monthly", "per month", "/mo", "invoice period"]
+
+
+def detect_period(doc: ExtractedDocument) -> Period | None:
+    """청구 기간을 원문(가리기 전)에서 판단한다. 'n월분'·'Oct 2026'처럼 월 단위 표현이 있으면 MONTH."""
+    text = _norm(" ".join(" ".join(r.cells) for r in doc.rows[:20]))
+    if any(w in text for w in YEAR_WORDS):
+        return Period.YEAR
+    if any(w in text for w in MONTH_WORDS) or re.search(r"[0-9]{1,2}\s*월분|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+20[0-9]{2}|20[0-9]{2}-[01][0-9](?![0-9-])", text):
+        return Period.MONTH
+    return None
+
+
 class RulesMapper:
     name = "rules"
 
     def map(self, doc: ExtractedDocument) -> DocumentMapping:
         cols = amount_columns(doc)
         rows = [map_row(r, cols.get(r.sheet)) for r in doc.rows]
-        text = _norm(" ".join(" ".join(r.cells) for r in doc.rows[:15]))
-        default_period = Period.YEAR if any(w in text for w in ["연간", "annual", "yearly"]) else Period.MONTH
+        default_period = detect_period(doc) or Period.MONTH
         return DocumentMapping(currency=doc.currency_hint, default_period=default_period, rows=rows)
