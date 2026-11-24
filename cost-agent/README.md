@@ -103,3 +103,17 @@ pytest
 - 월 청구서 1장을 ×12로 연간 추정한다. 여러 달 청구서 평균은 다음 단계.
 - 수식 셀은 엑셀에 저장된 결과값으로 읽는다. 결과값이 저장되지 않은 파일(일부 생성 도구)은 금액이 비어 보일 수 있다.
 - 다음 단계: 견적서·보고서 엑셀 내보내기, 경쟁사 가격 변동 → 제안가 영향 알림, BE `agent-messages`와 연결.
+
+## 7. 배포 (수동 · Harbor, 2026-11-24 테스트 배포)
+
+CI(deploy workflow)는 아직 없다. AI 저장소용 self-hosted runner가 없어서, 캠퍼스 PC에서 Harbor 로봇 계정으로 push하고 kubectl로 적용했다.
+
+```bash
+docker login harbor.skala-us.com -u 'robot$u1-3+ci'          # 비밀번호는 팀 가이드 페이지
+docker buildx build --platform linux/amd64 -t harbor.skala-us.com/u1-3/cost-agent:<sha> --push cost-agent
+# Secret(최초 1회): cost-agent-openai / 키 OPENAI_API_KEY  — 값은 Git·채팅에 남기지 않는다
+sed "s|IMAGE_PLACEHOLDER|harbor.skala-us.com/u1-3/cost-agent:<sha>|" cost-agent/k8s/cost-agent.yaml | kubectl apply -f -
+kubectl -n u1-3 rollout status deployment/cost-agent
+```
+
+FE nginx의 `/agent/`가 `http://cost-agent.u1-3.svc.cluster.local:8000`으로 넘긴다 (GPUAU/FE PR #18).
