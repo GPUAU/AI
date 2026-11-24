@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>멘토링 답변 검토</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #202a24; background: #f6f7f3; font: 15px/1.6 system-ui, sans-serif; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 26px; background: #fff; border-bottom: 1px solid #dbe2d8; }
+    h1 { margin: 0; font-size: 24px; line-height: 1.25; }
+    #progress { color: #4d5b51; margin: 4px 0 0; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    button { font: inherit; border: 1px solid #b8c6ba; border-radius: 8px; background: #fff; color: #21352a; min-height: 40px; padding: 6px 12px; cursor: pointer; }
+    button:hover { background: #e9f0e8; }
+    .primary { background: #245741; border-color: #245741; color: #fff; }
+    .primary:hover { background: #183e2e; }
+    :focus-visible { outline: 3px solid #457f63; outline-offset: 2px; }
+    .layout { display: grid; grid-template-columns: minmax(220px, 320px) minmax(0, 1fr); max-width: 1280px; margin: 0 auto; }
+    aside { padding: 22px 16px; border-right: 1px solid #dbe2d8; }
+    aside h2 { font-size: 14px; margin: 0 8px 10px; color: #4d5b51; }
+    #questions { margin: 0; padding: 0; list-style: none; }
+    #questions button { display: block; width: 100%; text-align: left; margin-bottom: 7px; overflow-wrap: anywhere; }
+    #questions button[aria-current="true"] { border-color: #517660; background: #e2eee1; font-weight: 650; }
+    #questions small { display: block; color: #4d5b51; font-weight: 500; }
+    main { padding: 22px; }
+    form { display: grid; gap: 14px; }
+    .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    label { display: grid; gap: 5px; font-weight: 650; }
+    textarea, select { font: inherit; color: inherit; width: 100%; padding: 9px 10px; border: 1px solid #b8c6ba; border-radius: 8px; background: #fff; }
+    textarea { resize: vertical; min-height: 74px; }
+    #answer, #notes { min-height: 278px; }
+    #verdict { max-width: 220px; }
+    #status { color: #4d5b51; margin: 10px 0 0; }
+    @media (max-width: 700px) {
+      header { align-items: flex-start; flex-direction: column; padding: 18px; }
+      .layout, .columns { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid #dbe2d8; padding: 16px; }
+      #questions { max-height: 185px; overflow-y: auto; }
+      main { padding: 16px; }
+      #answer, #notes { min-height: 180px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>멘토링 답변 검토</h1>
+      <p id="progress"></p>
+    </div>
+    <div class="actions">
+      <button class="primary" id="add" type="button">문항 추가</button>
+      <button id="download" type="button">기록 내보내기</button>
+      <button id="import" type="button">기록 가져오기</button>
+      <input id="file" type="file" accept=".json,application/json" hidden>
+    </div>
+  </header>
+  <div class="layout">
+    <aside aria-label="문항 목록">
+      <h2>검토할 질문</h2>
+      <ul id="questions"></ul>
+    </aside>
+    <main>
+      <form>
+        <label>질문과 후속 질문
+          <textarea id="question" rows="2" placeholder="후속 질문이 있으면 줄을 바꿔 적으세요."></textarea>
+        </label>
+        <label>기대한 답
+          <textarea id="expected" rows="2" placeholder="어떤 조건, 수치, 근거가 나오면 통과인지 적으세요."></textarea>
+        </label>
+        <div class="columns">
+          <label>실제 답변
+            <textarea id="answer" placeholder="Agent가 답한 내용을 순서대로 붙여넣으세요."></textarea>
+          </label>
+          <label>검토 메모
+            <textarea id="notes" placeholder="틀리거나 빠진 부분과 확인한 원인을 적으세요."></textarea>
+          </label>
+        </div>
+        <label>판정
+          <select id="verdict">
+            <option value="">미검토</option>
+            <option value="pass">통과</option>
+            <option value="fail">실패</option>
+            <option value="hold">판단 보류</option>
+          </select>
+        </label>
+      </form>
+      <p id="status" role="status"></p>
+    </main>
+  </div>
+  <script>
+    'use strict';
+    const storageKey = 'gpuau-mentoring-answer-review-v1';
+    const byId = id => document.getElementById(id);
+    const fields = ['question', 'expected', 'answer', 'notes', 'verdict'];
+    const verdictLabels = { '': '미검토', pass: '통과', fail: '실패', hold: '판단 보류' };
+    const promptUpdates = new Map([
+      ['11/19 이전 B300의 가격 분포는 얼마에서 얼마까지인가?',
+       'B300 온디맨드 가격 분포는 얼마에서 얼마까지인가?'],
+      ['11월 19일 전에 B300의 온디맨드 가격을 1/3년 장기계약으로 환산하면 얼마야?',
+       'B300의 온디맨드와 1년·3년 약정 가격을 상품별로 비교하고 할인율도 알려줘']
+    ]);
+    const promptList = [
+      'B200을 가장 저렴하게 제공하는 사업자는?',
+      ...promptUpdates.values(),
+      '지난달 대비 B200 가격 변동은?\n후속 질문: 온디맨드',
+      '저번달에 B200은 보통 얼마였어?',
+      '지난주 가격표에서 사라진 상품이 있나?',
+      '전기료/메모리 가격이 오른 뒤 GPU 임대가가 몇 주 뒤에 움직였나?',
+      'B200의 우리의 적절한 고객 제안가를 이유와 함께 알려줘'
+    ];
+
+    function cleanCase(item) {
+      const clean = {};
+      for (const field of fields) clean[field] = typeof item[field] === 'string' ? item[field] : '';
+      if (!Object.hasOwn(verdictLabels, clean.verdict)) clean.verdict = '';
+      return clean;
+    }
+
+    function hasReview(item) {
+      return Boolean(item.expected || item.answer || item.notes || item.verdict);
+    }
+
+    function readCases(data) {
+      if (!Array.isArray(data?.cases) || data.cases.some(item => !item || typeof item.question !== 'string')) {
+        throw new Error('검토 기록 JSON을 선택하세요.');
+      }
+      const records = data.cases.map(cleanCase);
+      const questions = new Set(records.map(item => item.question));
+      const updated = [];
+      for (const item of records) {
+        const replacement = promptUpdates.get(item.question);
+        if (!replacement || hasReview(item)) updated.push(item);
+        if (replacement && !questions.has(replacement)) {
+          updated.push(cleanCase({ question: replacement }));
+          questions.add(replacement);
+        }
+      }
+      return updated;
+    }
+
+    let cases = promptList.map(question => cleanCase({ question }));
+    let selected = 0;
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        const storedCases = readCases(JSON.parse(saved));
+        if (storedCases.length) cases = storedCases;
+      }
+      byId('status').textContent = '이 브라우저에 자동 저장됩니다.';
+    } catch {
+      byId('status').textContent = '자동 저장을 사용할 수 없습니다. 기록을 파일로 내보내세요.';
+    }
+
+    function renderList() {
+      const list = byId('questions');
+      list.replaceChildren();
+      for (const [index, item] of cases.entries()) {
+        const row = document.createElement('li');
+        const button = document.createElement('button');
+        const verdict = document.createElement('small');
+        button.type = 'button';
+        button.setAttribute('aria-current', String(index === selected));
+        button.textContent = item.question.split('\n', 1)[0].trim() || '새 문항';
+        verdict.textContent = verdictLabels[item.verdict];
+        button.append(verdict);
+        button.addEventListener('click', () => {
+          selectCase(index);
+          list.querySelector('[aria-current="true"]').focus();
+        });
+        row.append(button);
+        list.append(row);
+      }
+      const reviewed = cases.filter(item => item.verdict).length;
+      byId('progress').textContent = cases.length + '문항 중 ' + reviewed + '문항 검토';
+    }
+
+    function selectCase(index) {
+      selected = index;
+      for (const field of fields) byId(field).value = cases[selected][field];
+      renderList();
+    }
+
+    function save() {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({ cases }));
+        byId('status').textContent = '이 브라우저에 저장됨';
+      } catch {
+        byId('status').textContent = '자동 저장을 사용할 수 없습니다. 기록을 파일로 내보내세요.';
+      }
+    }
+
+    for (const field of fields) {
+      byId(field).addEventListener('input', event => {
+        cases[selected][field] = event.target.value;
+        save();
+        if (field === 'question' || field === 'verdict') renderList();
+      });
+    }
+
+    byId('add').addEventListener('click', () => {
+      cases.push(cleanCase({}));
+      selectCase(cases.length - 1);
+      save();
+      byId('question').focus();
+    });
+
+    byId('download').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify({ cases }, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'gpuau-mentoring-review.json';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+
+    byId('import').addEventListener('click', () => byId('file').click());
+    byId('file').addEventListener('change', async event => {
+      const [file] = event.target.files;
+      if (!file) return;
+      try {
+        const incoming = readCases(JSON.parse(await file.text()));
+        if (!incoming.length) throw new Error('가져올 문항이 없습니다.');
+        const onlyDefaults = cases.length === promptList.length && cases.every((item, index) =>
+          item.question === promptList[index] && !hasReview(item)
+        );
+        if (onlyDefaults) cases = [];
+        const known = new Set(cases.map(item => JSON.stringify(item)));
+        const first = cases.length;
+        for (const item of incoming) {
+          const record = JSON.stringify(item);
+          if (!known.has(record)) {
+            cases.push(item);
+            known.add(record);
+          }
+        }
+        const added = cases.length - first;
+        if (!added) {
+          byId('status').textContent = '같은 기록이 이미 있습니다.';
+          return;
+        }
+        selectCase(first);
+        save();
+        byId('status').textContent += ' · 문항 ' + added + '개 불러옴';
+      } catch (error) {
+        byId('status').textContent = '가져오기 실패 · ' + error.message;
+      } finally {
+        event.target.value = '';
+      }
+    });
+
+    document.querySelector('form').addEventListener('submit', event => event.preventDefault());
+    selectCase(selected);
+  </script>
+</body>
+</html>

@@ -2,6 +2,7 @@ package com.gpumarket.domain.agent.service;
 
 import com.gpumarket.domain.market.dto.MarketAvailabilityRequestDto;
 import com.gpumarket.domain.market.service.MarketAvailabilityService;
+import com.gpumarket.domain.market.service.MarketCostImpactService;
 import com.gpumarket.domain.market.service.MarketForecastService;
 import com.gpumarket.domain.market.service.MarketHistoryService;
 import com.gpumarket.domain.market.service.MarketOfferService;
@@ -32,16 +33,23 @@ public class AgentMarketTools {
   private final MarketAvailabilityService availability;
   private final MarketOfferService offers;
   private final MarketForecastService forecasts;
+  private final MarketCostImpactService costImpact;
 
   public AgentMarketTools(
       MarketHistoryService history,
       MarketAvailabilityService availability,
       MarketOfferService offers,
-      MarketForecastService forecasts) {
+      MarketForecastService forecasts,
+      MarketCostImpactService costImpact) {
     this.history = history;
     this.availability = availability;
     this.offers = offers;
     this.forecasts = forecasts;
+    this.costImpact = costImpact;
+  }
+
+  public Map<String, Object> costImpact(MarketCostImpactService.Query query) {
+    return costImpact.analyze(query);
   }
 
   private Map<String, Object> loadHistory(

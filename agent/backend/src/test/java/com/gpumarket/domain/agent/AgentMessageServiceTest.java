@@ -22,6 +22,7 @@ import com.gpumarket.domain.catalog.dto.CatalogResponseDto.GpuModelDto;
 import com.gpumarket.domain.catalog.dto.CatalogResponseDto.ProviderDto;
 import com.gpumarket.domain.catalog.service.CatalogService;
 import com.gpumarket.domain.market.dto.PublicPriceLookupDto;
+import com.gpumarket.domain.market.service.MarketCostImpactService;
 import com.gpumarket.domain.market.service.MarketOfferService;
 import java.time.DayOfWeek;
 import java.time.Instant;
@@ -555,7 +556,7 @@ class AgentMessageServiceTest {
   }
 
   @Test
-  void unsupportedCostLagReplacesHistoricalContractContextAndKeepsModelFollowUpOnTopic() {
+  void costLagReplacesHistoricalContractContextAndKeepsModelFollowUpOnTopic() {
     var date = LocalDate.now(ZoneId.of("Asia/Seoul"));
     var cutoff = date.atStartOfDay(ZoneId.of("Asia/Seoul")).toInstant();
     var filters = Map.of("modelId", "1", "contractType", "COMMITMENT", "commitmentMonths", "12");
@@ -567,6 +568,17 @@ class AgentMessageServiceTest {
     assertThat(price.status()).isEqualTo("ANSWERED");
     assertThat(price.history()).containsEntry("observedBefore", date.toString());
 
+    when(tools.costImpact(any()))
+        .thenReturn(
+            Map.of(
+                "kind",
+                "COST_IMPACT",
+                "status",
+                "INSUFFICIENT_EVIDENCE",
+                "items",
+                List.of(),
+                "asOf",
+                cutoff));
     var lag =
         service.answer(
             new AgentMessageRequestDto(
@@ -579,9 +591,17 @@ class AgentMessageServiceTest {
       assertThat(result.clarificationFields()).isEmpty();
       assertThat(result.history()).isNull();
       assertThat(result.comparison()).isNull();
-      assertThat(result.sampleStatus()).isEqualTo("NOT_QUERIED");
+      assertThat(result.sampleStatus()).isEqualTo("QUERIED");
     }
     verify(offers).productPricesForTerms(filters, List.of(12, 36), cutoff);
+    var queries = org.mockito.ArgumentCaptor.forClass(MarketCostImpactService.Query.class);
+    verify(tools, org.mockito.Mockito.times(2)).costImpact(queries.capture());
+    assertThat(queries.getAllValues().get(0).factors())
+        .containsExactly(MarketCostImpactService.Factor.POWER, MarketCostImpactService.Factor.DRAM);
+    assertThat(queries.getAllValues().get(1).models())
+        .extracting(GpuModelDto::name)
+        .containsExactly("B200");
+    assertThat(queries.getAllValues().get(1).contract()).isNull();
     verifyNoMoreInteractions(offers, tools);
 
     var nextPrice =

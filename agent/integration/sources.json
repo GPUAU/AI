@@ -13,7 +13,8 @@
     "src/test/java/com/gpumarket/domain/agent/AgentMessageServiceTest.java": "600742117e8c51944539e5d6247b91ce9e28fa1c414cbe7c331347db8a87aae3",
     "src/test/java/com/gpumarket/domain/agent/service/AgentMarketToolsTest.java": null,
     "src/test/java/com/gpumarket/domain/agent/service/AgentSessionStoreTest.java": "f27a9e3390d668d8c076e7a556a0f25b3145b17c453e2c95314140e9b351a5af",
-    "scripts/evaluate_agent.py": null
+    "scripts/evaluate_agent.py": null,
+    "scripts/agent_v4_official_key.json": null
   },
   "frontend": {
     "docker_erd_20261117/app/web/static/agent/copilot.js": null,

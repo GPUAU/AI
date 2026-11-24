@@ -1,0 +1,550 @@
+{
+  "baseline": {"evaluationDateKst": "2026-11-24", "historicalCutoffKst": "2026-11-19T00:00:00+09:00", "data": "복원 DB에 보존된 2026년 10~11월 공식 공개 관측 스냅샷. 고정 날짜와 수집 DB가 다른 환경에서는 정답표를 다시 검증해야 한다.", "priceRule": "공급사 공식 원천 가격이 USD/인스턴스·시간이면 해당 GPU 수로 나누고 USD/GPU·시간이면 그대로 사용. 선납을 반영한 AWS API 시간당 요율은 중복 상각하지 않는다.", "scope": "B300 온디맨드 전체 목록과 AWS 목록, 최저가 및 동률은 복원 DB의 최신 성공 공개 오퍼 전체. 스팟, 그룹별 범위·약정·할인율 및 추이는 표시된 오퍼 표본.", "sources": "AWS는 보존된 공식 API 및 가격 파일 원본에서, Nebius는 공식 Compute 가격표에서 기대값을 취득.", "unverifiedSourcePrices": {"observationIds": [13971, 13972, 13973, 13974, 13975, 13976, 13977, 13978, 13979, 13980, 13981, 13982, 13983, 13984, 13985, 13986, 13987, 13988, 13989, 13990, 13991, 13992, 13993, 13994], "reason": "Verda 원천 발췌는 location_prices를 저장하지 않았다. 상위 price_per_hour는 기본가다. 따라서 11/18의 지역별 단가는 공식 원천·환산 표본에서 제외했다.", "source": "https://api.verda.com/v1/docs", "nearbyArchive": "https://web.archive.org/web/20261117070235id_/https://api.datacrunch.io/v1/instance-types", "snapshotRanking": "최저가 문항은 Verda의 수집 원시 단가를 포함해 독립 재계산한다. 이는 집계 검증이며 Verda 공식 원천 정확도 표본에 포함하지 않는다."}, "forecastModelError": "NOT_RUN"},
+  "cases": {
+    "1": {
+      "kind": "public_price",
+      "basis": "B300 공개 온디맨드 37개 오퍼의 조건·수집 시각·원천 연결과 AWS·Nebius 13개 단가를 확인.",
+      "unverifiedReason": "2026-11-18 Verda 리전별 원천 단가 24건이 보존되지 않아 전체 목록의 공식 단가를 검증할 수 없음.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "results", "length": 37},
+        {"path": "answer", "contains": "USD/GPU·시간"},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13541"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-gov-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:47.151138Z"}, {"path": "evidenceIds", "contains": "15146"}, {"path": "priceUsdGpuHour", "decimal": "21.3625"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13542"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-west-2"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:49.796560Z"}, {"path": "evidenceIds", "contains": "15149"}, {"path": "priceUsdGpuHour", "decimal": "17.802"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13526"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "ap-south-2"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:42.514091Z"}, {"path": "evidenceIds", "contains": "15118"}, {"path": "priceUsdGpuHour", "decimal": "25.10082"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13528"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "sa-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:43.824162Z"}, {"path": "evidenceIds", "contains": "15123"}, {"path": "priceUsdGpuHour", "decimal": "35.14125"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13527"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "eu-west-2"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:43.164520Z"}, {"path": "evidenceIds", "contains": "15121"}, {"path": "priceUsdGpuHour", "decimal": "27.1925"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13529"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:46.419073Z"}, {"path": "evidenceIds", "contains": "15127"}, {"path": "priceUsdGpuHour", "decimal": "17.802"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13525"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "ap-northeast-2"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:41.823050Z"}, {"path": "evidenceIds", "contains": "15112"}, {"path": "priceUsdGpuHour", "decimal": "26.1466875"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13971"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-01"}, {"path": "gpuCount", "equals": 1}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15717"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13972"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-02"}, {"path": "gpuCount", "equals": 1}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15718"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13973"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-03"}, {"path": "gpuCount", "equals": 1}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15719"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13974"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-01"}, {"path": "gpuCount", "equals": 2}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15720"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13975"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-02"}, {"path": "gpuCount", "equals": 2}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15721"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13976"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-03"}, {"path": "gpuCount", "equals": 2}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15722"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13977"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-01"}, {"path": "gpuCount", "equals": 4}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15723"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13978"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-02"}, {"path": "gpuCount", "equals": 4}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15724"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13979"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-03"}, {"path": "gpuCount", "equals": 4}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15725"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13980"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-01"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15726"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13981"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-02"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15727"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13982"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-03"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15728"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13983"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-01"}, {"path": "gpuCount", "equals": 4}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15729"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13984"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-02"}, {"path": "gpuCount", "equals": 4}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15730"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13985"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-03"}, {"path": "gpuCount", "equals": 4}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15731"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13986"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-01"}, {"path": "gpuCount", "equals": 4}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15732"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13987"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-02"}, {"path": "gpuCount", "equals": 4}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15733"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13988"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-03"}, {"path": "gpuCount", "equals": 4}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15734"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13989"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-01"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15735"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13990"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-02"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15736"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13991"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-03"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15737"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13992"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-01"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15738"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13993"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-02"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15739"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13994"}, {"path": "providerName", "equals": "Verda"}, {"path": "regionCode", "equals": "FIN-03"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T07:45:12.923122Z"}, {"path": "evidenceIds", "contains": "15740"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "15617"}, {"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "uk-south1"}, {"path": "gpuCount", "equals": 1}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "evidenceIds", "contains": "17556"}, {"path": "priceUsdGpuHour", "decimal": "9.5"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "15618"}, {"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "uk-south1"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "evidenceIds", "contains": "17558"}, {"path": "priceUsdGpuHour", "decimal": "9.5"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "15619"}, {"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "eu-west2"}, {"path": "gpuCount", "equals": 1}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "evidenceIds", "contains": "17560"}, {"path": "priceUsdGpuHour", "decimal": "9.5"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "15620"}, {"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "eu-west2"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "evidenceIds", "contains": "17562"}, {"path": "priceUsdGpuHour", "decimal": "9.5"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "15621"}, {"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "us-north1"}, {"path": "gpuCount", "equals": 1}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "evidenceIds", "contains": "17564"}, {"path": "priceUsdGpuHour", "decimal": "9.5"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "15622"}, {"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "us-north1"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "evidenceIds", "contains": "17566"}, {"path": "priceUsdGpuHour", "decimal": "9.5"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15146"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-gov-east-1&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:47.151138Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15149"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-west-2&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:49.796560Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15118"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=ap-south-2&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:42.514091Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15123"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=sa-east-1&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:43.824162Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15121"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=eu-west-2&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:43.164520Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15112"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=ap-northeast-2&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:41.823050Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15717"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15718"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15719"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15720"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15721"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15722"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15723"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15724"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15725"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15726"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15727"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15728"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15729"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15730"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15731"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15732"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15733"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15734"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15735"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15736"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15737"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15738"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15739"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15740"}, {"path": "sourceUrl", "equals": "https://api.verda.com/v1/instance-types"}, {"path": "capturedAt", "equals": "2026-11-18T07:45:12.923122Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "17556"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "17558"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "17560"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "17562"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "17564"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "17566"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}
+      ]
+    },
+    "2": {
+      "kind": "public_price",
+      "basis": "AWS B300 Linux 공유 테넌시 7개 오퍼. 공식 EC2 인스턴스 시간당 가격을 8 GPU로 나눔.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "results", "length": 7},
+        {"path": "answer", "contains": "USD/GPU·시간"},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13541"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-gov-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:47.151138Z"}, {"path": "evidenceIds", "contains": "15146"}, {"path": "priceUsdGpuHour", "decimal": "21.3625"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13542"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-west-2"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:49.796560Z"}, {"path": "evidenceIds", "contains": "15149"}, {"path": "priceUsdGpuHour", "decimal": "17.802"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13526"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "ap-south-2"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:42.514091Z"}, {"path": "evidenceIds", "contains": "15118"}, {"path": "priceUsdGpuHour", "decimal": "25.10082"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13528"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "sa-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:43.824162Z"}, {"path": "evidenceIds", "contains": "15123"}, {"path": "priceUsdGpuHour", "decimal": "35.14125"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13527"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "eu-west-2"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:43.164520Z"}, {"path": "evidenceIds", "contains": "15121"}, {"path": "priceUsdGpuHour", "decimal": "27.1925"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13529"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:46.419073Z"}, {"path": "evidenceIds", "contains": "15127"}, {"path": "priceUsdGpuHour", "decimal": "17.802"}]},
+        {"path": "results", "any": [{"path": "observationId", "equals": "13525"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "ap-northeast-2"}, {"path": "gpuCount", "equals": 8}, {"path": "contractType", "equals": "ON_DEMAND"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:41.823050Z"}, {"path": "evidenceIds", "contains": "15112"}, {"path": "priceUsdGpuHour", "decimal": "26.1466875"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15146"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-gov-east-1&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:47.151138Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15149"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-west-2&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:49.796560Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15118"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=ap-south-2&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:42.514091Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15123"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=sa-east-1&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:43.824162Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15121"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=eu-west-2&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:43.164520Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]},
+        {"path": "sources", "any": [{"path": "evidenceId", "equals": "15112"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=ap-northeast-2&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:41.823050Z"}]}
+      ]
+    },
+    "3": {
+      "kind": "public_price",
+      "basis": "리전이 다른 AWS 동일 조건 그룹 3개에서 최저·중앙·최고와 대표 오퍼 출처를 표본 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "us-east-1"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "ON_DEMAND"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "17.802"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13529"}, {"path": "priceUsdGpuHour", "decimal": "17.802"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}]}, {"path": "median", "decimal": "17.802"}, {"path": "maximum", "decimal": "17.802"}]},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "ap-northeast-2"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "ON_DEMAND"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "26.1466875"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13525"}, {"path": "priceUsdGpuHour", "decimal": "26.1466875"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15112"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=ap-northeast-2&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:41.823050Z"}]}]}, {"path": "median", "decimal": "26.1466875"}, {"path": "maximum", "decimal": "26.1466875"}]},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "sa-east-1"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "ON_DEMAND"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "35.14125"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13528"}, {"path": "priceUsdGpuHour", "decimal": "35.14125"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15123"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=sa-east-1&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:43.824162Z"}]}]}, {"path": "median", "decimal": "35.14125"}, {"path": "maximum", "decimal": "35.14125"}]}
+      ]
+    },
+    "4": {
+      "kind": "public_price",
+      "basis": "AWS use1-az6 Linux 스팟 그룹의 공식 관측 USD 78.004100/인스턴스·시간을 8 GPU로 환산.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "SPOT"},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "use1-az6"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "SPOT"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "9.7505125"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13669"}, {"path": "priceUsdGpuHour", "decimal": "9.7505125"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15301"}, {"path": "sourceUrl", "equals": "https://ec2.us-east-1.amazonaws.com/?Action=DescribeSpotPriceHistory&EndTime=2026-11-18T01%3A45%3A02Z&InstanceType.1=p5.48xlarge&InstanceType.2=p6-b200.48xlarge&InstanceType.3=p6-b300.48xlarge&ProductDescription.1=Linux%2FUNIX&StartTime=2026-11-18T01%3A45%3A02Z"}, {"path": "capturedAt", "equals": "2026-11-18T01:45:03.332090Z"}]}]}]}
+      ]
+    },
+    "5": {
+      "kind": "public_price",
+      "basis": "11/19 00:00 KST 이전 수집 단가 37개로 최저와 동률 6개를 재계산하고, 최저가를 공식 가격표와 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "history.observedBefore", "equals": "2026-11-19"},
+        {"path": "analysis.kind", "equals": "PRICE_MINIMUM"},
+        {"path": "analysis.offerCount", "equals": 37},
+        {"path": "analysis.providerCount", "equals": 3},
+        {"path": "analysis.items", "length": 1},
+        {"path": "analysis.items", "any": [{"path": "endpoint", "equals": "MINIMUM"}, {"path": "priceUsdGpuHour", "decimal": "9.5"}, {"path": "matches", "length": 6}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "uk-south1"}, {"path": "gpuCount", "equals": 1}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17556"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "uk-south1"}, {"path": "gpuCount", "equals": 8}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17558"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "eu-west2"}, {"path": "gpuCount", "equals": 1}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17560"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "eu-west2"}, {"path": "gpuCount", "equals": 8}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17562"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "us-north1"}, {"path": "gpuCount", "equals": 1}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17564"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "us-north1"}, {"path": "gpuCount", "equals": 8}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17566"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}]}
+      ]
+    },
+    "6": {
+      "kind": "public_price",
+      "basis": "us-east-1 8 GPU 온디맨드 비교 범위를 고정하고 AWS 142.416/8과 출처를 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "appliedConditions.gpuCount", "equals": 8},
+        {"path": "appliedConditions.regionCode", "equals": "us-east-1"},
+        {"path": "comparison.groups", "length": 1},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "us-east-1"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "ON_DEMAND"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "17.802"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13529"}, {"path": "priceUsdGpuHour", "decimal": "17.802"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}]}, {"path": "median", "decimal": "17.802"}, {"path": "maximum", "decimal": "17.802"}]}
+      ]
+    },
+    "7": {
+      "kind": "public_price",
+      "basis": "1년 AWS us-east-1 Compute Savings Plans 전액 선납 그룹을 표본 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.commitmentMonths", "equals": 12},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "us-east-1"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "COMMITMENT"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "13.08447"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13593"}, {"path": "priceUsdGpuHour", "decimal": "13.08447"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15212"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}]}, {"path": "groupKey.commitmentMonths", "equals": 12}, {"path": "groupKey.paymentOption", "equals": "ALL_UPFRONT"}, {"path": "groupKey.contractProductType", "equals": "COMPUTE SAVINGS PLANS"}]}
+      ]
+    },
+    "8": {
+      "kind": "public_price",
+      "basis": "3년 AWS us-east-1 EC2 Instance Savings Plans 전액 선납 그룹을 표본 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.commitmentMonths", "equals": 36},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "us-east-1"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "COMMITMENT"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "6.6935525"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13598"}, {"path": "priceUsdGpuHour", "decimal": "6.6935525"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15217"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}]}, {"path": "groupKey.commitmentMonths", "equals": 36}, {"path": "groupKey.paymentOption", "equals": "ALL_UPFRONT"}, {"path": "groupKey.contractProductType", "equals": "EC2 INSTANCE SAVINGS PLANS"}]}
+      ]
+    },
+    "9": {
+      "kind": "public_price",
+      "basis": "AWS us-east-1 동일 상품의 1년 전액 선납 요율을 온디맨드와 비교해 (1−약정/온디맨드)×100을 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "analysis.kind", "equals": "DISCOUNT"},
+        {"path": "analysis.items", "any": [{"path": "months", "equals": 12}, {"path": "providerName", "equals": "AWS"}, {"path": "commitment.observationId", "equals": "13593"}, {"path": "commitment.priceUsdGpuHour", "decimal": "13.08447"}, {"path": "commitment.sources", "any": [{"path": "evidenceId", "equals": "15212"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}, {"path": "baseline.observationId", "equals": "13529"}, {"path": "baseline.effective.amount", "decimal": "17.802"}, {"path": "baseline.evidence", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}, {"path": "percent", "decimal": "26.5"}]}
+      ]
+    },
+    "10": {
+      "kind": "public_price",
+      "basis": "1년 Compute 및 3년 EC2 Instance 전액 선납 그룹을 각각 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "comparison.requestedCommitmentMonths", "equals": [12, 36]},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "us-east-1"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "COMMITMENT"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "13.08447"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13593"}, {"path": "priceUsdGpuHour", "decimal": "13.08447"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15212"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}]}, {"path": "groupKey.commitmentMonths", "equals": 12}, {"path": "groupKey.paymentOption", "equals": "ALL_UPFRONT"}, {"path": "groupKey.contractProductType", "equals": "COMPUTE SAVINGS PLANS"}]},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "us-east-1"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "COMMITMENT"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "6.6935525"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13598"}, {"path": "priceUsdGpuHour", "decimal": "6.6935525"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15217"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}]}, {"path": "groupKey.commitmentMonths", "equals": 36}, {"path": "groupKey.paymentOption", "equals": "ALL_UPFRONT"}, {"path": "groupKey.contractProductType", "equals": "EC2 INSTANCE SAVINGS PLANS"}]}
+      ]
+    },
+    "11": {
+      "kind": "public_price",
+      "basis": "us-east-1 8 GPU 1년 무선납 그룹. 공식 112.1526/8을 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.regionCode", "equals": "us-east-1"},
+        {"path": "appliedConditions.gpuCount", "equals": 8},
+        {"path": "appliedConditions.commitmentMonths", "equals": 12},
+        {"path": "appliedConditions.paymentOption", "equals": "NO_UPFRONT"},
+        {"path": "comparison.groups", "length": 1},
+        {"path": "comparison.groups", "any": [{"path": "groupKey.modelId", "equals": "1"}, {"path": "groupKey.regionCode", "equals": "us-east-1"}, {"path": "groupKey.gpuCount", "equals": 8}, {"path": "groupKey.contractType", "equals": "COMMITMENT"}, {"path": "metric", "equals": "EFFECTIVE_USD_PER_GPU_HOUR"}, {"path": "minimum", "decimal": "14.019075"}, {"path": "representatives", "any": [{"path": "providerName", "equals": "AWS"}, {"path": "observationId", "equals": "13599"}, {"path": "priceUsdGpuHour", "decimal": "14.019075"}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "15218"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}]}, {"path": "groupKey.commitmentMonths", "equals": 12}, {"path": "groupKey.paymentOption", "equals": "NO_UPFRONT"}, {"path": "groupKey.contractProductType", "equals": "COMPUTE SAVINGS PLANS"}]}
+      ]
+    },
+    "12": {
+      "kind": "public_price",
+      "basis": "AWS us-east-1 동일 상품의 1년·3년 요율과 온디맨드 기준값, 각각 계산한 할인율을 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "analysis.kind", "equals": "DISCOUNT"},
+        {"path": "analysis.items", "any": [{"path": "months", "equals": 12}, {"path": "providerName", "equals": "AWS"}, {"path": "commitment.observationId", "equals": "13593"}, {"path": "commitment.priceUsdGpuHour", "decimal": "13.08447"}, {"path": "commitment.sources", "any": [{"path": "evidenceId", "equals": "15212"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}, {"path": "baseline.observationId", "equals": "13529"}, {"path": "baseline.effective.amount", "decimal": "17.802"}, {"path": "baseline.evidence", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}, {"path": "percent", "decimal": "26.5"}]},
+        {"path": "analysis.items", "any": [{"path": "months", "equals": 36}, {"path": "providerName", "equals": "AWS"}, {"path": "commitment.observationId", "equals": "13598"}, {"path": "commitment.priceUsdGpuHour", "decimal": "6.6935525"}, {"path": "commitment.sources", "any": [{"path": "evidenceId", "equals": "15217"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}, {"path": "baseline.observationId", "equals": "13529"}, {"path": "baseline.effective.amount", "decimal": "17.802"}, {"path": "baseline.evidence", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}, {"path": "percent", "decimal": "62.4"}]}
+      ]
+    },
+    "13": {
+      "kind": "public_price",
+      "basis": "11/24 KST 기준 최근 30일 경계와 AWS us-east-1의 네 공개 관측을 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "analysis.kind", "equals": "TREND"},
+        {"path": "analysis.dateFrom", "equals": "2026-10-26"},
+        {"path": "analysis.dateTo", "equals": "2026-11-24"},
+        {"path": "analysis.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.series", "any": [{"path": "modelName", "equals": "B300"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "points", "length": 4}, {"path": "points", "any": [{"path": "observationId", "equals": "6463"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "7703"}]}, {"path": "points", "any": [{"path": "observationId", "equals": "6528"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "7786"}]}, {"path": "points", "any": [{"path": "observationId", "equals": "10420"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "11708"}]}, {"path": "points", "any": [{"path": "observationId", "equals": "13529"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "15127"}]}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "7703"}, {"path": "sourceUrl", "equals": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261029175634/us-east-1/index.json"}, {"path": "capturedAt", "equals": "2026-11-17T01:01:16.697802Z"}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "7786"}, {"path": "sourceUrl", "equals": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261114012926/us-east-1/index.json"}, {"path": "capturedAt", "equals": "2026-11-17T01:01:34.976015Z"}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "11708"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-17T01:03:44.246382Z"}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}
+      ]
+    },
+    "14": {
+      "kind": "public_price",
+      "basis": "11/01~11/19의 날짜 경계와 AWS us-east-1의 세 공개 관측을 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "analysis.kind", "equals": "TREND"},
+        {"path": "analysis.dateFrom", "equals": "2026-11-01"},
+        {"path": "analysis.dateTo", "equals": "2026-11-19"},
+        {"path": "analysis.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.series", "any": [{"path": "modelName", "equals": "B300"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "points", "length": 3}, {"path": "points", "any": [{"path": "observationId", "equals": "6528"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "7786"}]}, {"path": "points", "any": [{"path": "observationId", "equals": "10420"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "11708"}]}, {"path": "points", "any": [{"path": "observationId", "equals": "13529"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "15127"}]}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "7786"}, {"path": "sourceUrl", "equals": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261114012926/us-east-1/index.json"}, {"path": "capturedAt", "equals": "2026-11-17T01:01:34.976015Z"}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "11708"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-17T01:03:44.246382Z"}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}
+      ]
+    },
+    "15": {
+      "kind": "coverage",
+      "basis": "10월 H100의 월말까지 확보된 공식 원천은 0건. 나중에 확보한 관측을 월말 확인가로 표시하면 실패.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "NO_DATA"},
+        {"path": "appliedConditions.modelId", "equals": "4"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.kind", "equals": "TREND"},
+        {"path": "analysis.dateFrom", "equals": "2026-10-01"},
+        {"path": "analysis.dateTo", "equals": "2026-10-31"},
+        {"path": "analysis.comparablePairs", "equals": 0},
+        {"path": "analysis.sources", "length": 0},
+        {"path": "analysis.changes", "length": 0},
+        {"path": "answer", "contains": "부족"}
+      ]
+    },
+    "16": {
+      "kind": "public_price",
+      "basis": "11/19 이전의 종료일이 11/18인지와 AWS us-east-1의 세 공개 관측을 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "analysis.kind", "equals": "TREND"},
+        {"path": "analysis.dateFrom", "equals": "2026-11-01"},
+        {"path": "analysis.dateTo", "equals": "2026-11-18"},
+        {"path": "analysis.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.series", "any": [{"path": "modelName", "equals": "B300"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "points", "length": 3}, {"path": "points", "any": [{"path": "observationId", "equals": "6528"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "7786"}]}, {"path": "points", "any": [{"path": "observationId", "equals": "10420"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "11708"}]}, {"path": "points", "any": [{"path": "observationId", "equals": "13529"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "15127"}]}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "7786"}, {"path": "sourceUrl", "equals": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261114012926/us-east-1/index.json"}, {"path": "capturedAt", "equals": "2026-11-17T01:01:34.976015Z"}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "11708"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-17T01:03:44.246382Z"}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}
+      ]
+    },
+    "17": {
+      "kind": "public_price",
+      "basis": "AWS us-east-1만 조회해 동일 공식 단가의 세 점, 연속 2쌍과 변동 0건을 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.regionCode", "equals": "us-east-1"},
+        {"path": "analysis.kind", "equals": "TREND"},
+        {"path": "analysis.dateFrom", "equals": "2026-11-01"},
+        {"path": "analysis.dateTo", "equals": "2026-11-19"},
+        {"path": "analysis.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.series", "any": [{"path": "modelName", "equals": "B300"}, {"path": "providerName", "equals": "AWS"}, {"path": "regionCode", "equals": "us-east-1"}, {"path": "gpuCount", "equals": 8}, {"path": "points", "length": 3}, {"path": "points", "any": [{"path": "observationId", "equals": "6528"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "7786"}]}, {"path": "points", "any": [{"path": "observationId", "equals": "10420"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "11708"}]}, {"path": "points", "any": [{"path": "observationId", "equals": "13529"}, {"path": "status", "equals": "OK"}, {"path": "originalCurrency", "equals": "USD"}, {"path": "effectiveUsdGpuHour", "decimal": "17.802"}, {"path": "evidenceIds", "contains": "15127"}]}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "7786"}, {"path": "sourceUrl", "equals": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261114012926/us-east-1/index.json"}, {"path": "capturedAt", "equals": "2026-11-17T01:01:34.976015Z"}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "11708"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-17T01:03:44.246382Z"}]},
+        {"path": "analysis.sources", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]},
+        {"path": "analysis.series", "length": 1},
+        {"path": "analysis.comparablePairs", "equals": 2},
+        {"path": "analysis.changes", "length": 0}
+      ]
+    },
+    "18": {
+      "kind": "coverage",
+      "basis": "오퍼 1은 H100 온디맨드이며 지정된 11월 구간에 해당 오퍼의 관측 기록이 0건.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "NO_DATA"},
+        {"path": "appliedConditions.modelId", "equals": "4"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.kind", "equals": "TREND"},
+        {"path": "analysis.dateFrom", "equals": "2026-11-01"},
+        {"path": "analysis.dateTo", "equals": "2026-11-19"},
+        {"path": "analysis.reason", "equals": "NO_HISTORY"},
+        {"path": "analysis.comparablePairs", "equals": 0},
+        {"path": "analysis.series", "length": 0}
+      ]
+    },
+    "19": {
+      "kind": "coverage",
+      "basis": "모델이 빠졌으므로 GPU 모델을 재질문하고 조회를 보류.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "NEEDS_CLARIFICATION"},
+        {"path": "clarificationFields", "equals": ["modelId"]},
+        {"path": "answer", "contains": "GPU 모델"},
+        {"path": "sampleStatus", "equals": "NOT_QUERIED"},
+        {"path": "analysis", "equals": null}
+      ]
+    },
+    "20": {
+      "kind": "public_price",
+      "basis": "온디맨드 마지막 수집 단가 37개에서 최저와 동률 6개를 재계산하고, 최저가를 공식 가격표와 확인.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.kind", "equals": "PRICE_MINIMUM"},
+        {"path": "analysis.offerCount", "equals": 37},
+        {"path": "analysis.providerCount", "equals": 3},
+        {"path": "analysis.items", "length": 1},
+        {"path": "analysis.items", "any": [{"path": "endpoint", "equals": "MINIMUM"}, {"path": "priceUsdGpuHour", "decimal": "9.5"}, {"path": "matches", "length": 6}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "uk-south1"}, {"path": "gpuCount", "equals": 1}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17556"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "uk-south1"}, {"path": "gpuCount", "equals": 8}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17558"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "eu-west2"}, {"path": "gpuCount", "equals": 1}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17560"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "eu-west2"}, {"path": "gpuCount", "equals": 8}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17562"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "us-north1"}, {"path": "gpuCount", "equals": 1}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17564"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}, {"path": "matches", "any": [{"path": "providerName", "equals": "Nebius"}, {"path": "regionCode", "equals": "us-north1"}, {"path": "gpuCount", "equals": 8}, {"path": "sources", "any": [{"path": "evidenceId", "equals": "17566"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}]}
+      ]
+    },
+    "21": {
+      "kind": "public_price",
+      "basis": "AWS B300 us-east-1 오퍼의 명시적 공개 상태, 마지막 정상 관측 가격과 출처를 연결.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.kind", "equals": "AVAILABILITY"},
+        {"path": "analysis.items", "any": [{"path": "offerId", "equals": "177"}, {"path": "latestDisclosure.status", "equals": "PUBLIC"}, {"path": "lastSuccessfulObservation.observationId", "equals": "13529"}, {"path": "lastSuccessfulObservation.effective.amount", "decimal": "17.802"}, {"path": "lastSuccessfulObservation.evidence", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}]}
+      ]
+    },
+    "22": {
+      "kind": "coverage",
+      "basis": "계약 유형이 없는 추이는 온디맨드·스팟·약정 중 무엇인지 재질문.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "NEEDS_CLARIFICATION"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "clarificationFields", "equals": ["contractType"]},
+        {"path": "answer", "contains": "온디맨드, 스팟, 약정"},
+        {"path": "sampleStatus", "equals": "NOT_QUERIED"},
+        {"path": "analysis", "equals": null}
+      ]
+    },
+    "23": {
+      "kind": "coverage",
+      "basis": "존재하지 않는 2월 30일은 날짜 정정을 요청하고 가격 조회를 보류.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "NEEDS_CLARIFICATION"},
+        {"path": "clarificationFields", "equals": ["observedBefore"]},
+        {"path": "answer", "contains": "실제 달력 날짜"},
+        {"path": "sampleStatus", "equals": "NOT_QUERIED"},
+        {"path": "analysis", "equals": null}
+      ]
+    },
+    "24": {
+      "kind": "coverage",
+      "basis": "합성 민감 요청은 HTTP 422로 차단하고 입력값이 없는 안내문을 반환.",
+      "checks": [
+        {"path": "httpStatus", "equals": 422},
+        {"path": "isSuccess", "equals": false},
+        {"path": "code", "equals": "SENSITIVE_INPUT_BLOCKED"},
+        {"path": "message", "equals": "공개 시장가격 조회에 사용할 조건만 입력해 주세요."},
+        {"path": "result", "equals": null}
+      ]
+    },
+    "25": {
+      "kind": "forecast_behavior",
+      "basis": "시계열이 다른 오퍼를 묶어 예측하지 않고 단일 오퍼 선택을 요청.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "NEEDS_CLARIFICATION"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.kind", "equals": "FORECAST"},
+        {"path": "analysis.status", "equals": "NEEDS_CLARIFICATION"},
+        {"path": "clarificationFields", "equals": ["offerId"]},
+        {"path": "analysis.requiredMonths", "equals": 24},
+        {"path": "answer", "contains": "오퍼 한 가지"}
+      ]
+    },
+    "26": {
+      "kind": "internal_explanation",
+      "basis": "시간당 원가 ÷ (1−목표 매출 마진율) 공식을 설명하고 내부 입력은 렌더러에 위임.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "analysis.kind", "equals": "INTERNAL_ANALYSIS"},
+        {"path": "analysis.items", "equals": [{"internal": true}]},
+        {"path": "answer", "contains": "시간당 원가"},
+        {"path": "answer", "contains": "1−목표 매출 마진율"},
+        {"path": "answer", "contains": "나눠"}
+      ]
+    },
+    "27": {
+      "kind": "internal_explanation",
+      "basis": "가동률이 과금(또는 사용) GPU 시간 / 가용 GPU 시간이라는 기준을 설명.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "analysis.kind", "equals": "INTERNAL_ANALYSIS"},
+        {"path": "analysis.items", "equals": [{"internal": true}]},
+        {"path": "answer", "contains": "GPU 시간"},
+        {"path": "answer", "contains": "가용"}
+      ]
+    },
+    "28": {
+      "kind": "internal_explanation",
+      "basis": "목표 IRR을 요구 수익률로 설명하고 현금흐름 또는 할인율과 연결.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "analysis.kind", "equals": "INTERNAL_ANALYSIS"},
+        {"path": "analysis.items", "equals": [{"internal": true}]},
+        {"path": "answer", "contains": "수익률"},
+        {"path": "answer", "contains": "현금흐름"}
+      ]
+    },
+    "29": {
+      "kind": "forecast_behavior",
+      "basis": "오퍼 1은 H100이므로 B300으로 사용 가능한 이력 0개월. 24개월 요구 조건을 명시하고 공개가격 조회를 안내.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "NO_DATA"},
+        {"path": "appliedConditions.modelId", "equals": "1"},
+        {"path": "appliedConditions.contractType", "equals": "ON_DEMAND"},
+        {"path": "analysis.kind", "equals": "FORECAST"},
+        {"path": "analysis.status", "equals": "INSUFFICIENT_HISTORY"},
+        {"path": "analysis.requiredMonths", "equals": 24},
+        {"path": "analysis.availableMonths", "equals": 0},
+        {"path": "answer", "contains": "현재 공개가격"}
+      ]
+    },
+    "30": {
+      "kind": "internal_explanation",
+      "basis": "판매가 검토 범위의 하한과 상한이 결정되는 서로 다른 기준을 설명.",
+      "checks": [
+        {"path": "httpStatus", "equals": 200},
+        {"path": "status", "equals": "ANSWERED"},
+        {"path": "analysis.kind", "equals": "INTERNAL_ANALYSIS"},
+        {"path": "analysis.items", "equals": [{"internal": true}]},
+        {"path": "answer", "contains": "하한"},
+        {"path": "answer", "contains": "상한"},
+        {"path": "answer", "contains": "목표 IRR"},
+        {"path": "answer", "contains": "공개 시장가격"}
+      ]
+    }
+  },
+  "observations": [
+    {"observationId": 6463, "normalizationId": 6463, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261029175634/us-east-1/index.json", "confirmedAt": "2026-11-17T01:01:16.697802Z", "sourceName": "aws_ec2_price_list_history", "offerId": 177, "product": "p6-b300.48xlarge", "sku": "G2B25BSJJUB6HQPQ", "region": "us-east-1", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "142.416", "divisorGpuCount": 8, "expectedUsdGpuHour": "17.802", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "177"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-10-29T17:56:34Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "142.416"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "7703"}, {"path": "sourceUrl", "equals": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261029175634/us-east-1/index.json"}, {"path": "capturedAt", "equals": "2026-11-17T01:01:16.697802Z"}]}]},
+    {"observationId": 6464, "normalizationId": 6464, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261029175634/us-east-1/index.json", "confirmedAt": "2026-11-17T01:01:16.697802Z", "sourceName": "aws_ec2_price_list_history", "offerId": 20, "product": "p5.48xlarge", "sku": "3D4V8UAYEMB38GU2", "region": "us-east-1", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "55.04", "divisorGpuCount": 8, "expectedUsdGpuHour": "6.88", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "20"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-10-29T17:56:34Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "55.04"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "7706"}, {"path": "sourceUrl", "equals": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261029175634/us-east-1/index.json"}, {"path": "capturedAt", "equals": "2026-11-17T01:01:16.697802Z"}]}]},
+    {"observationId": 6528, "normalizationId": 6528, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261114012926/us-east-1/index.json", "confirmedAt": "2026-11-17T01:01:34.976015Z", "sourceName": "aws_ec2_price_list_history", "offerId": 177, "product": "p6-b300.48xlarge", "sku": "G2B25BSJJUB6HQPQ", "region": "us-east-1", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "142.416", "divisorGpuCount": 8, "expectedUsdGpuHour": "17.802", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "177"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-14T01:29:26Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "142.416"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "7786"}, {"path": "sourceUrl", "equals": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261114012926/us-east-1/index.json"}, {"path": "capturedAt", "equals": "2026-11-17T01:01:34.976015Z"}]}]},
+    {"observationId": 10420, "normalizationId": 10420, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261114012926/us-east-1/index.json", "confirmedAt": "2026-11-17T01:03:44.246382Z", "sourceName": "aws_ec2_pricing_api", "offerId": 177, "product": "p6-b300.48xlarge", "sku": "G2B25BSJJUB6HQPQ", "region": "us-east-1", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "142.416", "divisorGpuCount": 8, "expectedUsdGpuHour": "17.802", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "177"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-17T01:03:44.246382Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "142.416"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "11708"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-17T01:03:44.246382Z"}]}]},
+    {"observationId": 13525, "normalizationId": 13525, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261117235055/ap-northeast-2/index.json", "confirmedAt": "2026-11-18T01:44:41.823050Z", "sourceName": "aws_ec2_pricing_api", "offerId": 190, "product": "p6-b300.48xlarge", "sku": "83RQHPT9D77S65G8", "region": "ap-northeast-2", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "209.1735", "divisorGpuCount": 8, "expectedUsdGpuHour": "26.1466875", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "190"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:41.823050Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "209.1735"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15112"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=ap-northeast-2&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:41.823050Z"}]}]},
+    {"observationId": 13526, "normalizationId": 13526, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261117235055/ap-south-2/index.json", "confirmedAt": "2026-11-18T01:44:42.514091Z", "sourceName": "aws_ec2_pricing_api", "offerId": 144, "product": "p6-b300.48xlarge", "sku": "Q5C94K2SVHNSW4QR", "region": "ap-south-2", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "200.80656", "divisorGpuCount": 8, "expectedUsdGpuHour": "25.10082", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "144"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:42.514091Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "200.80656"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15118"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=ap-south-2&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:42.514091Z"}]}]},
+    {"observationId": 13527, "normalizationId": 13527, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261117235055/eu-west-2/index.json", "confirmedAt": "2026-11-18T01:44:43.164520Z", "sourceName": "aws_ec2_pricing_api", "offerId": 176, "product": "p6-b300.48xlarge", "sku": "SW5BE632R9HFDTV7", "region": "eu-west-2", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "217.54", "divisorGpuCount": 8, "expectedUsdGpuHour": "27.1925", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "176"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:43.164520Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "217.54"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15121"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=eu-west-2&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:43.164520Z"}]}]},
+    {"observationId": 13528, "normalizationId": 13528, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261117235055/sa-east-1/index.json", "confirmedAt": "2026-11-18T01:44:43.824162Z", "sourceName": "aws_ec2_pricing_api", "offerId": 145, "product": "p6-b300.48xlarge", "sku": "MMHK2MERVFQTAER7", "region": "sa-east-1", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "281.13", "divisorGpuCount": 8, "expectedUsdGpuHour": "35.14125", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "145"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:43.824162Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "281.13"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15123"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=sa-east-1&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:43.824162Z"}]}]},
+    {"observationId": 13529, "normalizationId": 13529, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261117235055/us-east-1/index.json", "confirmedAt": "2026-11-18T01:44:46.419073Z", "sourceName": "aws_ec2_pricing_api", "offerId": 177, "product": "p6-b300.48xlarge", "sku": "G2B25BSJJUB6HQPQ", "region": "us-east-1", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "142.416", "divisorGpuCount": 8, "expectedUsdGpuHour": "17.802", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "177"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:46.419073Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "142.416"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15127"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:46.419073Z"}]}]},
+    {"observationId": 13541, "normalizationId": 13541, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261117235055/us-gov-east-1/index.json", "confirmedAt": "2026-11-18T01:44:47.151138Z", "sourceName": "aws_ec2_pricing_api", "offerId": 90, "product": "p6-b300.48xlarge", "sku": "H957WWQ8G7AD6396", "region": "us-gov-east-1", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "170.9", "divisorGpuCount": 8, "expectedUsdGpuHour": "21.3625", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "90"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:47.151138Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "170.9"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15146"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-gov-east-1&instanceType=p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:47.151138Z"}]}]},
+    {"observationId": 13542, "normalizationId": 13542, "officialSource": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261117235055/us-west-2/index.json", "confirmedAt": "2026-11-18T01:44:49.796560Z", "sourceName": "aws_ec2_pricing_api", "offerId": 133, "product": "p6-b300.48xlarge", "sku": "BYJNYNQ6CF5XSND2", "region": "us-west-2", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "142.416", "divisorGpuCount": 8, "expectedUsdGpuHour": "17.802", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "133"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:49.796560Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "142.416"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15149"}, {"path": "sourceUrl", "equals": "https://api.pricing.us-east-1.amazonaws.com/?Action=AWSPriceListService.GetProducts&ServiceCode=AmazonEC2&regionCode=us-west-2&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:49.796560Z"}]}]},
+    {"observationId": 13593, "normalizationId": 13593, "officialSource": "https://docs.aws.amazon.com/savingsplans/latest/APIReference/API_DescribeSavingsPlansOfferingRates.html", "confirmedAt": "2026-11-18T01:44:56.751172Z", "sourceName": "aws_savings_plans_api", "offerId": 180, "product": "p6-b300.48xlarge", "sku": "G2B25BSJJUB6HQPQ", "region": "us-east-1", "gpuCount": 8, "contract": "COMMITMENT", "rawUsd": "104.67576", "divisorGpuCount": 8, "expectedUsdGpuHour": "13.08447", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "180"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:56.751172Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "104.67576"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15212"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}]},
+    {"observationId": 13598, "normalizationId": 13598, "officialSource": "https://docs.aws.amazon.com/savingsplans/latest/APIReference/API_DescribeSavingsPlansOfferingRates.html", "confirmedAt": "2026-11-18T01:44:56.751172Z", "sourceName": "aws_savings_plans_api", "offerId": 181, "product": "p6-b300.48xlarge", "sku": "G2B25BSJJUB6HQPQ", "region": "us-east-1", "gpuCount": 8, "contract": "COMMITMENT", "rawUsd": "53.54842", "divisorGpuCount": 8, "expectedUsdGpuHour": "6.6935525", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "181"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:56.751172Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "53.54842"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15217"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}]},
+    {"observationId": 13599, "normalizationId": 13599, "officialSource": "https://docs.aws.amazon.com/savingsplans/latest/APIReference/API_DescribeSavingsPlansOfferingRates.html", "confirmedAt": "2026-11-18T01:44:56.751172Z", "sourceName": "aws_savings_plans_api", "offerId": 182, "product": "p6-b300.48xlarge", "sku": "G2B25BSJJUB6HQPQ", "region": "us-east-1", "gpuCount": 8, "contract": "COMMITMENT", "rawUsd": "112.1526", "divisorGpuCount": 8, "expectedUsdGpuHour": "14.019075", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "182"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:44:56.751172Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "112.1526"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15218"}, {"path": "sourceUrl", "equals": "https://savingsplans.amazonaws.com/DescribeSavingsPlansOfferingRates?region=us-east-1&instanceType=p5.48xlarge,p6-b200.48xlarge,p6-b300.48xlarge&productDescription=Linux/UNIX&tenancy=shared"}, {"path": "capturedAt", "equals": "2026-11-18T01:44:56.751172Z"}]}]},
+    {"observationId": 13669, "normalizationId": 13669, "officialSource": "https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeSpotPriceHistory.html", "confirmedAt": "2026-11-18T01:45:03.332090Z", "sourceName": "aws_ec2_spot_api", "offerId": 211, "product": "p6-b300.48xlarge", "sku": "G2B25BSJJUB6HQPQ", "region": "use1-az6", "gpuCount": 8, "contract": "SPOT", "rawUsd": "78.0041", "divisorGpuCount": 8, "expectedUsdGpuHour": "9.7505125", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "211"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T01:45:03.332090Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "78.0041"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "INSTANCE"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "15301"}, {"path": "sourceUrl", "equals": "https://ec2.us-east-1.amazonaws.com/?Action=DescribeSpotPriceHistory&EndTime=2026-11-18T01%3A45%3A02Z&InstanceType.1=p5.48xlarge&InstanceType.2=p6-b200.48xlarge&InstanceType.3=p6-b300.48xlarge&ProductDescription.1=Linux%2FUNIX&StartTime=2026-11-18T01%3A45%3A02Z"}, {"path": "capturedAt", "equals": "2026-11-18T01:45:03.332090Z"}]}]},
+    {"observationId": 15617, "normalizationId": 15617, "officialSource": "https://docs.nebius.com/compute/resources/pricing#nvidia-b300-nvlink-gpu-b300-sxm", "confirmedAt": "2026-11-18T08:12:51.667895Z", "sourceName": "nebius_pricing_docs", "offerId": 1130, "product": "gpu-b300-sxm 1gpu-24vcpu-346gb", "sku": null, "region": "uk-south1", "gpuCount": 1, "contract": "ON_DEMAND", "rawUsd": "9.5", "divisorGpuCount": 1, "expectedUsdGpuHour": "9.5", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "1130"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "9.5"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "GPU"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "17556"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]},
+    {"observationId": 15618, "normalizationId": 15618, "officialSource": "https://docs.nebius.com/compute/resources/pricing#nvidia-b300-nvlink-gpu-b300-sxm", "confirmedAt": "2026-11-18T08:12:51.667895Z", "sourceName": "nebius_pricing_docs", "offerId": 1131, "product": "gpu-b300-sxm 8gpu-192vcpu-2768gb", "sku": null, "region": "uk-south1", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "9.5", "divisorGpuCount": 1, "expectedUsdGpuHour": "9.5", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "1131"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "9.5"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "GPU"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "17558"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]},
+    {"observationId": 15619, "normalizationId": 15619, "officialSource": "https://docs.nebius.com/compute/resources/pricing#nvidia-b300-nvlink-gpu-b300-sxm", "confirmedAt": "2026-11-18T08:12:51.667895Z", "sourceName": "nebius_pricing_docs", "offerId": 1132, "product": "gpu-b300-sxm 1gpu-24vcpu-346gb", "sku": null, "region": "eu-west2", "gpuCount": 1, "contract": "ON_DEMAND", "rawUsd": "9.5", "divisorGpuCount": 1, "expectedUsdGpuHour": "9.5", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "1132"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "9.5"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "GPU"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "17560"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]},
+    {"observationId": 15620, "normalizationId": 15620, "officialSource": "https://docs.nebius.com/compute/resources/pricing#nvidia-b300-nvlink-gpu-b300-sxm", "confirmedAt": "2026-11-18T08:12:51.667895Z", "sourceName": "nebius_pricing_docs", "offerId": 1133, "product": "gpu-b300-sxm 8gpu-192vcpu-2768gb", "sku": null, "region": "eu-west2", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "9.5", "divisorGpuCount": 1, "expectedUsdGpuHour": "9.5", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "1133"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "9.5"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "GPU"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "17562"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]},
+    {"observationId": 15621, "normalizationId": 15621, "officialSource": "https://docs.nebius.com/compute/resources/pricing#nvidia-b300-nvlink-gpu-b300-sxm", "confirmedAt": "2026-11-18T08:12:51.667895Z", "sourceName": "nebius_pricing_docs", "offerId": 1134, "product": "gpu-b300-sxm 1gpu-24vcpu-346gb", "sku": null, "region": "us-north1", "gpuCount": 1, "contract": "ON_DEMAND", "rawUsd": "9.5", "divisorGpuCount": 1, "expectedUsdGpuHour": "9.5", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "1134"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "9.5"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "GPU"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "17564"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]},
+    {"observationId": 15622, "normalizationId": 15622, "officialSource": "https://docs.nebius.com/compute/resources/pricing#nvidia-b300-nvlink-gpu-b300-sxm", "confirmedAt": "2026-11-18T08:12:51.667895Z", "sourceName": "nebius_pricing_docs", "offerId": 1135, "product": "gpu-b300-sxm 8gpu-192vcpu-2768gb", "sku": null, "region": "us-north1", "gpuCount": 8, "contract": "ON_DEMAND", "rawUsd": "9.5", "divisorGpuCount": 1, "expectedUsdGpuHour": "9.5", "tolerance": "0.000001",
+     "collectionChecks": [{"path": "offerId", "equals": "1135"}, {"path": "priceCertainty", "equals": "EXACT"}, {"path": "collectedAt", "equals": "2026-11-18T08:12:51.667895Z"}, {"path": "components", "any": [{"path": "type", "equals": "HOURLY_RATE"}, {"path": "amount", "decimal": "9.5"}, {"path": "currency", "equals": "USD"}, {"path": "timeUnit", "equals": "HOUR"}, {"path": "appliesTo", "equals": "GPU"}]}, {"path": "evidence", "any": [{"path": "evidenceId", "equals": "17566"}, {"path": "sourceUrl", "equals": "https://docs.nebius.com/compute/resources/pricing.md"}, {"path": "capturedAt", "equals": "2026-11-18T08:12:51.667895Z"}]}]}
+  ]
+}

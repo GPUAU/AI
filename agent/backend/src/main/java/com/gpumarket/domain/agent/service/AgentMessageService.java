@@ -12,6 +12,7 @@ import com.gpumarket.domain.catalog.dto.CatalogResponseDto.ProviderDto;
 import com.gpumarket.domain.catalog.service.CatalogService;
 import com.gpumarket.domain.market.dto.PublicPriceLookupDto;
 import com.gpumarket.domain.market.dto.PublicPriceLookupDto.PublicPriceDto;
+import com.gpumarket.domain.market.service.MarketCostImpactService;
 import com.gpumarket.domain.market.service.MarketForecastService;
 import com.gpumarket.domain.market.service.MarketOfferService;
 import java.text.Normalizer;
@@ -25,6 +26,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -89,6 +91,7 @@ public class AgentMessageService {
   private static final Pattern GPU_TOKEN =
       Pattern.compile("(?<![a-z0-9])(?:gb|vr|[habvl])[0-9]{2,4}(?![a-z0-9])");
   private static final Pattern REGION_CODE = Pattern.compile("\\b[a-z]{2}(?:-[a-z]+)+-[0-9]+\\b");
+  private static final Pattern COST_AZ = Pattern.compile("\\b[a-z]{3}[0-9]-az[0-9]+\\b");
   private static final Pattern AMBIGUOUS_REGION = Pattern.compile("서울|오리건|도쿄|버지니아");
   private static final Pattern NON_USD =
       Pattern.compile(
@@ -199,12 +202,12 @@ public class AgentMessageService {
       return clarify(supplied, error.getMessage(), "scope");
     }
     if (scope.kind() == Kind.COST_IMPACT) {
-      return costImpactReply(new Conditions(EMPTY, null, false, false, null, scope, List.of()));
+      return costImpactReply(supplied, EMPTY, question, scope);
     }
     if (scope.kind() == Kind.PRICE
         && previous.scope().kind() == Kind.COST_IMPACT
         && isModelOnlyFollowUp(question)) {
-      return costImpactReply(previous);
+      return costImpactReply(supplied, previous.publicContext(), question, previous.scope());
     }
     if (scope.kind() == Kind.PROPOSAL
         || (scope.kind() == Kind.PRICE
@@ -231,7 +234,8 @@ public class AgentMessageService {
     }
     String strippedQuestion = scope.withoutIntent(question);
     String strippedOriginal = scope.withoutIntent(original);
-    return lookupDate(request, previous, strippedOriginal, strippedQuestion, scope);
+    var priceContext = previous.scope().kind() == Kind.COST_IMPACT ? EMPTY_CONDITIONS : previous;
+    return lookupDate(request, priceContext, strippedOriginal, strippedQuestion, scope);
   }
 
   private boolean isModelOnlyFollowUp(String question) {
@@ -242,11 +246,134 @@ public class AgentMessageService {
     return FOLLOW_UP_FILLER.matcher(remainder.replace("기준", "")).replaceAll("").isEmpty();
   }
 
-  private static Lookup costImpactReply(Conditions conditions) {
-    var analysis =
-        Map.<String, Object>of(
-            "kind", "COST_IMPACT", "status", "INSUFFICIENT_EVIDENCE", "items", List.of());
-    return new Lookup(analysisReply(EMPTY, analysis), conditions);
+  private Lookup costImpactReply(
+      PublicContextDto supplied,
+      PublicContextDto retained,
+      String question,
+      AgentQueryScope scope) {
+    var available = catalog.getCatalog();
+    var named = mentionedModels(question, available.models());
+    if ((named.isEmpty() && GPU_TOKEN.matcher(question).find())
+        || named.size() > 2
+        || (supplied.modelId() != null
+            && !named.isEmpty()
+            && (named.size() != 1 || conflict(supplied.modelId(), named.get(0).id())))) {
+      return clarify(supplied, "비교할 GPU 모델을 한두 가지 알려 주세요.", "modelId");
+    }
+    String selected = firstValue(supplied.modelId(), retained.modelId());
+    var models =
+        !named.isEmpty()
+            ? named
+            : available.models().stream()
+                .filter(
+                    model ->
+                        selected == null
+                            ? List.of("B200", "B300").contains(model.name())
+                            : model.id().equals(selected))
+                .toList();
+    if (models.isEmpty()) return clarify(supplied, "비교할 GPU 모델을 알려 주세요.", "modelId");
+
+    var names = new LinkedHashSet<String>();
+    REGION_CODE.matcher(question).results().map(MatchResult::group).forEach(names::add);
+    COST_AZ.matcher(question).results().map(MatchResult::group).forEach(names::add);
+    if (names.isEmpty() && (question.contains("버지니아") || question.contains("virginia")))
+      names.add("us-east-1");
+    if (names.isEmpty() && (question.contains("오리건") || question.contains("oregon")))
+      names.add("us-west-2");
+    String namedRegion = names.isEmpty() ? null : names.iterator().next();
+    String region =
+        firstValue(namedRegion, firstValue(supplied.regionCode(), retained.regionCode()));
+    if (region != null) region = region.toLowerCase(Locale.ROOT);
+    if (names.size() > 1
+        || (namedRegion != null && conflict(supplied.regionCode(), namedRegion))
+        || (region != null && !region.matches("us-east-1|us-west-2|use1-az[0-9]+|usw2-az[0-9]+"))
+        || (supplied.countryCode() != null && !"US".equalsIgnoreCase(supplied.countryCode()))
+        || question.matches(".*(?:한국(?!은행)|독일|일본|서울|도쿄|유럽).*")) {
+      return clarify(supplied, "이 비교는 AWS 버지니아 북부와 오리건을 지원합니다. 미국 리전 한 가지를 확인해 주세요.", "regionCode");
+    }
+    if ((supplied.providerType() != null
+            && List.of("GPU_SPECIALIST", "UNKNOWN").contains(upper(supplied.providerType())))
+        || available.providers().stream()
+            .filter(provider -> !"AWS".equalsIgnoreCase(provider.name()))
+            .anyMatch(
+                provider ->
+                    (" " + question + " ")
+                        .contains(" " + provider.name().toLowerCase(Locale.ROOT) + " "))) {
+      return clarify(supplied, "현재 비용 지표는 AWS 미국 리전의 공개 임대료와 비교합니다.", "providerType");
+    }
+    boolean spot = SPOT.matcher(question).find();
+    boolean onDemand = ON_DEMAND.matcher(question).find();
+    String namedContract = spot ? "SPOT" : onDemand ? "ON_DEMAND" : null;
+    String contract =
+        firstValue(
+            namedContract, firstValue(upper(supplied.contractType()), retained.contractType()));
+    if ((spot && onDemand)
+        || COMMITMENT.matcher(question).find()
+        || (namedContract != null && conflict(upper(supplied.contractType()), namedContract))
+        || (contract != null && !List.of("SPOT", "ON_DEMAND").contains(contract))) {
+      return clarify(supplied, "비교할 온디맨드 또는 스팟 중 한 가지를 알려 주세요.", "contractType");
+    }
+    if ("ON_DEMAND".equals(contract) && region != null && !region.startsWith("us-")) {
+      return clarify(supplied, "온디맨드 비교에는 us-east-1 또는 us-west-2 리전을 지정해 주세요.", "regionCode");
+    }
+    Integer gpuCount = firstValue(supplied.gpuCount(), retained.gpuCount());
+    String systemType = firstValue(upper(supplied.systemType()), retained.systemType());
+    var aws =
+        available.providers().stream()
+            .filter(provider -> "AWS".equalsIgnoreCase(provider.name()))
+            .findFirst();
+    var context =
+        new PublicContextDto(
+            models.size() == 1 ? models.get(0).id() : null,
+            contract,
+            "US",
+            systemType,
+            gpuCount,
+            null,
+            region,
+            null,
+            null);
+    var conditions =
+        new Conditions(
+            context, aws.map(ProviderDto::id).orElse(null), false, false, null, scope, List.of());
+    if (aws.isEmpty()) {
+      var noData =
+          Map.<String, Object>of(
+              "kind",
+              "COST_IMPACT",
+              "status",
+              "INSUFFICIENT_EVIDENCE",
+              "items",
+              List.of(),
+              "notes",
+              List.of("AWS 공개 임대료 조회 대상이 없습니다."),
+              "asOf",
+              Instant.now());
+      return new Lookup(analysisReply(context, noData), conditions);
+    }
+    var regions =
+        available.regions().stream()
+            .filter(
+                entry ->
+                    aws.get().id().equals(entry.providerId()) && "US".equals(entry.countryCode()))
+            .map(com.gpumarket.domain.catalog.dto.CatalogResponseDto.RegionDto::regionCode)
+            .filter(Objects::nonNull)
+            .distinct()
+            .sorted()
+            .toList();
+    var query =
+        new MarketCostImpactService.Query(
+            scope.factors(),
+            models,
+            aws.get().id(),
+            regions,
+            region,
+            contract,
+            gpuCount,
+            systemType,
+            scope.from(),
+            scope.to());
+    return new Lookup(analysisReply(context, tools.costImpact(query)), conditions);
   }
 
   private Lookup proposalReply(PublicContextDto supplied, String question, AgentQueryScope scope) {
@@ -1144,7 +1271,7 @@ public class AgentMessageService {
       String modelName) {
     String kind = analysis.get("kind").toString();
     Object observedOn = analysis.get("observedOn");
-    boolean noPublicLookup = "COST_IMPACT".equals(kind) || "INTERNAL_PROPOSAL".equals(kind);
+    boolean noPublicLookup = "INTERNAL_PROPOSAL".equals(kind);
     String detailStatus = String.valueOf(analysis.get("status"));
     boolean noData =
         switch (kind) {
@@ -1228,8 +1355,9 @@ public class AgentMessageService {
                 + (noData ? "의 조건에 맞는 공개가격 기록을 찾지 못했습니다." : "의 상품별 마지막 온디맨드·약정 공개 단가와 할인율입니다.");
           }
           case "COST_IMPACT" ->
-              "현재 연결된 자료로는 전기료·메모리 가격이 바뀐 뒤 GPU 임대료가 몇 주 뒤에 움직였는지 확인할 근거가 부족합니다. "
-                  + "같은 지역과 기간의 비용 지표 및 GPU 임대료 시계열이 필요합니다.";
+              noData
+                  ? "선택한 조건에서 비용 지표와 GPU 임대료를 비교할 근거가 부족합니다."
+                  : "같은 AWS 오퍼의 공개 임대료와 비용 지표를 비교했습니다. 상승 뒤의 임대료 변동과 시차별 상관을 확인할 수 있습니다.";
           case "PRICE_REMOVAL" ->
               noData
                   ? "조회 기간에 공개 가격표에서 빠졌다고 확인할 수 있는 상품 근거가 없습니다. "
@@ -1270,6 +1398,9 @@ public class AgentMessageService {
   private static String analysisDisclaimer(
       String kind, PublicContextDto conditions, boolean noPublicLookup) {
     if (noPublicLookup || "PRICE_REMOVAL".equals(kind)) return null;
+    if ("COST_IMPACT".equals(kind)) {
+      return "공개 GPU 가격 기준입니다. 전력 허브와 DRAM 수출 지수는 시장 참고 지표입니다. 관측된 상관은 인과관계를 입증하지 않습니다.";
+    }
     if (("TYPICAL_PRICE".equals(kind)
             || "TREND_TIMING".equals(kind)
             || "PRICE_RANGE".equals(kind)

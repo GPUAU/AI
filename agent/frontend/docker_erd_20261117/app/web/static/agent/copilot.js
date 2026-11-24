@@ -59,7 +59,7 @@ async function askSpringPrice(text) {
     springAgentSessionId = result.sessionId || null;
     const historical = Boolean(result.history?.observedBefore || result.history?.observedOn);
     const label = {
-      ANSWERED: ({INTERNAL_PROPOSAL:'내부 제안가 검토', PRICE_REMOVAL:'공개가격 상태 변경'})[result.analysis?.kind]
+      ANSWERED: ({INTERNAL_PROPOSAL:'내부 제안가 검토', PRICE_REMOVAL:'공개가격 상태 변경', COST_IMPACT:'비용 지표와 GPU 가격 비교'})[result.analysis?.kind]
         || (historical ? '과거 공개가격 관측' : '확인된 공개가격'),
       NO_DATA: result.analysis?.kind === 'MONTH_OVER_MONTH' ? '월간 비교 근거 부족'
         : result.analysis?.kind === 'WEEK_OVER_WEEK' ? '주간 비교 근거 부족'
@@ -265,6 +265,8 @@ function agentAnalysisStatus(item) {
 
 function renderAgentAnalysis(data) {
   switch (data.kind) {
+    case 'COST_IMPACT':
+      return renderAgentCostImpact(data);
     case 'PRICE_REMOVAL':
       return '<p>확인 기간 ' + esc(data.dateFrom) + ' ~ ' + esc(data.dateTo) + ' KST</p>'
         + agentTable(['상품 · 모델 · 사업자 · 리전', '계약 유형', '마지막 공개가 수집', '가격표 변경 확인', '공개가 출처', '변경 출처'],
@@ -279,7 +281,7 @@ function renderAgentAnalysis(data) {
     case 'PRICE_RANGE':
       return renderAgentPriceRange(data);
     case 'PRICE_MINIMUM':
-      return renderAgentPriceRange(data, true);
+      return renderAgentPriceRange(data);
     case 'CONTRACT_COMPARISON':
       return renderAgentProductPrices(data.items, data.requestedCommitmentMonths);
     case 'TYPICAL_PRICE':
@@ -348,31 +350,72 @@ function renderAgentAnalysis(data) {
   }
 }
 
-function renderAgentPriceRange(data, showProviders = false) {
+const agentPublicPricingPages = new Map([
+  ['Hyperstack', 'https://www.hyperstack.cloud/gpu-pricing'],
+  ['Nebius', 'https://docs.nebius.com/compute/resources/pricing'],
+  ['Verda', 'https://verda.com/pricing'],
+  ['Azure', 'https://azure.microsoft.com/en-us/pricing/details/virtual-machines/linux/']
+]);
+
+function agentPublicPricingLinks(matches) {
+  const seen = new Set();
+  return matches.flatMap(match => {
+    const name = match.providerName;
+    const page = name === 'AWS' && match.contractType === 'ON_DEMAND'
+      ? 'https://aws.amazon.com/ec2/pricing/on-demand/'
+      : agentPublicPricingPages.get(name);
+    const url = GpuSpringAnalysis.sourceLink(page);
+    if (!url || seen.has(url)) return [];
+    seen.add(url);
+    return '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">'
+      + esc(name) + ' 공개 가격표</a>';
+  }).join(' · ');
+}
+
+function agentExtremaOfferCondition(offer) {
+  const fields = [offer.providerName, offer.productName, offer.regionCode || '리전 미확인',
+    offer.gpuCount == null ? 'GPU 수 미확인' : offer.gpuCount + ' GPU',
+    offer.commitmentMonths ? offer.commitmentMonths + '개월' : null,
+    offer.contractProductType,
+    marketPayment[offer.paymentOption]];
+  return fields.filter(value => value && value !== '해당 없음').map(esc).join(' · ');
+}
+
+function renderAgentComparedOffers(offers) {
+  if (!offers?.length) return '';
+  const rows = offers.map(offer => [
+    agentExtremaOfferCondition(offer),
+    '<b>' + esc(agentUsd.format(offer.priceUsdGpuHour)) + '</b>',
+    agentTime(offer.collectedAt),
+    agentEvidence(offer.sources)
+  ]);
+  return '<details class="agent-compared-offers"><summary>비교 대상 ' + esc(offers.length)
+    + '건 보기</summary>'
+    + agentTable(['상품 조건', '단가 (USD/GPU·시간)', '수집 시각', '수집 출처'], rows)
+    + '</details>';
+}
+
+function renderAgentPriceRange(data) {
   if (!data.items.length) return '';
   const labels = {MINIMUM:'최저가', MAXIMUM:'최고가', BOTH:'최저가·최고가'};
   const rows = data.items.map(item => {
-    const details = item.matches.map(match => {
-      const conditions = [match.providerName, match.productName, match.regionCode,
-        match.gpuCount == null ? null : match.gpuCount + ' GPU',
-        marketPayment[match.paymentOption]].filter(value => value && value !== '해당 없음');
-      return '<b>' + conditions.map(esc).join(' · ') + '</b><br><small>수집 '
-        + agentTime(match.collectedAt) + ' · ' + agentEvidence(match.sources) + '</small>';
-    });
+    const pricing = agentPublicPricingLinks(item.matches);
+    const publicLinks = pricing ? '<small class="agent-public-pricing">' + pricing + '</small>' : '';
+    const details = item.matches.map(match => '<b>' + agentExtremaOfferCondition(match)
+      + '</b><br><small>수집 ' + agentTime(match.collectedAt)
+      + ' · ' + agentEvidence(match.sources) + '</small>');
     const providers = [...new Set(item.matches.map(match => match.providerName).filter(Boolean))];
-    const providerNames = showProviders && providers.length ? '<b>' + providers.map(esc).join(' · ') + '</b>' : '';
-    const collectionTimes = [...new Set(item.matches.map(match => match.collectedAt).filter(Boolean))];
-    const collectionTime = showProviders && collectionTimes.length === 1
-      ? '<br><small>수집 ' + agentTime(collectionTimes[0]) + '</small>' : '';
-    const evidence = details.length === 1 ? details[0]
-      : providerNames + collectionTime + '<details><summary>' + esc(details.length) + '건의 상품 조건과 출처</summary><ul>'
+    const evidence = details.length === 1 ? details[0] + publicLinks
+      : '<b>' + providers.map(esc).join(' · ') + '</b>' + publicLinks
+        + '<details><summary>' + esc(details.length) + '건의 상품 조건과 출처</summary><ul>'
         + details.map(detail => '<li>' + detail + '</li>').join('') + '</ul></details>';
     return [labels[item.endpoint], '<b>' + agentUsd.format(item.priceUsdGpuHour) + '</b>', evidence];
   });
   return '<div class="agent-price-range">'
     + agentTable(['구분', '단가 (USD/GPU·시간)', '상품 조건과 출처'], rows)
     + '<p><small>사업자 ' + esc(data.providerCount) + '곳 · 상품 ' + esc(data.productCount)
-    + '개 · 가격 항목 ' + esc(data.offerCount) + '건의 마지막 공개 관측을 집계했습니다. 리전과 GPU 구성이 다를 수 있습니다.</small></p></div>';
+    + '개 · 가격 항목 ' + esc(data.offerCount) + '건의 마지막 공개 관측을 집계했습니다. 리전과 GPU 구성이 다를 수 있습니다.</small></p>'
+    + renderAgentComparedOffers(data.comparedOffers) + '</div>';
 }
 
 function renderAgentProposal(data) {
@@ -392,6 +435,94 @@ function renderAgentProposal(data) {
     + '<p>기간 총원가를 판매 가능한 GPU 시간으로 나눈 뒤, ' + formula + ' 방식으로 후보가를 계산했습니다. '
     + '최종 제안 전 동일 조건 시장가격과 목표 IRR을 확인하세요.</p>'
     + '<p><a href="#decision">가동률·IRR과 가격 검토</a></p>';
+}
+
+
+function renderAgentCostImpact(data) {
+  const notes = (data.notes || []).map(note => '<p>' + esc(note) + '</p>').join('');
+  if (!data.items.length) return notes;
+  const factors = [
+    {kind:'POWER', title:'전력 도매가격 · 주별', period:'주',
+      method:'전력은 거래일이 3일 이상인 주의 거래량 가중평균입니다. 상승 사례는 전주 대비 20%와 5 USD/MWh 이상 오른 주입니다.'},
+    {kind:'DRAM', title:'DRAM 수출물가지수 · 월별', period:'개월',
+      method:'달러 기준 한국은행 DRAM 지수(2020=100)를 사용합니다. 시차는 월별 기준월을 비교합니다.'}
+  ];
+  const findings = (data.findings || []).map(line => '<li>' + esc(line) + '</li>').join('');
+  return (findings ? '<ul>' + findings + '</ul>' : '') + factors.map(factor => {
+    const items = data.items.map((item, index) => ({item,index}))
+      .filter(({item}) => item.factor === factor.kind);
+    if (!items.length) return '';
+    const featured = items.findIndex(({item}) => item.offerId === data.featuredOffers?.[factor.kind]);
+    if (featured > 0) items.unshift(...items.splice(featured, 1));
+    return '<section class="agent-cost-factor"><h4>' + esc(factor.title) + '</h4>'
+      + '<p><small>' + esc(factor.method) + '</small></p>'
+      + items.map(({item,index}, rank) => renderAgentCostOffer(item, index, rank === 0, factor.period)).join('')
+      + '</section>';
+  }).join('') + notes
+    + '<p><small>가격 변화율은 연속된 주 또는 월의 직전 대비 값입니다. 표본 수와 최대 상승기 제외 결과를 함께 보세요. '
+    + '상관계수는 비교한 표본의 탐색값입니다.</small></p>';
+}
+
+function renderAgentCostOffer(item, index, initiallyOpen, period) {
+  const label = [item.modelName, 'AWS ' + item.regionCode, agentContractType(item.contractType),
+    item.gpuCount == null ? null : item.gpuCount + ' GPU', '오퍼 ' + item.offerId].filter(Boolean).join(' · ');
+  const number = new Intl.NumberFormat('ko-KR', {maximumFractionDigits:2});
+  const percent = value => value == null ? '비교 불가' : agentPercent.format(value) + '%';
+  const coefficient = value => value == null ? '계산 근거 부족' : number.format(value);
+  const delay = value => value === 0 ? (period === '주' ? '같은 주' : '같은 달') : value + period + ' 뒤';
+  const start = item.levels[0].period;
+  const end = item.levels.at(-1).period;
+  const lagRows = item.lags.map(row => [
+    esc(delay(row.periods)), esc(row.sampleCount), esc(coefficient(row.correlation)),
+    esc(coefficient(row.withoutLargestRise))
+  ]);
+  const riseRows = item.rises.flatMap(rise => rise.reactions.map(reaction => [
+    esc(rise.period), esc(number.format(rise.before) + ' → ' + number.format(rise.after)
+      + ' (' + percent(rise.changePercent) + ')'), esc(delay(reaction.lag)),
+    esc(agentUsd.format(reaction.before) + ' → ' + agentUsd.format(reaction.after)),
+    esc(agentUsd.format(reaction.changeUsd) + ' (' + percent(reaction.changePercent) + ')')
+  ]));
+  const flips = item.lags.filter(row => row.correlation != null && row.withoutLargestRise != null
+    && row.correlation * row.withoutLargestRise < 0).map(row => delay(row.periods));
+  const indicator = agentEvidence([{sourceName:item.indicator,sourceUrl:item.indicatorUrl}]);
+  return `<details data-agent-cost-index="${index}"${initiallyOpen ? ' open' : ''}>
+    <summary>${esc(label)}</summary>
+    <p>${esc(start)} ~ ${esc(end)} · ${indicator} · GPU ${esc(item.aggregation)}</p>
+    <div class="chartbox" style="height:180px"><canvas data-agent-cost-chart="cost" role="img" aria-label="비용 지표 추이"></canvas></div>
+    <div class="chartbox" style="height:180px"><canvas data-agent-cost-chart="gpu" role="img" aria-label="동일 오퍼 GPU 임대료 추이"></canvas></div>
+    ${agentTable(['시차', '비교 쌍', '상관계수', '최대 지표 상승기 제외'], lagRows)}
+    ${flips.length ? '<p><small>최대 지표 상승기를 제외하면 상관 방향이 바뀐 시차 · ' + esc(flips.join(', ')) + '</small></p>' : ''}
+    ${riseRows.length ? '<details><summary>지표 상승 뒤 실제 단가 변동</summary>'
+      + agentTable(['지표 상승일', '지표 이전 → 이후', '시차', '임대료 이전 → 이후 (USD/GPU·시간)', '임대료 변동'], riseRows)
+      + '</details>' : '<p><small>지표 상승과 연속 임대료 관측이 함께 있는 사례가 부족합니다.</small></p>'}
+    <p><small>공개 임대료 출처 · ${agentEvidence(item.sources)}</small></p>
+  </details>`;
+}
+
+function paintAgentCostImpact(reply, data) {
+  if (!window.Chart) return;
+  reply.querySelectorAll('[data-agent-cost-index]').forEach(details => {
+    const item = data.items[Number(details.dataset.agentCostIndex)];
+    const render = () => {
+      if (!details.open) return;
+      details.querySelectorAll('[data-agent-cost-chart]').forEach(canvas => {
+        if (window.Chart.getChart(canvas)) return;
+        const field = canvas.dataset.agentCostChart;
+        const cost = field === 'cost';
+        const unit = cost ? item.indicatorUnit : 'USD/GPU·시간';
+        const dates = item.levels.map(point => item.factor === 'POWER' ? point.period : point.period.slice(0, 7));
+        new Chart(canvas, {type:'line', data:{labels:dates,datasets:[{
+          label:cost ? item.indicator : item.modelName + ' 공개 임대료',
+          data:item.levels.map(point => point[field]),
+          borderColor:cost ? '#845a9c' : '#2266a4', pointRadius:2, spanGaps:false
+        }]}, options:{animation:false, maintainAspectRatio:false,
+          scales:{y:{title:{display:true,text:unit}},x:{ticks:{maxTicksLimit:6}}}
+        }});
+      });
+    };
+    details.addEventListener('toggle', render);
+    render();
+  });
 }
 
 function agentContractType(contract) {
@@ -574,6 +705,10 @@ function agentTrendObservations(data) {
 const agentTrendChartLimit = 8;
 
 function paintAgentAnalysis(reply, data) {
+  if (data.kind === 'COST_IMPACT') {
+    paintAgentCostImpact(reply, data);
+    return;
+  }
   if (data.kind === 'TREND_TIMING') {
     reply.querySelectorAll('[data-agent-timing-index]').forEach(section =>
       paintAgentAnalysis(section, data.items[Number(section.dataset.agentTimingIndex)]));

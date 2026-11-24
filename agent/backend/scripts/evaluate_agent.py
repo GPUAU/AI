@@ -3,6 +3,7 @@
 
 import argparse
 import json
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import urlencode
@@ -76,10 +77,54 @@ def matches(value, expected):
     return value == expected
 
 
+def decimal_matches(value, expected, tolerance):
+    expected = Decimal(str(expected))
+    tolerance = Decimal(str(tolerance))
+    if not expected.is_finite() or not tolerance.is_finite() or tolerance < 0:
+        raise ValueError('Expected finite numeric value and nonnegative tolerance')
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return False
+    return number.is_finite() and abs(number - expected) <= tolerance
+
+
+def grade(document, rule):
+    path = rule['path']
+    value = actual(document, path) if path else document
+    if 'equals' in rule:
+        passed = value == rule['equals']
+    elif 'decimal' in rule:
+        passed = decimal_matches(value, rule['decimal'], rule.get('tolerance', '0'))
+    elif 'contains' in rule:
+        passed = isinstance(value, (str, list)) and rule['contains'] in value
+    elif 'length' in rule:
+        passed = isinstance(value, list) and len(value) == rule['length']
+    elif 'any' in rule:
+        passed = isinstance(value, list) and any(
+            all(grade(item, check)['passed'] for check in rule['any']) for item in value
+        )
+    else:
+        raise ValueError(f'Unsupported official check at {path}')
+
+    # Reports retain scalar comparisons without copying full API arrays or source excerpts.
+    if isinstance(value, (list, dict)):
+        value = {'type': type(value).__name__, 'size': len(value)}
+    return dict(rule=rule, actual=value, passed=passed)
+
+
 def evaluate(base, key):
     results = []
     for i, (category, difficulty, question, path, expected) in enumerate(CASES, 1):
-        row = dict(id=i, category=category, difficulty=difficulty, check=path, expected=expected)
+        entry = key.get(str(i), {})
+        checks = entry if isinstance(entry, list) else entry.get('checks', [])
+        row = dict(id=i, category=category, difficulty=difficulty, question=question,
+                   check=path, expected=expected, official='NOT_RUN')
+        if isinstance(entry, dict) and entry:
+            row['officialKind'] = entry.get('kind')
+            row['officialBasis'] = entry.get('basis')
+            if entry.get('unverifiedReason'):
+                row['officialUnverifiedReason'] = entry['unverifiedReason']
         try:
             status, body = fetch(base + '/api/v1/agent-messages', {'message': question})
             result = body.get('result', body)
@@ -87,27 +132,36 @@ def evaluate(base, key):
             row['actual'] = actual(result, path)
             row['functional'] = ('FAILED' if status >= 500 else
                                  'PASS' if matches(row['actual'], expected) else 'FAIL')
-            checks = key.get(str(i), [])
-            row['official'] = 'NOT_RUN'
             if status >= 500 and checks:
                 row['official'] = 'ERROR'
             elif checks:
-                details = [dict(path=check['path'], expected=check['equals'],
-                                actual=actual(result, check['path'])) for check in checks]
-                row['official'] = ('PASS' if all(item['expected'] == item['actual'] for item in details)
-                                   else 'FAIL')
+                details = [grade({**result, 'httpStatus': status}, check) for check in checks]
+                if not all(item['passed'] for item in details):
+                    row['official'] = 'FAIL'
+                else:
+                    row['official'] = 'NOT_VERIFIED' if row.get('officialUnverifiedReason') else 'PASS'
                 row['officialChecks'] = details
-            if result.get('sessionId'):
-                fetch(base + '/api/v1/agent-sessions/' + result['sessionId'], method='DELETE')
-        except (URLError, TimeoutError, ValueError) as error:
+        except (URLError, TimeoutError, ValueError, InvalidOperation) as error:
             row['functional'] = 'FAILED'
-            row['official'] = 'ERROR' if key.get(str(i)) else 'NOT_RUN'
+            row['official'] = 'ERROR' if checks else 'NOT_RUN'
             row['reason'] = type(error).__name__
+        else:
+            if result.get('sessionId'):
+                try:
+                    cleanup_status, _ = fetch(
+                        base + '/api/v1/agent-sessions/' + result['sessionId'], method='DELETE'
+                    )
+                    if cleanup_status >= 400:
+                        row['sessionCleanupStatus'] = cleanup_status
+                except (URLError, TimeoutError, ValueError) as error:
+                    row['sessionCleanupError'] = type(error).__name__
         results.append(row)
-    official_count = sum(row['official'] == 'PASS' for row in results)
-    return dict(total=30, functionalPassed=sum(row['functional'] == 'PASS' for row in results),
-                officialPassed=official_count, officialGoal=29,
-                officialStatus='NOT_RUN' if not key else 'PASS' if official_count >= 29 else 'FAIL',
+
+    official_counts = {status: sum(row['official'] == status for row in results)
+                       for status in ('PASS', 'FAIL', 'NOT_VERIFIED', 'NOT_RUN', 'ERROR')}
+    return dict(total=len(CASES), functionalPassed=sum(row['functional'] == 'PASS' for row in results),
+                officialPassed=official_counts['PASS'], officialGoal=29, officialCounts=official_counts,
+                officialStatus='NOT_RUN' if not key else 'PASS' if official_counts['PASS'] >= 29 else 'FAIL',
                 results=results)
 
 
@@ -125,22 +179,16 @@ def official_observations(base, entries):
                 result['httpStatus'] = code
                 continue
             data = body['result']
-            checks = [
-                dict(path=check['path'], expected=check['equals'], actual=actual(data, check['path']))
-                for check in entry['collectionChecks']
-            ]
+            checks = [grade(data, check) for check in entry['collectionChecks']]
             result['checks'] = checks
-            result['collection'] = ('PASS' if checks and all(c['actual'] == c['expected'] for c in checks)
+            result['collection'] = ('PASS' if checks and all(check['passed'] for check in checks)
                                     else 'FAIL' if checks else 'MISSING')
             displayed = actual(data, 'effective.amount')
-            expected = Decimal(entry['expectedUsdGpuHour'])
-            tolerance = Decimal(entry['tolerance'])
-            result['expectedUsdGpuHour'] = str(expected)
+            expected = entry['expectedUsdGpuHour']
+            result['expectedUsdGpuHour'] = expected
             result['actualUsdGpuHour'] = displayed
-            if not expected.is_finite() or not tolerance.is_finite() or tolerance < 0:
-                raise ValueError('Invalid independent normalization key')
             result['normalization'] = ('MISSING' if displayed is None else
-                'PASS' if abs(Decimal(displayed) - expected) <= tolerance else 'FAIL')
+                'PASS' if decimal_matches(displayed, expected, entry['tolerance']) else 'FAIL')
         except (ValueError, InvalidOperation, TimeoutError, URLError) as error:
             result['reason'] = type(error).__name__
     summary = {}
@@ -161,7 +209,11 @@ def main():
     args = parser.parse_args()
     key = json.loads(args.official_key.read_text()) if args.official_key else {}
     base = args.base_url.rstrip('/')
+    evaluated_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
     report = evaluate(base, key.get('cases', {}))
+    report['evaluatedAt'] = evaluated_at
+    if 'baseline' in key:
+        report['officialBaseline'] = key['baseline']
     report['independentPrices'] = official_observations(base, key.get('observations', []))
     output = json.dumps(report, ensure_ascii=False, indent=2) + '\n'
     if args.output:

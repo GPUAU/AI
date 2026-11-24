@@ -3,6 +3,9 @@
 .copilot-layout .feed > .msg-a { flex-shrink: 0; overflow-wrap: anywhere; }
 .copilot-layout .msg-u { background: #edf0f3; color: #414a55; border-radius: 6px 6px 2px 6px; }
 .copilot-layout .msg-a { overflow-x: visible; }
+.copilot-layout .agent-public-pricing { display: block; margin-top: 4px; }
+.copilot-layout .agent-compared-offers .mv-tablebox { max-height: 420px; overflow: auto; }
+.copilot-layout .agent-compared-offers th { position: sticky; top: 0; }
 .copilot-layout .agent-product-prices { margin-bottom: 8px; }
 .copilot-layout .agent-product-prices :is(th, td) { min-width: 150px; white-space: normal; }
 .copilot-layout .agent-period-prices :is(th, td) { vertical-align: top; white-space: normal; }

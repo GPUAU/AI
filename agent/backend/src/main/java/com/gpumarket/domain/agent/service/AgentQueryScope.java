@@ -1,14 +1,22 @@
 package com.gpumarket.domain.agent.service;
 
+import com.gpumarket.domain.market.service.MarketCostImpactService.Factor;
 import java.time.DateTimeException;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.TemporalAdjusters;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.MatchResult;
 import java.util.regex.Pattern;
 
-record AgentQueryScope(Kind kind, LocalDate from, LocalDate to, String offerId) {
+record AgentQueryScope(
+    Kind kind, LocalDate from, LocalDate to, String offerId, List<Factor> factors) {
+  AgentQueryScope(Kind kind, LocalDate from, LocalDate to, String offerId) {
+    this(kind, from, to, offerId, List.of());
+  }
+
   enum Kind {
     PRICE,
     PRICE_RANGE,
@@ -72,13 +80,14 @@ record AgentQueryScope(Kind kind, LocalDate from, LocalDate to, String offerId) 
       Pattern.compile("(?:오퍼|\\boffer)\\s*(?:id\\s*)?#?([1-9][0-9]{0,18})(?![0-9])");
   private static final Pattern DISCOUNT_BASELINE =
       Pattern.compile("(?:온\\s*디[맨멘]드|on[ _-]*demand)\\s*(?:대비|보다|기준)");
-  private static final Pattern COST_FACTOR =
-      Pattern.compile(
-          "전기\\s*(?:료|요금|단가|가격)|전력\\s*(?:비|요금|단가|가격)"
-              + "|(?:메모리|hbm|dram)\\s*(?:가격|비용|단가|값)"
-              + "|\\b(?:electricity|power|memory|dram|hbm)\\s+(?:prices?|costs?|rates?)\\b");
+  private static final Pattern POWER_FACTOR =
+      Pattern.compile("전기\\s*(?:료|요금|단가|가격)|전력\\s*(?:비|요금|단가|가격)|\\b(?:electricity|power)\\b");
+  private static final Pattern DRAM_FACTOR = Pattern.compile("메모리|d램|디램|\\b(?:memory|dram|hbm)\\b");
+  private static final Pattern MEMORY_PRODUCT =
+      Pattern.compile("\\b(?:hbm[0-9a-z]*|ddr[345]|rdimm)\\b");
   private static final Pattern GPU_MARKET =
-      Pattern.compile("\\bgpu\\b|임대\\s*(?:가|료)|온\\s*디[맨멘]드|\\brental\\s+(?:prices?|rates?)\\b");
+      Pattern.compile(
+          "\\bgpu\\b|\\b(?:b|gb|h)[0-9]{2,4}\\b|임대\\s*(?:가|료)|온\\s*디[맨멘]드|\\brental\\s+(?:prices?|rates?)\\b");
   private static final Pattern COST_RELATIONSHIP =
       Pattern.compile(
           "시차|영향|상관|연관|관계|반영|원인|때문|몇\\s*(?:일|주|달|개월)"
@@ -111,10 +120,31 @@ record AgentQueryScope(Kind kind, LocalDate from, LocalDate to, String offerId) 
   }
 
   static AgentQueryScope parse(String question, LocalDate today) {
-    if (COST_FACTOR.matcher(question).find()
+    var factors = new ArrayList<Factor>();
+    if (POWER_FACTOR.matcher(question).find()) factors.add(Factor.POWER);
+    if (MEMORY_PRODUCT.matcher(question).find()) factors.add(Factor.MEMORY_PRODUCT);
+    else if (DRAM_FACTOR.matcher(question).find()) factors.add(Factor.DRAM);
+    if (!factors.isEmpty()
         && GPU_MARKET.matcher(question).find()
         && COST_RELATIONSHIP.matcher(question).find()) {
-      return new AgentQueryScope(Kind.COST_IMPACT, null, null, null);
+      var ranges = RANGE.matcher(question).results().toList();
+      if (ranges.size() > 1) throw new IllegalArgumentException("조회할 기간 한 가지를 알려 주세요.");
+      LocalDate start = null;
+      LocalDate end = null;
+      if (!ranges.isEmpty()) {
+        var match = ranges.get(0);
+        start = date(match, 1, today.getYear());
+        end = date(match, 4, start.getYear());
+        if (!"이전".equals(match.group(7)) && !"전".equals(match.group(7))) end = end.plusDays(1);
+      } else {
+        var recent = RECENT.matcher(question);
+        if (recent.find()) {
+          end = today.plusDays(1);
+          start = end.minusDays(Integer.parseInt(recent.group(1)));
+        }
+      }
+      if (start != null) trend(start, end, today, null);
+      return new AgentQueryScope(Kind.COST_IMPACT, start, end, null, List.copyOf(factors));
     }
     if (PROPOSAL.matcher(question).find()) {
       return new AgentQueryScope(Kind.PROPOSAL, null, null, null);

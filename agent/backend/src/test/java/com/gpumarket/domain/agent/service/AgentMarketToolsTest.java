@@ -18,7 +18,7 @@ class AgentMarketToolsTest {
   @Test
   void typicalPriceUsesOnlyTheLastValidPointPerKoreanCalendarDay() {
     var history = mock(MarketHistoryService.class);
-    var tools = new AgentMarketTools(history, null, null, null);
+    var tools = new AgentMarketTools(history, null, null, null, null);
     var points =
         List.of(
             Map.of(
@@ -54,7 +54,7 @@ class AgentMarketToolsTest {
   @Test
   void timingKeepsTheFirstRiseAndFallForEachOffer() {
     var history = mock(MarketHistoryService.class);
-    var tools = new AgentMarketTools(history, null, null, null);
+    var tools = new AgentMarketTools(history, null, null, null, null);
     var points =
         List.of("8", "6", "9", "5").stream()
             .map(price -> Map.of("effectiveUsdGpuHour", price))
@@ -80,7 +80,7 @@ class AgentMarketToolsTest {
   @Test
   void showsLastWeeksSpotChangesFromLaterPagesWhenThisWeekIsUnobserved() {
     var history = mock(MarketHistoryService.class);
-    var tools = new AgentMarketTools(history, null, null, null);
+    var tools = new AgentMarketTools(history, null, null, null, null);
     var monday = LocalDate.parse("2026-11-23");
     when(history.publicHistory(anyMap(), any(Instant.class)))
         .thenAnswer(
@@ -123,7 +123,7 @@ class AgentMarketToolsTest {
   @Test
   void monthlyComparisonUsesTheLatestVerifiedPriceOfTheSameOfferInEachMonth() {
     var history = mock(MarketHistoryService.class);
-    var tools = new AgentMarketTools(history, null, null, null);
+    var tools = new AgentMarketTools(history, null, null, null, null);
     when(history.publicHistory(anyMap(), any(Instant.class)))
         .thenAnswer(
             call -> {
