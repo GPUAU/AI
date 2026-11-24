@@ -68,7 +68,7 @@
 ```bash
 cd cost-agent
 uv venv && uv pip install -e ".[dev]"
-cp .env.example .env            # OPENAI_API_KEY는 .env에만. 없으면 규칙 매퍼로 동작
+cp .env.example .env            # OPENAI_API_KEY는 .env에만 (Git 제외). 앱이 자동으로 읽고, 이미 있는 환경변수는 덮어쓰지 않음
 python scripts/make_samples.py  # 가상 청구서 3종 → samples/
 python -m app.cli samples/bill_b_colo_usd.xlsx            # 터미널에서 매핑 결과 보기
 uvicorn app.main:create_app --factory --reload --port 8000  # API (http://localhost:8000/docs)
@@ -98,6 +98,8 @@ pytest
 
 - 초안은 메모리에 저장한다 (Pod 재시작 시 사라짐). 템플릿은 `TEMPLATE_DIR` 파일 → 운영 시 PVC 또는 DB로 옮긴다.
 - 할인 줄은 원가에서 빼지 않는다 (보수적). 계약 할인 반영은 담당자 판단.
+- 상면(RACK_FACILITY)과 공간 임대(RENT) 중 한쪽만 청구되면 다른 쪽을 `INCLUDED_IN_OTHER`로 보낸다 (BE 누락 판정 방지).
+- 금융비용(FINANCING)은 청구서에 없으므로 BE 결과가 `INCOMPLETE`·`FINANCING_NOT_INCLUDED`로 나온다. 금리 입력은 다음 단계.
 - 월 청구서 1장을 ×12로 연간 추정한다. 여러 달 청구서 평균은 다음 단계.
 - 수식 셀은 엑셀에 저장된 결과값으로 읽는다. 결과값이 저장되지 않은 파일(일부 생성 도구)은 금액이 비어 보일 수 있다.
 - 다음 단계: 견적서·보고서 엑셀 내보내기, 경쟁사 가격 변동 → 제안가 영향 알림, BE `agent-messages`와 연결.
