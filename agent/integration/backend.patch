@@ -1,0 +1,3461 @@
+diff --git a/src/main/java/com/gpumarket/domain/market/controller/MarketForecastController.java b/src/main/java/com/gpumarket/domain/market/controller/MarketForecastController.java
+new file mode 100644
+index 0000000..a8b6069
+--- /dev/null
++++ b/src/main/java/com/gpumarket/domain/market/controller/MarketForecastController.java
+@@ -0,0 +1,57 @@
++package com.gpumarket.domain.market.controller;
++
++import com.gpumarket.domain.market.service.MarketForecastService;
++import com.gpumarket.global.api.ApiResponse;
++import com.gpumarket.global.api.InvalidRequestException;
++import java.time.Instant;
++import java.time.LocalDate;
++import java.time.ZoneId;
++import java.time.format.DateTimeParseException;
++import java.util.LinkedHashMap;
++import java.util.Map;
++import java.util.Set;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.bind.annotation.RestController;
++
++@RestController
++public class MarketForecastController {
++  private final MarketForecastService forecasts;
++
++  public MarketForecastController(MarketForecastService forecasts) {
++    this.forecasts = forecasts;
++  }
++
++  @GetMapping("/api/v1/market/forecasts")
++  public ApiResponse<Map<String, Object>> forecast(@RequestParam Map<String, String> input) {
++    if (!Set.of(
++                "modelId",
++                "offerId",
++                "regionCode",
++                "providerIds",
++                "providerType",
++                "systemType",
++                "gpuCount",
++                "contractType",
++                "commitmentMonths",
++                "paymentOption",
++                "asOfDate")
++            .containsAll(input.keySet())
++        || !input.containsKey("modelId")) {
++      throw new InvalidRequestException("GPU 모델과 지원되는 공개 가격 조건을 지정해 주세요.");
++    }
++    var filters = new LinkedHashMap<>(input);
++    String date = filters.remove("asOfDate");
++    Instant asOf;
++    try {
++      asOf =
++          date == null
++              ? Instant.now()
++              : LocalDate.parse(date).atStartOfDay(ZoneId.of("Asia/Seoul")).toInstant();
++    } catch (DateTimeParseException e) {
++      throw new InvalidRequestException("예측 기준일을 YYYY-MM-DD 형식으로 입력해 주세요.");
++    }
++    if (asOf.isAfter(Instant.now())) throw new InvalidRequestException("현재보다 이전의 예측 기준일을 입력해 주세요.");
++    return ApiResponse.success(forecasts.forecast(filters, asOf));
++  }
++}
+diff --git a/src/main/java/com/gpumarket/domain/market/controller/MarketHistoryController.java b/src/main/java/com/gpumarket/domain/market/controller/MarketHistoryController.java
+index de56652..4adcd60 100644
+--- a/src/main/java/com/gpumarket/domain/market/controller/MarketHistoryController.java
++++ b/src/main/java/com/gpumarket/domain/market/controller/MarketHistoryController.java
+@@ -1,36 +1,21 @@
+ package com.gpumarket.domain.market.controller;
+ 
++import com.gpumarket.domain.market.service.MarketHistoryService;
+ import com.gpumarket.global.api.ApiResponse;
+-import com.gpumarket.global.api.InvalidRequestException;
+ import io.swagger.v3.oas.annotations.Operation;
+ import io.swagger.v3.oas.annotations.Parameter;
+ import io.swagger.v3.oas.annotations.enums.ParameterIn;
+-import java.time.Duration;
+-import java.time.Instant;
+-import java.time.OffsetDateTime;
+-import java.time.format.DateTimeParseException;
+-import java.util.ArrayList;
+-import java.util.LinkedHashMap;
+-import java.util.List;
+ import java.util.Map;
+-import java.util.Objects;
+-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+-import org.springframework.transaction.annotation.Isolation;
+-import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.RequestParam;
+ import org.springframework.web.bind.annotation.RestController;
+ 
+ @RestController
+-@Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+ public class MarketHistoryController {
+-  private static final int MAX_DAYS = 731;
+-  private static final int MAX_POINTS = 12_000;
+-  private static final int MAX_PAGE_SIZE = 100;
+-  private final NamedParameterJdbcTemplate jdbc;
++  private final MarketHistoryService service;
+ 
+-  public MarketHistoryController(NamedParameterJdbcTemplate jdbc) {
+-    this.jdbc = jdbc;
++  public MarketHistoryController(MarketHistoryService service) {
++    this.service = service;
+   }
+ 
+   @Operation(
+@@ -63,230 +48,6 @@ public class MarketHistoryController {
+   @GetMapping("/api/v1/market/price-histories")
+   public ApiResponse<Map<String, Object>> history(
+       @Parameter(hidden = true) @RequestParam Map<String, String> params) {
+-    if (!params.keySet().stream()
+-        .allMatch(List.of("modelId", "from", "to", "limit", "cursor")::contains)) {
+-      throw new InvalidRequestException("지원하지 않는 가격 이력 조회 조건입니다.");
+-    }
+-    String model = params.get("modelId");
+-    String from = params.get("from");
+-    String to = params.get("to");
+-
+-    if (model == null || from == null || to == null) {
+-      throw new InvalidRequestException("모델과 기간이 필요합니다.");
+-    }
+-
+-    long modelId;
+-    OffsetDateTime start;
+-    OffsetDateTime end;
+-
+-    try {
+-      modelId = Long.parseLong(model);
+-      start = OffsetDateTime.parse(from);
+-      end = OffsetDateTime.parse(to);
+-    } catch (NumberFormatException | DateTimeParseException e) {
+-      throw new InvalidRequestException("모델 또는 기간 형식이 올바르지 않습니다.");
+-    }
+-
+-    if (modelId < 1 || !start.isBefore(end)) {
+-      throw new InvalidRequestException("기간 또는 모델이 올바르지 않습니다.");
+-    }
+-
+-    if (Duration.between(start, end).compareTo(Duration.ofDays(MAX_DAYS)) > 0) {
+-      throw new InvalidRequestException("가격 이력은 한 번에 최대 731일까지 조회할 수 있습니다.");
+-    }
+-
+-    var query = new LinkedHashMap<String, Object>();
+-    query.put("modelId", modelId);
+-    query.put("start", start);
+-    query.put("end", end);
+-    query.put("pointLimit", MAX_POINTS + 1);
+-    Integer limit = params.containsKey("limit") ? historyLimit(params.get("limit")) : null;
+-    if (params.containsKey("cursor") && limit == null) {
+-      throw new InvalidRequestException("가격 이력 cursor를 사용하려면 limit이 필요합니다.");
+-    }
+-
+-    String nextCursor = null;
+-    List<Map<String, Object>> rows;
+-    if (limit == null) {
+-      rows = historyRows(query, "");
+-    } else {
+-      query.put("afterOfferId", historyCursor(params.get("cursor")));
+-      query.put("seriesLimit", limit + 1);
+-      var page =
+-          jdbc.queryForList(
+-              """
+-              SELECT f.offer_id FROM offer f JOIN product p ON p.product_id = f.product_id
+-              WHERE p.gpu_model_id = :modelId AND f.offer_id > :afterOfferId
+-                AND EXISTS (SELECT 1 FROM price_observation o WHERE o.offer_id = f.offer_id
+-                            AND o.collected_at >= :start AND o.collected_at < :end)
+-              ORDER BY f.offer_id LIMIT :seriesLimit
+-              """,
+-              query,
+-              Long.class);
+-      var offerIds = page.subList(0, Math.min(limit, page.size()));
+-      if (page.size() > limit) {
+-        nextCursor = offerIds.get(offerIds.size() - 1).toString();
+-      }
+-      query.put("offerIds", offerIds);
+-      rows = offerIds.isEmpty() ? List.of() : historyRows(query, "AND o.offer_id IN (:offerIds)");
+-    }
+-
+-    if (rows.size() > MAX_POINTS) {
+-      throw new InvalidRequestException("가격 이력이 12,000개를 초과했습니다. 조회 기간을 줄이거나 오퍼 페이지 크기를 줄여 주세요.");
+-    }
+-
+-    // Read evidence only for the observations selected for this response.
+-    var checkIds =
+-        rows.stream().map(row -> row.get("check_id")).filter(Objects::nonNull).distinct().toList();
+-    var evidenceRows =
+-        checkIds.isEmpty()
+-            ? List.<Map<String, Object>>of()
+-            : jdbc.queryForList(
+-                """
+-                SELECT check_id, evidence_id, source_id FROM source_evidence
+-                WHERE check_id IN (:checkIds) ORDER BY check_id, evidence_id
+-                """,
+-                Map.of("checkIds", checkIds));
+-    Map<String, List<Map<String, Object>>> evidenceByCheck = new LinkedHashMap<>();
+-    for (var evidence : evidenceRows) {
+-      evidenceByCheck
+-          .computeIfAbsent(evidence.get("check_id").toString(), ignored -> new ArrayList<>())
+-          .add(evidence);
+-    }
+-
+-    Map<String, Map<String, Object>> series = new LinkedHashMap<>();
+-    for (var r : rows) {
+-      String offer = r.get("offer_id").toString();
+-      if (!series.containsKey(offer)) {
+-        var s = new LinkedHashMap<String, Object>();
+-        s.put("seriesId", "offer-" + offer);
+-        s.put("offerId", offer);
+-        s.put("modelId", model);
+-        s.put("modelName", r.get("model_name"));
+-        s.put("providerId", r.get("provider_id").toString());
+-        s.put("providerName", r.get("provider_name"));
+-        s.put(
+-            "providerType",
+-            "hyperscaler".equals(r.get("provider_type"))
+-                ? "GENERAL_CLOUD"
+-                : "gpu_specialist".equals(r.get("provider_type")) ? "GPU_SPECIALIST" : "UNKNOWN");
+-        for (String key : List.of("system_type", "service_option", "contract_type"))
+-          s.put(camel(key), r.get(key) == null ? null : r.get(key).toString().toUpperCase());
+-        for (String key :
+-            List.of(
+-                "gpu_count", "country_code", "region_code", "commitment_months", "payment_option"))
+-          s.put(camel(key), r.get(key));
+-        s.put("points", new ArrayList<Map<String, Object>>());
+-        s.put("gaps", List.of());
+-        series.put(offer, s);
+-      }
+-      var point = new LinkedHashMap<String, Object>();
+-      point.put("offerId", offer);
+-      point.put("observationId", r.get("observation_id").toString());
+-      point.put("collectedAt", r.get("collected_at"));
+-      point.put("effectiveFrom", r.get("effective_from"));
+-      point.put("displayTimeBasis", "COLLECTED_AT");
+-      boolean usable =
+-          r.get("normalization_id") != null
+-              && "success".equals(r.get("result_status"))
+-              && r.get("effective_usd_gpu_hour") != null;
+-      point.put(
+-          "normalizationId",
+-          r.get("normalization_id") == null ? null : r.get("normalization_id").toString());
+-      point.put("ruleVersion", r.get("rule_version"));
+-      point.put("effectiveUsdGpuHour", usable ? r.get("effective_usd_gpu_hour").toString() : null);
+-      point.put("status", usable ? "OK" : "UNAVAILABLE");
+-      point.put(
+-          "reason",
+-          usable
+-              ? null
+-              : (r.get("normalization_reason") != null
+-                  ? r.get("normalization_reason")
+-                  : "환산 결과가 없거나 여러 버전이 있어 선택할 수 없습니다."));
+-      List<Map<String, Object>> ev =
+-          r.get("check_id") == null
+-              ? List.of()
+-              : evidenceByCheck.getOrDefault(r.get("check_id").toString(), List.of());
+-      point.put("evidenceIds", ev.stream().map(e -> e.get("evidence_id").toString()).toList());
+-      point.put(
+-          "sourceIds", ev.stream().map(e -> e.get("source_id").toString()).distinct().toList());
+-      @SuppressWarnings("unchecked")
+-      var points = (List<Map<String, Object>>) series.get(offer).get("points");
+-      points.add(point);
+-    }
+-    var result = new LinkedHashMap<String, Object>();
+-    result.put(
+-        "appliedFilters",
+-        Map.of("modelId", model, "from", from, "to", to, "seriesBy", "OFFER", "currency", "USD"));
+-    result.put("series", new ArrayList<>(series.values()));
+-    result.put("reason", series.isEmpty() ? "NO_HISTORY" : null);
+-    result.put("asOf", Instant.now());
+-    result.put("nextCursor", nextCursor);
+-    return ApiResponse.success(result);
+-  }
+-
+-  private List<Map<String, Object>> historyRows(Map<String, Object> query, String offerFilter) {
+-    return jdbc.queryForList(
+-        """
+-        SELECT o.observation_id, o.offer_id, o.check_id, o.collected_at, o.effective_from,
+-               f.contract_type, f.commitment_months, f.payment_option, p.gpu_count, p.system_type,
+-               p.service_option, p.country_code, p.region_code, p.provider_id, v.provider_name,
+-               v.provider_type, g.model_name, n.normalization_id, n.effective_usd_gpu_hour,
+-               n.result_status, n.reason AS normalization_reason, n.rule_version
+-        FROM price_observation o JOIN offer f ON f.offer_id = o.offer_id
+-        JOIN product p ON p.product_id = f.product_id
+-        JOIN provider v ON v.provider_id = p.provider_id
+-        JOIN gpu_model g ON g.gpu_model_id = p.gpu_model_id
+-        LEFT JOIN LATERAL (
+-          SELECT pn.*, nr.rule_version, count(*) OVER () AS versions
+-          FROM price_normalization pn JOIN normalization_rule nr ON nr.rule_id = pn.rule_id
+-          WHERE pn.observation_id = o.observation_id
+-        ) n ON n.versions = 1
+-        WHERE g.gpu_model_id = :modelId AND o.collected_at >= :start AND o.collected_at < :end
+-        %s
+-        ORDER BY o.offer_id, o.collected_at, o.observation_id LIMIT :pointLimit
+-        """
+-            .formatted(offerFilter),
+-        query);
+-  }
+-
+-  private static int historyLimit(String value) {
+-    try {
+-      int limit = Integer.parseInt(value);
+-      if (limit > 0 && limit <= MAX_PAGE_SIZE) {
+-        return limit;
+-      }
+-    } catch (NumberFormatException ignored) {
+-      // Reject malformed and out-of-range values with the same response.
+-    }
+-    throw new InvalidRequestException("가격 이력 limit은 1~100 사이의 정수여야 합니다.");
+-  }
+-
+-  private static long historyCursor(String value) {
+-    if (value == null) {
+-      return 0;
+-    }
+-    try {
+-      long offerId = Long.parseLong(value);
+-      if (offerId > 0) {
+-        return offerId;
+-      }
+-    } catch (NumberFormatException ignored) {
+-      // Reject malformed and out-of-range values with the same response.
+-    }
+-    throw new InvalidRequestException("가격 이력 cursor가 올바르지 않습니다.");
+-  }
+-
+-  private static String camel(String s) {
+-    StringBuilder b = new StringBuilder();
+-    boolean upper = false;
+-    for (char c : s.toCharArray()) {
+-      if (c == '_') upper = true;
+-      else {
+-        b.append(upper ? Character.toUpperCase(c) : c);
+-        upper = false;
+-      }
+-    }
+-    return b.toString();
++    return ApiResponse.success(service.history(params));
+   }
+ }
+diff --git a/src/main/java/com/gpumarket/domain/market/dto/MarketAvailabilityRequestDto.java b/src/main/java/com/gpumarket/domain/market/dto/MarketAvailabilityRequestDto.java
+index 8c1b402..57e7bb6 100644
+--- a/src/main/java/com/gpumarket/domain/market/dto/MarketAvailabilityRequestDto.java
++++ b/src/main/java/com/gpumarket/domain/market/dto/MarketAvailabilityRequestDto.java
+@@ -14,11 +14,30 @@ public record MarketAvailabilityRequestDto(
+     List<Long> providerIds,
+     String countryCode,
+     String contractType,
++    String regionCode,
+     int limit,
+     String cursor) {
+ 
++  public MarketAvailabilityRequestDto(
++      long modelId,
++      List<Long> providerIds,
++      String countryCode,
++      String contractType,
++      int limit,
++      String cursor) {
++    this(modelId, providerIds, countryCode, contractType, null, limit, cursor);
++  }
++
+   public static MarketAvailabilityRequestDto parse(MultiValueMap<String, String> input) {
+-    var fields = Set.of("modelId", "providerIds", "countryCode", "contractType", "limit", "cursor");
++    var fields =
++        Set.of(
++            "modelId",
++            "providerIds",
++            "countryCode",
++            "contractType",
++            "regionCode",
++            "limit",
++            "cursor");
+     if (!fields.containsAll(input.keySet())
+         || input.entrySet().stream()
+             .anyMatch(e -> !e.getKey().equals("providerIds") && e.getValue().size() != 1)) {
+@@ -41,18 +60,20 @@ public record MarketAvailabilityRequestDto(
+               .toList();
+       String country = lower(input.getFirst("countryCode"));
+       String contract = lower(input.getFirst("contractType"));
++      String region = lower(input.getFirst("regionCode"));
+       if (modelId < 1
+           || size < 1
+           || size > 100
+           || providers.size() > 100
+           || providers.stream().anyMatch(id -> id < 1)
+           || (country != null && !country.matches("[a-z]{2}"))
++          || (region != null && !region.matches("[a-z0-9-]{1,50}"))
+           || (contract != null
+               && !Set.of("on_demand", "spot", "commitment", "unknown").contains(contract))) {
+         throw new InvalidRequestException("모델 ID, 사업자 ID, 국가·계약 조건과 페이지 크기를 확인해 주세요.");
+       }
+       return new MarketAvailabilityRequestDto(
+-          modelId, providers, country, contract, size, input.getFirst("cursor"));
++          modelId, providers, country, contract, region, size, input.getFirst("cursor"));
+     } catch (NumberFormatException e) {
+       throw new ResponseStatusException(
+           HttpStatus.BAD_REQUEST, "모델 ID, 사업자 ID 및 페이지 크기는 정수여야 합니다.");
+diff --git a/src/main/java/com/gpumarket/domain/market/dto/PublicPriceLookupDto.java b/src/main/java/com/gpumarket/domain/market/dto/PublicPriceLookupDto.java
+index 24d1803..552dbed 100644
+--- a/src/main/java/com/gpumarket/domain/market/dto/PublicPriceLookupDto.java
++++ b/src/main/java/com/gpumarket/domain/market/dto/PublicPriceLookupDto.java
+@@ -4,7 +4,7 @@ import java.time.Instant;
+ import java.util.List;
+ import java.util.Map;
+ 
+-public record PublicPriceLookupDto(List<PublicPriceDto> items, Instant asOf, boolean limited) {
++public record PublicPriceLookupDto(List<PublicPriceDto> items, Instant asOf) {
+   public record PublicPriceDto(
+       String offerId,
+       String observationId,
+diff --git a/src/main/java/com/gpumarket/domain/market/repository/MarketAvailabilityRepository.java b/src/main/java/com/gpumarket/domain/market/repository/MarketAvailabilityRepository.java
+index 47f90d5..cf0dc3f 100644
+--- a/src/main/java/com/gpumarket/domain/market/repository/MarketAvailabilityRepository.java
++++ b/src/main/java/com/gpumarket/domain/market/repository/MarketAvailabilityRepository.java
+@@ -30,8 +30,9 @@ public class MarketAvailabilityRepository {
+       """
+ ), page AS MATERIALIZED (
+   SELECT t.* FROM targets t
+-  WHERE (CAST(:countryCode AS text) IS NULL AND CAST(:contractType AS text) IS NULL)
++  WHERE (CAST(:countryCode AS text) IS NULL AND CAST(:contractType AS text) IS NULL AND CAST(:regionCode AS text) IS NULL)
+     OR ((CAST(:countryCode AS text) IS NULL OR t.known_target_country)
++      AND (CAST(:regionCode AS text) IS NULL OR lower(t.region_filter) = :regionCode)
+       AND (CAST(:contractType AS text) IS NULL OR t.contract_type = :contractType))
+     OR (
+       (CAST(:contractType AS text) IS NULL OR t.contract_type = :contractType
+@@ -42,6 +43,7 @@ public class MarketAvailabilityRepository {
+         LEFT JOIN offer f ON f.offer_id = c.offer_id
+         WHERE c.target_id = t.target_id AND c.checked_at <= :asOf
+           AND (CAST(:countryCode AS text) IS NULL OR lower(p.country_code) = :countryCode)
++          AND (CAST(:regionCode AS text) IS NULL OR lower(p.region_code) = :regionCode)
+           AND (CAST(:contractType AS text) IS NULL OR t.contract_type = :contractType
+             OR lower(f.contract_type) = :contractType)
+       )
+@@ -55,6 +57,8 @@ public class MarketAvailabilityRepository {
+   WHERE (CAST(:countryCode AS text) IS NULL
+          OR lower(p.country_code) = :countryCode
+          OR (p.product_id IS NULL AND t.known_target_country))
++    AND (CAST(:regionCode AS text) IS NULL OR lower(p.region_code) = :regionCode
++         OR (p.product_id IS NULL AND lower(t.region_filter) = :regionCode))
+     AND (CAST(:contractType AS text) IS NULL
+          OR lower(f.contract_type) = :contractType
+          OR (f.offer_id IS NULL AND t.contract_type = :contractType))
+diff --git a/src/main/java/com/gpumarket/domain/market/repository/MarketCostIndexRepository.java b/src/main/java/com/gpumarket/domain/market/repository/MarketCostIndexRepository.java
+new file mode 100644
+index 0000000..803842a
+--- /dev/null
++++ b/src/main/java/com/gpumarket/domain/market/repository/MarketCostIndexRepository.java
+@@ -0,0 +1,62 @@
++package com.gpumarket.domain.market.repository;
++
++import java.math.BigDecimal;
++import java.time.LocalDate;
++import java.util.List;
++import java.util.Map;
++import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
++import org.springframework.stereotype.Repository;
++
++@Repository
++public class MarketCostIndexRepository {
++  public record IndexPoint(LocalDate period, BigDecimal value, int observationCount) {}
++
++  private final NamedParameterJdbcTemplate jdbc;
++
++  public MarketCostIndexRepository(NamedParameterJdbcTemplate jdbc) {
++    this.jdbc = jdbc;
++  }
++
++  public List<IndexPoint> powerWeeks(String hub, LocalDate from, LocalDate to) {
++    if (!exists("public.us_wholesale_power_price")) return List.of();
++    return jdbc.query(
++        """
++        SELECT date_trunc('week', trade_date)::date AS period,
++               sum(weighted_avg_usd_mwh * daily_volume_mwh) / sum(daily_volume_mwh) AS value,
++               count(DISTINCT trade_date) AS observations
++        FROM public.us_wholesale_power_price
++        WHERE hub = :hub AND trade_date >= :start AND trade_date < :end AND daily_volume_mwh > 0
++        GROUP BY 1
++        HAVING count(DISTINCT trade_date) >= 3
++        ORDER BY 1
++        """,
++        Map.of("hub", hub, "start", from, "end", to),
++        (r, i) ->
++            new IndexPoint(
++                r.getObject("period", LocalDate.class),
++                r.getBigDecimal("value"),
++                r.getInt("observations")));
++  }
++
++  public List<IndexPoint> dramMonths(LocalDate from, LocalDate to) {
++    if (!exists("public.dram_export_price_index")) return List.of();
++    return jdbc.query(
++        """
++        SELECT observation_month, index_value FROM public.dram_export_price_index
++        WHERE observation_month >= :start AND observation_month < :end
++        ORDER BY observation_month
++        """,
++        Map.of("start", from, "end", to),
++        (r, i) ->
++            new IndexPoint(
++                r.getObject("observation_month", LocalDate.class),
++                r.getBigDecimal("index_value"),
++                1));
++  }
++
++  private boolean exists(String table) {
++    return Boolean.TRUE.equals(
++        jdbc.queryForObject(
++            "SELECT to_regclass(:table) IS NOT NULL", Map.of("table", table), Boolean.class));
++  }
++}
+diff --git a/src/main/java/com/gpumarket/domain/market/repository/MarketOfferRepository.java b/src/main/java/com/gpumarket/domain/market/repository/MarketOfferRepository.java
+index ae6eb41..9011896 100644
+--- a/src/main/java/com/gpumarket/domain/market/repository/MarketOfferRepository.java
++++ b/src/main/java/com/gpumarket/domain/market/repository/MarketOfferRepository.java
+@@ -125,6 +125,15 @@ WHERE true
+     append(sql, parameters, "gpuCount", "p.gpu_count = :gpuCount");
+     append(sql, parameters, "contractType", "lower(f.contract_type) = lower(:contractType)");
+     append(sql, parameters, "commitmentMonths", "f.commitment_months = :commitmentMonths");
++    append(sql, parameters, "commitmentMonthsIn", "f.commitment_months IN (:commitmentMonthsIn)");
++    append(
++        sql,
++        parameters,
++        "productPriceTerms",
++        """
++        (f.contract_type = 'on_demand'
++         OR (f.contract_type = 'commitment' AND f.commitment_months IN (:productPriceTerms)))
++        """);
+     append(
+         sql,
+         parameters,
+@@ -144,11 +153,8 @@ WHERE true
+              THEN 'not_applicable' ELSE 'unknown' END) = lower(:paymentOption)
+         """);
+     append(sql, parameters, "cutoff", "(o.checked_at IS NULL OR o.checked_at >= :cutoff)");
+-    append(
+-        sql,
+-        parameters,
+-        "publicPriceCutoff",
+-        "o.disclosure_status = 'public' AND o.checked_at >= :publicPriceCutoff");
++    append(sql, parameters, "publicPriceOnly", "o.disclosure_status = 'public'");
++    append(sql, parameters, "publicPriceFrom", "o.collected_at >= :publicPriceFrom");
+     sql.append(" ORDER BY f.offer_id");
+     if (parameters.containsKey("pageSize")) {
+       sql.append(" LIMIT :pageSize");
+diff --git a/src/main/java/com/gpumarket/domain/market/service/MarketAvailabilityService.java b/src/main/java/com/gpumarket/domain/market/service/MarketAvailabilityService.java
+index d0b214a..f01b17d 100644
+--- a/src/main/java/com/gpumarket/domain/market/service/MarketAvailabilityService.java
++++ b/src/main/java/com/gpumarket/domain/market/service/MarketAvailabilityService.java
+@@ -47,6 +47,7 @@ public class MarketAvailabilityService {
+     filters.put("modelId", request.modelId());
+     filters.put("countryCode", request.countryCode());
+     filters.put("contractType", request.contractType());
++    filters.put("regionCode", request.regionCode());
+     if (!request.providerIds().isEmpty()) {
+       filters.put("providerIds", request.providerIds());
+     }
+diff --git a/src/main/java/com/gpumarket/domain/market/service/MarketCostImpactService.java b/src/main/java/com/gpumarket/domain/market/service/MarketCostImpactService.java
+new file mode 100644
+index 0000000..7b42261
+--- /dev/null
++++ b/src/main/java/com/gpumarket/domain/market/service/MarketCostImpactService.java
+@@ -0,0 +1,527 @@
++package com.gpumarket.domain.market.service;
++
++import com.gpumarket.domain.catalog.dto.CatalogResponseDto.GpuModelDto;
++import com.gpumarket.domain.market.repository.MarketCostIndexRepository;
++import com.gpumarket.domain.market.repository.MarketCostIndexRepository.IndexPoint;
++import java.time.DayOfWeek;
++import java.time.Duration;
++import java.time.Instant;
++import java.time.LocalDate;
++import java.time.ZoneId;
++import java.time.temporal.TemporalAdjusters;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.HashSet;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.TreeMap;
++import java.util.stream.IntStream;
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Isolation;
++import org.springframework.transaction.annotation.Transactional;
++
++@Service
++public class MarketCostImpactService {
++  public enum Factor {
++    POWER,
++    DRAM,
++    MEMORY_PRODUCT;
++
++    LocalDate bucket(LocalDate day) {
++      return this == POWER
++          ? day.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
++          : day.withDayOfMonth(1);
++    }
++
++    LocalDate shift(LocalDate period, int amount) {
++      return this == POWER ? period.plusWeeks(amount) : period.plusMonths(amount);
++    }
++  }
++
++  public record Query(
++      List<Factor> factors,
++      List<GpuModelDto> models,
++      String awsId,
++      List<String> regions,
++      String requestedRegion,
++      String contract,
++      Integer gpuCount,
++      String systemType,
++      LocalDate from,
++      LocalDate to) {}
++
++  private record Hub(String name, ZoneId zone) {}
++
++  private record Change(double amount, Double percent) {}
++
++  private record Pair(double cost, double gpu) {}
++
++  private record Price(Instant time, double value) {}
++
++  public record Level(LocalDate period, Double cost, Integer costObservations, Double gpu) {}
++
++  public record Lag(int periods, int sampleCount, Double correlation, Double withoutLargestRise) {}
++
++  public record Reaction(
++      int lag, double before, double after, double changeUsd, Double changePercent) {}
++
++  public record Rise(
++      LocalDate period,
++      double before,
++      double after,
++      Double changePercent,
++      List<Reaction> reactions) {}
++
++  public record Comparison(
++      Factor factor,
++      String modelName,
++      String offerId,
++      String regionCode,
++      String contractType,
++      Object gpuCount,
++      String indicator,
++      String indicatorUnit,
++      String indicatorUrl,
++      String aggregation,
++      List<Level> levels,
++      List<Lag> lags,
++      List<Rise> rises,
++      List<Map<String, Object>> sources) {}
++
++  private static final Hub PJM = new Hub("PJM WH Real Time Peak", ZoneId.of("America/New_York"));
++  private static final Hub MID_C = new Hub("Mid C Peak", ZoneId.of("America/Los_Angeles"));
++  private static final String POWER_URL = "https://www.eia.gov/electricity/wholesale/";
++  private static final String DRAM_URL = "https://ecos.bok.or.kr/#/Short/0000000214";
++
++  private final MarketCostIndexRepository costs;
++  private final MarketHistoryService history;
++
++  public MarketCostImpactService(MarketCostIndexRepository costs, MarketHistoryService history) {
++    this.costs = costs;
++    this.history = history;
++  }
++
++  @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
++  public Map<String, Object> analyze(Query request) {
++    var now = Instant.now();
++    var today = LocalDate.now(ZoneId.of("Asia/Seoul"));
++    var results = new ArrayList<Comparison>();
++    var notes = new ArrayList<String>();
++    boolean anySource = false;
++    for (var factor : request.factors()) {
++      if (factor == Factor.MEMORY_PRODUCT) {
++        notes.add("지정한 메모리 품목의 가격 이력이 연결되어 있지 않습니다. ECOS에는 전체 DRAM의 월별 수출물가지수가 있습니다.");
++        continue;
++      }
++      var end = request.to() == null ? today.plusDays(1) : request.to();
++      var start =
++          request.from() == null
++              ? (factor == Factor.POWER
++                  ? end.minusDays(180)
++                  : end.minusMonths(24).withDayOfMonth(1))
++              : request.from();
++      var contract =
++          request.contract() == null
++              ? (factor == Factor.POWER ? "SPOT" : "ON_DEMAND")
++              : request.contract();
++      var buckets = new LinkedHashMap<String, Map<LocalDate, IndexPoint>>();
++      int previousCount = results.size();
++
++      for (String region : request.regions()) {
++        if (!applies(region, request.requestedRegion(), contract)) continue;
++        var hub = hub(region);
++        if (hub == null) continue;
++        var external =
++            buckets.computeIfAbsent(
++                factor == Factor.POWER ? hub.name() : "ECOS",
++                ignored -> index(factor, hub, start, end));
++        if (external.isEmpty()) continue;
++        anySource = true;
++        for (var model : request.models()) {
++          var params = new LinkedHashMap<String, String>();
++          params.put("modelId", model.id());
++          params.put("providerIds", request.awsId());
++          params.put("countryCode", "US");
++          params.put("regionCode", region);
++          params.put("contractType", contract);
++          params.put("from", start.atStartOfDay(hub.zone()).toOffsetDateTime().toString());
++          params.put("to", end.atStartOfDay(hub.zone()).toOffsetDateTime().toString());
++          if (request.gpuCount() != null) params.put("gpuCount", request.gpuCount().toString());
++          if (request.systemType() != null) params.put("systemType", request.systemType());
++          var rentals = history.publicHistory(params, now);
++          for (var offer : MarketForecastService.records(rentals.get("series"))) {
++            var points =
++                MarketForecastService.records(offer.get("points")).stream()
++                    .filter(point -> "OK".equals(point.get("status")))
++                    .filter(point -> point.get("effectiveUsdGpuHour") != null)
++                    .toList();
++            boolean timeWeighted = factor == Factor.POWER && "SPOT".equals(contract);
++            var gpu =
++                timeWeighted
++                    ? spotWeeks(points, hub.zone())
++                    : observedMedians(points, factor, hub.zone());
++            var comparison =
++                compare(
++                    factor,
++                    model.name(),
++                    region,
++                    contract,
++                    hub,
++                    offer,
++                    points,
++                    rentals,
++                    external,
++                    gpu,
++                    timeWeighted);
++            if (comparison != null) results.add(comparison);
++          }
++        }
++      }
++      if (results.size() == previousCount) {
++        boolean indexMissing =
++            buckets.isEmpty() || buckets.values().stream().allMatch(Map::isEmpty);
++        notes.add(
++            (factor == Factor.POWER ? "전력" : "DRAM")
++                + (indexMissing
++                    ? " · 선택 범위에서 이용할 지표 관측을 찾지 못했습니다."
++                    : " · 동일 오퍼의 임대료와 지표가 같은 기간에 겹치는 관측이 부족합니다."));
++      }
++    }
++    var highlights = highlights(results);
++    return Map.of(
++        "kind",
++        "COST_IMPACT",
++        "status",
++        results.isEmpty() ? "INSUFFICIENT_EVIDENCE" : "EXPLORATORY",
++        "asOf",
++        now,
++        "sourcesAvailable",
++        anySource,
++        "notes",
++        notes,
++        "findings",
++        highlights.statements(),
++        "featuredOffers",
++        highlights.offers(),
++        "items",
++        results);
++  }
++
++  private static Highlights highlights(List<Comparison> items) {
++    var statements = new ArrayList<String>();
++    var featuredOffers = new LinkedHashMap<Factor, String>();
++    for (var factor : Factor.values()) {
++      var candidates = items.stream().filter(item -> item.factor() == factor).toList();
++      if (candidates.isEmpty()) continue;
++      String unit = factor == Factor.POWER ? "주" : "개월";
++      String indicator = factor == Factor.POWER ? "전력" : "DRAM";
++      int samples =
++          candidates.stream()
++              .flatMap(item -> item.lags().stream())
++              .mapToInt(Lag::sampleCount)
++              .max()
++              .orElse(0);
++      var strongest =
++          candidates.stream()
++              .flatMap(
++                  item ->
++                      item.rises().stream()
++                          .flatMap(
++                              rise ->
++                                  rise.reactions().stream()
++                                      .filter(
++                                          move ->
++                                              move.lag() == 1
++                                                  && move.changePercent() != null
++                                                  && move.changePercent() > 0)
++                                      .map(move -> new Example(item, rise, move))))
++              .max(Comparator.comparingDouble(example -> example.reaction().changePercent()));
++      strongest.ifPresent(
++          example -> {
++            featuredOffers.put(factor, example.comparison().offerId());
++            statements.add(
++                String.format(
++                    java.util.Locale.ROOT,
++                    "%s 상승 사례 중 %s %s에서는 %s %s의 상승 뒤 1%s 지나 %s 공개 임대료가 %.2f%% 올랐습니다.",
++                    indicator,
++                    example.comparison().modelName(),
++                    example.comparison().regionCode(),
++                    example.rise().period(),
++                    factor == Factor.POWER ? "주" : "기준월",
++                    unit,
++                    "SPOT".equals(example.comparison().contractType()) ? "스팟" : "온디맨드",
++                    example.reaction().changePercent()));
++          });
++      boolean unstable =
++          candidates.stream()
++              .flatMap(item -> item.lags().stream())
++              .anyMatch(
++                  lag ->
++                      lag.correlation() != null
++                          && lag.withoutLargestRise() != null
++                          && lag.correlation() * lag.withoutLargestRise() < 0);
++      statements.add(
++          indicator
++              + " 시차별 비교는 오퍼당 최대 "
++              + samples
++              + "쌍입니다."
++              + (unstable ? " 최대 지표 상승기를 제외하면 상관 방향이 바뀌는 오퍼가 있습니다." : "")
++              + " 반복되는 시차를 판정하려면 추가 검증이 필요합니다.");
++    }
++    return new Highlights(List.copyOf(statements), Map.copyOf(featuredOffers));
++  }
++
++  private record Highlights(List<String> statements, Map<Factor, String> offers) {}
++
++  private record Example(Comparison comparison, Rise rise, Reaction reaction) {}
++
++  private Map<LocalDate, IndexPoint> index(Factor factor, Hub hub, LocalDate from, LocalDate to) {
++    var first = factor.bucket(from);
++    if (first.isBefore(from)) first = factor.shift(first, 1);
++    var last = factor.bucket(to);
++    if (!first.isBefore(last)) return Map.of();
++    var rows =
++        factor == Factor.POWER
++            ? costs.powerWeeks(hub.name(), first, last)
++            : costs.dramMonths(first, last);
++    var levels = new TreeMap<LocalDate, IndexPoint>();
++    rows.forEach(row -> levels.put(row.period(), row));
++    return levels;
++  }
++
++  private static Comparison compare(
++      Factor factor,
++      String model,
++      String region,
++      String contract,
++      Hub hub,
++      Map<String, Object> offer,
++      List<Map<String, Object>> points,
++      Map<String, Object> rentals,
++      Map<LocalDate, IndexPoint> external,
++      TreeMap<LocalDate, Double> gpu,
++      boolean timeWeighted) {
++    var shared = gpu.keySet().stream().filter(external::containsKey).toList();
++    if (shared.isEmpty()) return null;
++    var first = shared.get(0);
++    var last = shared.get(shared.size() - 1);
++    var levels = new ArrayList<Level>();
++    for (var date = first; !date.isAfter(last); date = factor.shift(date, 1)) {
++      var point = external.get(date);
++      levels.add(
++          new Level(
++              date,
++              point == null ? null : point.value().doubleValue(),
++              point == null ? null : point.observationCount(),
++              gpu.get(date)));
++    }
++
++    var powerOrDram = new TreeMap<LocalDate, Double>();
++    external.forEach((date, point) -> powerOrDram.put(date, point.value().doubleValue()));
++    var indicatorChanges = changes(factor, powerOrDram);
++    var gpuChanges = changes(factor, gpu);
++    var matched =
++        indicatorChanges.entrySet().stream()
++            .filter(entry -> entry.getValue().percent() != null)
++            .map(Map.Entry::getKey)
++            .filter(
++                period ->
++                    IntStream.rangeClosed(0, 3)
++                        .mapToObj(delay -> gpuChanges.get(factor.shift(period, delay)))
++                        .allMatch(change -> change != null && change.percent() != null))
++            .toList();
++    var lags =
++        IntStream.rangeClosed(0, 3)
++            .mapToObj(delay -> lag(factor, indicatorChanges, gpuChanges, matched, delay))
++            .toList();
++    var rises = new ArrayList<Rise>();
++    for (var entry : indicatorChanges.entrySet()) {
++      var change = entry.getValue();
++      boolean largeRise =
++          factor == Factor.POWER
++              ? change.amount() >= 5 && change.percent() != null && change.percent() >= 20
++              : change.amount() > 0;
++      var date = entry.getKey();
++      if (!largeRise || !gpuChanges.containsKey(date)) continue;
++      var reactions = new ArrayList<Reaction>();
++      for (int delay = 0; delay <= 3; delay++) {
++        var shifted = factor.shift(date, delay);
++        var movement = gpuChanges.get(shifted);
++        if (movement == null) continue;
++        reactions.add(
++            new Reaction(
++                delay,
++                gpu.get(factor.shift(shifted, -1)),
++                gpu.get(shifted),
++                movement.amount(),
++                movement.percent()));
++      }
++      rises.add(
++          new Rise(
++              date,
++              powerOrDram.get(factor.shift(date, -1)),
++              powerOrDram.get(date),
++              change.percent(),
++              reactions));
++    }
++
++    var ids = new HashSet<>();
++    for (var point : points) {
++      if (point.get("evidenceIds") instanceof List<?> evidence) ids.addAll(evidence);
++    }
++    var sources = new LinkedHashSet<Map<String, Object>>();
++    for (var source : MarketForecastService.records(rentals.get("sources"))) {
++      if (ids.contains(source.get("evidenceId"))
++          && source.get("sourceUrl") != null
++          && source.get("sourceName") != null) {
++        sources.add(
++            Map.of("sourceName", source.get("sourceName"), "sourceUrl", source.get("sourceUrl")));
++      }
++    }
++    return new Comparison(
++        factor,
++        model,
++        offer.get("offerId").toString(),
++        region,
++        contract,
++        offer.get("gpuCount"),
++        factor == Factor.POWER ? hub.name() : "한국은행 DRAM 수출물가지수 · 달러 기준",
++        factor == Factor.POWER ? "USD/MWh" : "2020=100",
++        factor == Factor.POWER ? POWER_URL : DRAM_URL,
++        timeWeighted ? "가격 적용 시간의 가중평균" : "관측일별 마지막 공개가격의 중앙값",
++        levels,
++        lags,
++        rises,
++        List.copyOf(sources));
++  }
++
++  private static TreeMap<LocalDate, Change> changes(Factor factor, Map<LocalDate, Double> values) {
++    var changes = new TreeMap<LocalDate, Change>();
++    for (var entry : values.entrySet()) {
++      var previous = values.get(factor.shift(entry.getKey(), -1));
++      if (previous == null) continue;
++      var amount = entry.getValue() - previous;
++      changes.put(
++          entry.getKey(), new Change(amount, previous > 0 ? amount / previous * 100 : null));
++    }
++    return changes;
++  }
++
++  private static Lag lag(
++      Factor factor,
++      Map<LocalDate, Change> indicator,
++      Map<LocalDate, Change> gpu,
++      List<LocalDate> matched,
++      int delay) {
++    var pairs =
++        matched.stream()
++            .map(
++                period ->
++                    new Pair(
++                        indicator.get(period).percent(),
++                        gpu.get(factor.shift(period, delay)).percent()))
++            .toList();
++    var biggestRise =
++        pairs.stream().filter(pair -> pair.cost() > 0).max(Comparator.comparingDouble(Pair::cost));
++    var without = new ArrayList<>(pairs);
++    biggestRise.ifPresent(without::remove);
++    return new Lag(
++        delay,
++        pairs.size(),
++        correlation(pairs),
++        biggestRise.isEmpty() ? null : correlation(without));
++  }
++
++  private static Double correlation(List<Pair> pairs) {
++    if (pairs.size() < 3) return null;
++    double costMean = pairs.stream().mapToDouble(Pair::cost).average().orElseThrow();
++    double gpuMean = pairs.stream().mapToDouble(Pair::gpu).average().orElseThrow();
++    double covariance = 0;
++    double costVariance = 0;
++    double gpuVariance = 0;
++    for (var pair : pairs) {
++      double x = pair.cost() - costMean;
++      double y = pair.gpu() - gpuMean;
++      covariance += x * y;
++      costVariance += x * x;
++      gpuVariance += y * y;
++    }
++    double denominator = Math.sqrt(costVariance * gpuVariance);
++    return denominator == 0 ? null : Math.max(-1, Math.min(1, covariance / denominator));
++  }
++
++  private static TreeMap<LocalDate, Double> observedMedians(
++      List<Map<String, Object>> points, Factor factor, ZoneId zone) {
++    var daily = new TreeMap<LocalDate, Price>();
++    for (var point : points) {
++      var time = MarketForecastService.instant(point.get("collectedAt"));
++      var price = Double.parseDouble(point.get("effectiveUsdGpuHour").toString());
++      daily.merge(
++          time.atZone(zone).toLocalDate(),
++          new Price(time, price),
++          (a, b) -> b.time().isBefore(a.time()) ? a : b);
++    }
++    var groups = new TreeMap<LocalDate, List<Double>>();
++    daily.forEach(
++        (day, price) ->
++            groups
++                .computeIfAbsent(factor.bucket(day), ignored -> new ArrayList<>())
++                .add(price.value()));
++    var result = new TreeMap<LocalDate, Double>();
++    groups.forEach(
++        (date, prices) -> {
++          prices.sort(Double::compareTo);
++          int size = prices.size();
++          result.put(date, (prices.get((size - 1) / 2) + prices.get(size / 2)) / 2);
++        });
++    return result;
++  }
++
++  private static TreeMap<LocalDate, Double> spotWeeks(
++      List<Map<String, Object>> points, ZoneId zone) {
++    var byTime = new TreeMap<Instant, Double>();
++    for (var point : points) {
++      if (point.get("effectiveFrom") == null) continue;
++      byTime.put(
++          MarketForecastService.instant(point.get("effectiveFrom")),
++          Double.parseDouble(point.get("effectiveUsdGpuHour").toString()));
++    }
++    var result = new TreeMap<LocalDate, Double>();
++    if (byTime.size() < 2) return result;
++    var week = Factor.POWER.bucket(byTime.firstKey().atZone(zone).toLocalDate());
++    for (; ; week = week.plusWeeks(1)) {
++      var end = week.plusWeeks(1).atStartOfDay(zone).toInstant();
++      if (end.isAfter(byTime.lastKey())) break;
++      var start = week.atStartOfDay(zone).toInstant();
++      var starting = byTime.floorEntry(start);
++      if (starting == null) continue;
++      double price = starting.getValue();
++      double total = 0;
++      var cursor = start;
++      for (var step : byTime.subMap(start, false, end, false).entrySet()) {
++        total += price * Duration.between(cursor, step.getKey()).toSeconds();
++        cursor = step.getKey();
++        price = step.getValue();
++      }
++      total += price * Duration.between(cursor, end).toSeconds();
++      result.put(week, total / Duration.between(start, end).toSeconds());
++    }
++    return result;
++  }
++
++  private static Hub hub(String region) {
++    if (region.equals("us-east-1") || region.matches("use1-az[0-9]+")) return PJM;
++    if (region.equals("us-west-2") || region.matches("usw2-az[0-9]+")) return MID_C;
++    return null;
++  }
++
++  private static boolean applies(String candidate, String requested, String contract) {
++    if (hub(candidate) == null || (requested != null && hub(candidate) != hub(requested)))
++      return false;
++    boolean zone = candidate.startsWith("use1-az") || candidate.startsWith("usw2-az");
++    if (zone != "SPOT".equals(contract)) return false;
++    return requested == null || requested.startsWith("us-") || requested.equals(candidate);
++  }
++}
+diff --git a/src/main/java/com/gpumarket/domain/market/service/MarketForecastService.java b/src/main/java/com/gpumarket/domain/market/service/MarketForecastService.java
+new file mode 100644
+index 0000000..c0f1b3f
+--- /dev/null
++++ b/src/main/java/com/gpumarket/domain/market/service/MarketForecastService.java
+@@ -0,0 +1,214 @@
++package com.gpumarket.domain.market.service;
++
++import java.math.BigDecimal;
++import java.math.RoundingMode;
++import java.sql.Timestamp;
++import java.time.Instant;
++import java.time.OffsetDateTime;
++import java.time.YearMonth;
++import java.time.ZoneId;
++import java.time.ZoneOffset;
++import java.time.temporal.ChronoUnit;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Random;
++import java.util.TreeMap;
++import org.springframework.stereotype.Service;
++
++@Service
++public class MarketForecastService {
++  private static final int MIN_MONTHS = 24;
++  private static final int PATHS = 4000;
++  private static final int HORIZON = 12;
++  private static final long SEED = 20261123L;
++  private static final ZoneId KST = ZoneId.of("Asia/Seoul");
++  private final MarketHistoryService history;
++
++  public MarketForecastService(MarketHistoryService history) {
++    this.history = history;
++  }
++
++  public Map<String, Object> forecast(Map<String, String> filters, Instant asOf) {
++    var query = new LinkedHashMap<>(filters);
++    query.put("from", asOf.minus(1095, ChronoUnit.DAYS).atOffset(ZoneOffset.UTC).toString());
++    query.put("to", asOf.atOffset(ZoneOffset.UTC).toString());
++    query.put("limit", "3");
++    var data = history.publicHistory(query);
++    var series = records(data.get("series"));
++    var response = new LinkedHashMap<String, Object>();
++    response.put("asOf", asOf);
++    response.put("requiredMonths", MIN_MONTHS);
++    if (series.size() > 1 || data.get("nextCursor") != null) {
++      response.put("status", "NEEDS_CLARIFICATION");
++      response.put("reason", "예측할 오퍼 한 가지를 선택해 주세요. 오퍼 ID로 지정할 수 있습니다.");
++      response.put(
++          "offers",
++          series.stream()
++              .map(
++                  row ->
++                      Map.of(
++                          "offerId",
++                          row.get("offerId"),
++                          "providerName",
++                          row.get("providerName"),
++                          "regionCode",
++                          String.valueOf(row.get("regionCode"))))
++              .toList());
++      return response;
++    }
++    var monthly = new TreeMap<YearMonth, Map<String, Object>>();
++    if (!series.isEmpty()) {
++      for (var point : records(series.get(0).get("points"))) {
++        Object amount = point.get("effectiveUsdGpuHour");
++        if (amount == null || new BigDecimal(amount.toString()).signum() <= 0) continue;
++        monthly.put(YearMonth.from(instant(point.get("collectedAt")).atZone(KST)), point);
++      }
++      response.put("offerId", series.get(0).get("offerId"));
++    }
++    response.put("availableMonths", monthly.size());
++    if (monthly.isEmpty()) {
++      response.put("status", "INSUFFICIENT_HISTORY");
++      response.put("reason", "확인된 양수 공개가격 이력이 없습니다. 현재 공개가격 또는 과거 날짜를 조회해 주세요.");
++      return response;
++    }
++    response.put("historyFrom", monthly.firstKey().toString());
++    response.put("historyTo", monthly.lastKey().toString());
++    var trailing = new ArrayList<Map<String, Object>>();
++    for (YearMonth month = monthly.lastKey();
++        monthly.containsKey(month);
++        month = month.minusMonths(1)) {
++      trailing.add(0, monthly.get(month));
++    }
++    response.put("consecutiveMonths", trailing.size());
++    response.put(
++        "history",
++        monthly.entrySet().stream()
++            .map(
++                entry ->
++                    Map.of(
++                        "month", entry.getKey().toString(),
++                        "price", entry.getValue().get("effectiveUsdGpuHour"),
++                        "observationId", entry.getValue().get("observationId"),
++                        "collectedAt", entry.getValue().get("collectedAt"),
++                        "evidenceIds", entry.getValue().get("evidenceIds")))
++            .toList());
++    response.put("sources", data.getOrDefault("sources", List.of()));
++    if (trailing.size() < MIN_MONTHS
++        || monthly.lastKey().isBefore(YearMonth.from(asOf.atZone(KST)).minusMonths(1))) {
++      response.put("status", "INSUFFICIENT_HISTORY");
++      response.put("reason", "기준일에 가까운 연속 월별 가격 기록이 부족합니다. 현재 공개가격 또는 과거 추이를 확인해 주세요.");
++      return response;
++    }
++    double[] prices =
++        trailing.stream()
++            .mapToDouble(point -> Double.parseDouble(point.get("effectiveUsdGpuHour").toString()))
++            .toArray();
++    var projected = simulate(prices, HORIZON, PATHS, SEED);
++    var months = new ArrayList<Map<String, Object>>();
++    for (int i = 0; i < HORIZON; i++) {
++      months.add(
++          Map.of(
++              "month",
++              monthly.lastKey().plusMonths(i + 1).toString(),
++              "p10",
++              decimal(projected[i][0]),
++              "p50",
++              decimal(projected[i][1]),
++              "p90",
++              decimal(projected[i][2])));
++    }
++    response.put("status", "OK");
++    response.put("monthly", months);
++    response.put("horizonMonths", HORIZON);
++    response.put("paths", PATHS);
++    response.put("seed", SEED);
++    response.put("modelVersion", "monthly-log-return-bootstrap-v1");
++    response.put(
++        "assumptions",
++        List.of(
++            "동일 오퍼의 매월 마지막 적격 단가를 사용합니다.",
++            "과거 월별 가격 변화가 반복될 수 있다고 가정합니다.",
++            "분위수 범위는 모형이 생성한 시나리오 분포입니다."));
++    response.put("backtest", backtest(prices));
++    return response;
++  }
++
++  static double[][] simulate(double[] prices, int horizon, int paths, long seed) {
++    double[] changes = new double[prices.length - 1];
++    for (int i = 0; i < changes.length; i++) changes[i] = Math.log(prices[i + 1] / prices[i]);
++    double[][] population = new double[horizon][paths];
++    var random = new Random(seed);
++    for (int path = 0; path < paths; path++) {
++      double logPrice = Math.log(prices[prices.length - 1]);
++      for (int month = 0; month < horizon; month++) {
++        logPrice += changes[random.nextInt(changes.length)];
++        population[month][path] = Math.exp(logPrice);
++      }
++    }
++    double[][] result = new double[horizon][3];
++    for (int i = 0; i < horizon; i++) {
++      Arrays.sort(population[i]);
++      for (int q = 0; q < 3; q++) {
++        double fraction = (q * 4 + 1) / 10.0;
++        result[i][q] = population[i][(int) Math.round(fraction * (paths - 1))];
++      }
++    }
++    return result;
++  }
++
++  private static Map<String, Object> backtest(double[] prices) {
++    var comparisons = new ArrayList<Map<String, Object>>();
++    for (int horizon : List.of(1, 3, 12)) {
++      double error = 0, baseline = 0;
++      int covered = 0, count = 0;
++      for (int end = MIN_MONTHS; end + horizon - 1 < prices.length; end++) {
++        double actual = prices[end + horizon - 1];
++        double[] forecast = simulate(Arrays.copyOf(prices, end), horizon, 500, SEED)[horizon - 1];
++        error += Math.abs(actual - forecast[1]);
++        baseline += Math.abs(actual - prices[end - 1]);
++        if (actual >= forecast[0] && actual <= forecast[2]) covered++;
++        count++;
++      }
++      if (count > 0)
++        comparisons.add(
++            Map.of(
++                "horizonMonths",
++                horizon,
++                "count",
++                count,
++                "mae",
++                decimal(error / count),
++                "baselineMae",
++                decimal(baseline / count),
++                "intervalCoverage",
++                decimal((double) covered / count)));
++    }
++    return Map.of(
++        "status",
++        comparisons.isEmpty() ? "INSUFFICIENT_HISTORY" : "EVALUATED",
++        "horizons",
++        comparisons);
++  }
++
++  private static String decimal(double value) {
++    return BigDecimal.valueOf(value)
++        .setScale(6, RoundingMode.HALF_UP)
++        .stripTrailingZeros()
++        .toPlainString();
++  }
++
++  @SuppressWarnings("unchecked")
++  public static List<Map<String, Object>> records(Object value) {
++    return value == null ? List.of() : (List<Map<String, Object>>) value;
++  }
++
++  public static Instant instant(Object value) {
++    if (value instanceof Instant timestamp) return timestamp;
++    if (value instanceof OffsetDateTime timestamp) return timestamp.toInstant();
++    if (value instanceof Timestamp timestamp) return timestamp.toInstant();
++    return Instant.parse(value.toString());
++  }
++}
+diff --git a/src/main/java/com/gpumarket/domain/market/service/MarketHistoryService.java b/src/main/java/com/gpumarket/domain/market/service/MarketHistoryService.java
+new file mode 100644
+index 0000000..fdd8907
+--- /dev/null
++++ b/src/main/java/com/gpumarket/domain/market/service/MarketHistoryService.java
+@@ -0,0 +1,404 @@
++package com.gpumarket.domain.market.service;
++
++import com.gpumarket.domain.market.repository.MarketOfferRepository;
++import com.gpumarket.global.api.InvalidRequestException;
++import java.time.Duration;
++import java.time.Instant;
++import java.time.OffsetDateTime;
++import java.time.ZoneOffset;
++import java.time.format.DateTimeParseException;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Objects;
++import java.util.Set;
++import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Isolation;
++import org.springframework.transaction.annotation.Transactional;
++
++@Service
++@Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
++public class MarketHistoryService {
++  private static final int MAX_DAYS = 731;
++  private static final int MAX_POINTS = 12_000;
++  private static final int MAX_PAGE_SIZE = 100;
++  private static final Map<String, String> TEXT_FILTERS =
++      Map.of(
++          "countryCode", "p.country_code",
++          "regionCode", "p.region_code",
++          "contractType", "f.contract_type",
++          "systemType", "p.system_type",
++          "paymentOption", "f.payment_option",
++          "providerType", "v.provider_type");
++  private static final Set<String> BASE_FIELDS =
++      Set.of(
++          "modelId",
++          "from",
++          "to",
++          "limit",
++          "cursor",
++          "gpuCount",
++          "commitmentMonths",
++          "providerIds",
++          "offerId");
++  private final NamedParameterJdbcTemplate jdbc;
++  private final MarketOfferRepository offers;
++
++  public MarketHistoryService(NamedParameterJdbcTemplate jdbc, MarketOfferRepository offers) {
++    this.jdbc = jdbc;
++    this.offers = offers;
++  }
++
++  public Map<String, Object> history(Map<String, String> params) {
++    return history(params, false, null);
++  }
++
++  public Map<String, Object> publicHistory(Map<String, String> params) {
++    return history(params, true, null);
++  }
++
++  public Map<String, Object> publicHistory(Map<String, String> params, Instant verifiedAsOf) {
++    return history(params, true, Objects.requireNonNull(verifiedAsOf));
++  }
++
++  private Map<String, Object> history(
++      Map<String, String> params, boolean publicOnly, Instant verifiedAsOf) {
++    if (!params.keySet().stream()
++        .allMatch(key -> BASE_FIELDS.contains(key) || TEXT_FILTERS.containsKey(key))) {
++      throw new InvalidRequestException("지원하지 않는 가격 이력 조회 조건입니다.");
++    }
++    String model = params.get("modelId");
++    String from = params.get("from");
++    String to = params.get("to");
++
++    if (model == null || from == null || to == null) {
++      throw new InvalidRequestException("모델과 기간이 필요합니다.");
++    }
++
++    long modelId;
++    OffsetDateTime start;
++    OffsetDateTime end;
++
++    try {
++      modelId = Long.parseLong(model);
++      start = OffsetDateTime.parse(from);
++      end = OffsetDateTime.parse(to);
++    } catch (NumberFormatException | DateTimeParseException e) {
++      throw new InvalidRequestException("모델 또는 기간 형식이 올바르지 않습니다.");
++    }
++
++    if (modelId < 1 || !start.isBefore(end)) {
++      throw new InvalidRequestException("기간 또는 모델이 올바르지 않습니다.");
++    }
++
++    if (Duration.between(start, end).compareTo(Duration.ofDays(publicOnly ? 1096 : MAX_DAYS)) > 0) {
++      throw new InvalidRequestException("가격 이력은 한 번에 최대 731일까지 조회할 수 있습니다.");
++    }
++
++    var query = new LinkedHashMap<String, Object>();
++    query.put("modelId", modelId);
++    query.put("start", start);
++    query.put("end", end);
++    query.put("pointLimit", MAX_POINTS + 1);
++    Instant asOf = Instant.now();
++    if (verifiedAsOf != null) {
++      if (verifiedAsOf.isBefore(asOf)) asOf = verifiedAsOf;
++    } else if (publicOnly && end.toInstant().isBefore(asOf)) {
++      asOf = end.toInstant();
++    }
++    query.put("asOf", asOf.atOffset(ZoneOffset.UTC));
++    if (publicOnly) {
++      var effectiveAt = end.toInstant().isBefore(asOf) ? end.toInstant() : asOf;
++      query.put("effectiveAt", effectiveAt.atOffset(ZoneOffset.UTC));
++    }
++    String filter = offerFilter(params, query);
++    String observationFilter =
++        publicOnly
++            ? " AND o.price_certainty = 'firm' AND (o.effective_from IS NULL OR o.effective_from <="
++                + " :effectiveAt) AND EXISTS (SELECT 1 FROM collection_check c WHERE"
++                + " c.check_id=o.check_id AND c.processing_status='success' AND"
++                + " c.disclosure_status='public' AND c.checked_at <= :asOf)"
++            : "";
++    Integer limit = params.containsKey("limit") ? historyLimit(params.get("limit")) : null;
++    if (params.containsKey("cursor") && limit == null) {
++      throw new InvalidRequestException("가격 이력 cursor를 사용하려면 limit이 필요합니다.");
++    }
++
++    String nextCursor = null;
++    List<Map<String, Object>> rows;
++    if (limit == null) {
++      rows = historyRows(query, filter + observationFilter);
++    } else {
++      query.put("afterOfferId", historyCursor(params.get("cursor")));
++      query.put("seriesLimit", limit + 1);
++      var page =
++          jdbc.queryForList(
++              """
++              SELECT f.offer_id FROM offer f JOIN product p ON p.product_id = f.product_id
++              JOIN provider v ON v.provider_id = p.provider_id
++              WHERE p.gpu_model_id = :modelId AND f.offer_id > :afterOfferId
++                %s AND EXISTS (SELECT 1 FROM price_observation o WHERE o.offer_id = f.offer_id
++                            AND o.collected_at >= :start AND o.collected_at < :end %s)
++              ORDER BY f.offer_id LIMIT :seriesLimit
++              """
++                  .formatted(filter, observationFilter),
++              query,
++              Long.class);
++      var offerIds = page.subList(0, Math.min(limit, page.size()));
++      if (page.size() > limit) {
++        nextCursor = offerIds.get(offerIds.size() - 1).toString();
++      }
++      query.put("offerIds", offerIds);
++      rows =
++          offerIds.isEmpty()
++              ? List.of()
++              : historyRows(query, filter + observationFilter + " AND o.offer_id IN (:offerIds)");
++    }
++
++    if (rows.size() > MAX_POINTS) {
++      throw new InvalidRequestException("가격 이력이 12,000개를 초과했습니다. 조회 기간을 줄이거나 오퍼 페이지 크기를 줄여 주세요.");
++    }
++
++    // Read evidence only for the observations selected for this response.
++    var checkIds =
++        rows.stream()
++            .map(row -> (Number) row.get("check_id"))
++            .filter(Objects::nonNull)
++            .map(Number::longValue)
++            .distinct()
++            .toList();
++    var evidenceRows =
++        checkIds.isEmpty()
++            ? List.<Map<String, Object>>of()
++            : publicOnly
++                ? offers.comparablePriceEvidence(checkIds, asOf.atOffset(ZoneOffset.UTC))
++                : jdbc.queryForList(
++                    """
++                    SELECT check_id, evidence_id, source_id FROM source_evidence
++                    WHERE check_id IN (:checkIds) ORDER BY check_id, evidence_id
++                    """,
++                    Map.of("checkIds", checkIds));
++    Map<String, List<Map<String, Object>>> evidenceByCheck = new LinkedHashMap<>();
++    Map<String, Map<String, Object>> sources = new LinkedHashMap<>();
++    for (var evidence : evidenceRows) {
++      if (publicOnly && !MarketOfferService.publicSource((String) evidence.get("source_url")))
++        continue;
++      if (publicOnly) {
++        var source = MarketOfferService.evidence(evidence);
++        source.put("excerpt", null);
++        sources.put(evidence.get("evidence_id").toString(), source);
++      }
++      evidenceByCheck
++          .computeIfAbsent(evidence.get("check_id").toString(), ignored -> new ArrayList<>())
++          .add(evidence);
++    }
++
++    Map<String, Map<String, Object>> series = new LinkedHashMap<>();
++    for (var r : rows) {
++      String offer = r.get("offer_id").toString();
++      if (!series.containsKey(offer)) {
++        var s = new LinkedHashMap<String, Object>();
++        s.put("seriesId", "offer-" + offer);
++        s.put("offerId", offer);
++        s.put("modelId", model);
++        s.put("modelName", r.get("model_name"));
++        s.put("providerId", r.get("provider_id").toString());
++        s.put("providerName", r.get("provider_name"));
++        s.put(
++            "providerType",
++            "hyperscaler".equals(r.get("provider_type"))
++                ? "GENERAL_CLOUD"
++                : "gpu_specialist".equals(r.get("provider_type")) ? "GPU_SPECIALIST" : "UNKNOWN");
++        for (String key : List.of("system_type", "service_option", "contract_type"))
++          s.put(camel(key), r.get(key) == null ? null : r.get(key).toString().toUpperCase());
++        for (String key :
++            List.of(
++                "gpu_count", "country_code", "region_code", "commitment_months", "payment_option"))
++          s.put(camel(key), r.get(key));
++        s.put("points", new ArrayList<Map<String, Object>>());
++        s.put("gaps", List.of());
++        series.put(offer, s);
++      }
++      var point = new LinkedHashMap<String, Object>();
++      point.put("offerId", offer);
++      point.put("observationId", r.get("observation_id").toString());
++      point.put("collectedAt", r.get("collected_at"));
++      point.put("effectiveFrom", r.get("effective_from"));
++      point.put("displayTimeBasis", "COLLECTED_AT");
++      List<Map<String, Object>> ev =
++          r.get("check_id") == null
++              ? List.of()
++              : evidenceByCheck.getOrDefault(r.get("check_id").toString(), List.of());
++      boolean usable =
++          (!publicOnly || !ev.isEmpty())
++              && r.get("normalization_id") != null
++              && "success".equals(r.get("result_status"))
++              && r.get("effective_usd_gpu_hour") != null;
++      point.put(
++          "normalizationId",
++          r.get("normalization_id") == null ? null : r.get("normalization_id").toString());
++      point.put("ruleVersion", r.get("rule_version"));
++      point.put("originalCurrency", r.get("original_currency"));
++      point.put("originalTimeUnit", r.get("original_time_unit"));
++      point.put("priceAppliesTo", r.get("price_applies_to"));
++      point.put("effectiveUsdGpuHour", usable ? r.get("effective_usd_gpu_hour").toString() : null);
++      point.put("status", usable ? "OK" : "UNAVAILABLE");
++      point.put(
++          "reason",
++          usable
++              ? null
++              : (r.get("normalization_reason") != null
++                  ? r.get("normalization_reason")
++                  : "환산 결과가 없거나 여러 버전이 있어 선택할 수 없습니다."));
++      point.put("evidenceIds", ev.stream().map(e -> e.get("evidence_id").toString()).toList());
++      point.put(
++          "sourceIds", ev.stream().map(e -> e.get("source_id").toString()).distinct().toList());
++      @SuppressWarnings("unchecked")
++      var points = (List<Map<String, Object>>) series.get(offer).get("points");
++      points.add(point);
++    }
++    var result = new LinkedHashMap<String, Object>();
++    result.put(
++        "appliedFilters",
++        Map.of("modelId", model, "from", from, "to", to, "seriesBy", "OFFER", "currency", "USD"));
++    result.put("series", new ArrayList<>(series.values()));
++    result.put("reason", series.isEmpty() ? "NO_HISTORY" : null);
++    result.put("asOf", asOf);
++    if (publicOnly) result.put("sources", List.copyOf(sources.values()));
++    result.put("nextCursor", nextCursor);
++    return result;
++  }
++
++  private List<Map<String, Object>> historyRows(Map<String, Object> query, String offerFilter) {
++    return jdbc.queryForList(
++        """
++        SELECT o.observation_id, o.offer_id, o.check_id, o.collected_at, o.effective_from,
++               o.original_currency, o.original_time_unit, o.price_applies_to,
++               f.contract_type, f.commitment_months, f.payment_option, p.gpu_count, p.system_type,
++               p.service_option, p.country_code, p.region_code, p.provider_id, v.provider_name,
++               v.provider_type, g.model_name, n.normalization_id, n.effective_usd_gpu_hour,
++               n.result_status, n.reason AS normalization_reason, n.rule_version
++        FROM price_observation o JOIN offer f ON f.offer_id = o.offer_id
++        JOIN product p ON p.product_id = f.product_id
++        JOIN provider v ON v.provider_id = p.provider_id
++        JOIN gpu_model g ON g.gpu_model_id = p.gpu_model_id
++        LEFT JOIN LATERAL (
++          SELECT pn.*, nr.rule_version, count(*) OVER () AS versions
++          FROM price_normalization pn JOIN normalization_rule nr ON nr.rule_id = pn.rule_id
++          WHERE pn.observation_id = o.observation_id
++        ) n ON n.versions = 1
++        WHERE g.gpu_model_id = :modelId AND o.collected_at >= :start AND o.collected_at < :end
++        %s
++        ORDER BY o.offer_id, o.collected_at, o.observation_id LIMIT :pointLimit
++        """
++            .formatted(offerFilter),
++        query);
++  }
++
++  private static String offerFilter(Map<String, String> params, Map<String, Object> bindings) {
++    var where = new StringBuilder();
++    TEXT_FILTERS.forEach(
++        (key, column) -> {
++          if (params.containsKey(key)) {
++            String value = params.get(key);
++            if (key.equals("providerType") && "ALL".equals(value)) return;
++            if (value == null || !value.matches("[A-Za-z0-9_-]{1,80}")) {
++              throw new InvalidRequestException("가격 이력 필터를 확인해 주세요.");
++            }
++            if (key.equals("providerType")) {
++              value =
++                  switch (value) {
++                    case "GENERAL_CLOUD" -> "hyperscaler";
++                    case "GPU_SPECIALIST" -> "gpu_specialist";
++                    case "UNKNOWN" -> "unknown";
++                    default -> throw new InvalidRequestException("사업자 유형을 확인해 주세요.");
++                  };
++            }
++            where
++                .append(" AND lower(")
++                .append(column)
++                .append(") = lower(:")
++                .append(key)
++                .append(")");
++            bindings.put(key, value);
++          }
++        });
++    Map.of(
++            "offerId",
++            "f.offer_id",
++            "gpuCount",
++            "p.gpu_count",
++            "commitmentMonths",
++            "f.commitment_months")
++        .forEach(
++            (key, column) -> {
++              if (params.containsKey(key)) {
++                where.append(" AND ").append(column).append(" = :").append(key);
++                bindings.put(key, positive(params.get(key)));
++              }
++            });
++    if (params.containsKey("providerIds")) {
++      var ids =
++          Arrays.stream(params.get("providerIds").split(",", -1))
++              .map(MarketHistoryService::positive)
++              .distinct()
++              .toList();
++      if (ids.size() > 100) throw new InvalidRequestException("사업자는 최대 100개까지 조회할 수 있습니다.");
++      bindings.put("providerIds", ids);
++      where.append(" AND p.provider_id IN (:providerIds)");
++    }
++    return where.toString();
++  }
++
++  private static long positive(String value) {
++    try {
++      long parsed = Long.parseLong(value);
++      if (parsed > 0) return parsed;
++    } catch (NumberFormatException ignored) {
++    }
++    throw new InvalidRequestException("가격 이력의 숫자 필터는 양의 정수여야 합니다.");
++  }
++
++  private static int historyLimit(String value) {
++    try {
++      int limit = Integer.parseInt(value);
++      if (limit > 0 && limit <= MAX_PAGE_SIZE) {
++        return limit;
++      }
++    } catch (NumberFormatException ignored) {
++      // Reject malformed and out-of-range values with the same response.
++    }
++    throw new InvalidRequestException("가격 이력 limit은 1~100 사이의 정수여야 합니다.");
++  }
++
++  private static long historyCursor(String value) {
++    if (value == null) {
++      return 0;
++    }
++    try {
++      long offerId = Long.parseLong(value);
++      if (offerId > 0) {
++        return offerId;
++      }
++    } catch (NumberFormatException ignored) {
++      // Reject malformed and out-of-range values with the same response.
++    }
++    throw new InvalidRequestException("가격 이력 cursor가 올바르지 않습니다.");
++  }
++
++  private static String camel(String s) {
++    StringBuilder b = new StringBuilder();
++    boolean upper = false;
++    for (char c : s.toCharArray()) {
++      if (c == '_') upper = true;
++      else {
++        b.append(upper ? Character.toUpperCase(c) : c);
++        upper = false;
++      }
++    }
++    return b.toString();
++  }
++}
+diff --git a/src/main/java/com/gpumarket/domain/market/service/MarketOfferService.java b/src/main/java/com/gpumarket/domain/market/service/MarketOfferService.java
+index ba3c82d..83a5010 100644
+--- a/src/main/java/com/gpumarket/domain/market/service/MarketOfferService.java
++++ b/src/main/java/com/gpumarket/domain/market/service/MarketOfferService.java
+@@ -22,6 +22,7 @@ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Base64;
+ import java.util.Collection;
++import java.util.Comparator;
+ import java.util.HashMap;
+ import java.util.HashSet;
+ import java.util.LinkedHashMap;
+@@ -41,9 +42,10 @@ import org.springframework.web.server.ResponseStatusException;
+ @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+ public class MarketOfferService {
+   private static final String DISCLAIMER = "공개 관측 가격이며 실제 거래가와 다를 수 있습니다.";
++  private static final String COMPARISON_DISCLAIMER =
++      "수집된 사업자와 선택 조건 내 공개가격이며 시장 전체 대표가격이 아닙니다. "
++          + "협상가·대형 고객 할인을 반영하지 않으며, 3~5년 약정은 공개 자료가 제한적일 수 있습니다.";
+   private static final int FRESH_HOURS = 48;
+-  private static final int PUBLIC_PRICE_BATCH_SIZE = 100;
+-  private static final int PUBLIC_PRICE_LIMIT = 5;
+   private static final List<String> TEXT_FILTERS =
+       List.of(
+           "generation",
+@@ -98,39 +100,146 @@ public class MarketOfferService {
+   }
+ 
+   public PublicPriceLookupDto publicPrices(Map<String, String> input) {
+-    Instant asOf = Instant.now();
++    return publicPrices(input, Instant.now());
++  }
++
++  public PublicPriceLookupDto publicPricesBefore(Map<String, String> input, Instant before) {
++    return publicPrices(input, priceSnapshot(before));
++  }
++
++  public Map<String, Object> publicPriceRange(Map<String, String> input, Instant before) {
++    return publicPriceExtrema(input, null, before, false);
++  }
++
++  public Map<String, Object> publicMinimumPrice(Map<String, String> input, Instant before) {
++    return publicPriceExtrema(input, null, before, true);
++  }
++
++  public Map<String, Object> publicPriceRange(
++      Map<String, String> input, Instant from, Instant before) {
++    return publicPriceExtrema(input, from, before, false);
++  }
++
++  public Map<String, Object> publicMinimumPrice(
++      Map<String, String> input, Instant from, Instant before) {
++    return publicPriceExtrema(input, from, before, true);
++  }
++
++  private Map<String, Object> publicPriceExtrema(
++      Map<String, String> input, Instant from, Instant before, boolean minimumOnly) {
++    Instant asOf = priceSnapshot(before);
++    var criteria = new LinkedHashMap<>(input);
++    String offer = criteria.remove("offerId");
++    var params = query(filters(criteria, true), asOf);
++    if (offer != null) params.put("offerId", positive(offer, "offerId"));
++    if (from != null) params.put("publicPriceFrom", utc(from));
++    params.put("publicPriceOnly", true);
++    var eligible =
++        repository.offers(params).stream()
++            .filter(row -> priceExclusion(row, asOf, false) == null)
++            .toList();
++    var sources = comparisonEvidence(eligible, asOf);
++    var published =
++        eligible.stream()
++            .filter(row -> sources.containsKey(id(row, "observation_check_id")))
++            .toList();
++    var result = priceExtrema(published, sources, minimumOnly);
++    result.put("kind", minimumOnly ? "PRICE_MINIMUM" : "PRICE_RANGE");
++    result.put("asOf", asOf);
++    return result;
++  }
++
++  private static Map<String, Object> priceExtrema(
++      List<Map<String, Object>> rows,
++      Map<Long, List<Map<String, Object>>> sources,
++      boolean minimumOnly) {
++    var extrema = new ArrayList<Map<String, Object>>();
++    if (!rows.isEmpty()) {
++      var amounts = rows.stream().map(MarketOfferService::effectiveAmount).toList();
++      var min = java.util.Collections.min(amounts);
++      if (minimumOnly) {
++        extrema.add(rangeEndpoint("MINIMUM", min, rows, sources));
++      } else {
++        var max = java.util.Collections.max(amounts);
++        boolean equal = min.compareTo(max) == 0;
++        extrema.add(rangeEndpoint(equal ? "BOTH" : "MINIMUM", min, rows, sources));
++        if (!equal) extrema.add(rangeEndpoint("MAXIMUM", max, rows, sources));
++      }
++    }
++    return map(
++        "items",
++        extrema,
++        "comparedOffers",
++        rows.stream()
++            .sorted(Comparator.comparing(MarketOfferService::effectiveAmount))
++            .map(row -> extremaOffer(row, sources))
++            .toList(),
++        "offerCount",
++        rows.size(),
++        "productCount",
++        rows.stream().map(row -> id(row, "product_id")).distinct().count(),
++        "providerCount",
++        rows.stream().map(row -> id(row, "provider_id")).distinct().count());
++  }
++
++  private static Map<String, Object> rangeEndpoint(
++      String endpoint,
++      BigDecimal amount,
++      List<Map<String, Object>> rows,
++      Map<Long, List<Map<String, Object>>> sources) {
++    var evidence =
++        rows.stream()
++            .filter(row -> effectiveAmount(row).compareTo(amount) == 0)
++            .map(row -> extremaOffer(row, sources))
++            .toList();
++    return map("endpoint", endpoint, "priceUsdGpuHour", decimal(amount), "matches", evidence);
++  }
++
++  private static Map<String, Object> extremaOffer(
++      Map<String, Object> row, Map<Long, List<Map<String, Object>>> sources) {
++    return map(
++        "providerName", row.get("provider_name"),
++        "productName", row.get("original_product_name"),
++        "regionCode", row.get("region_code"),
++        "gpuCount", row.get("gpu_count"),
++        "contractType", upper(row.get("contract_type")),
++        "commitmentMonths", row.get("commitment_months"),
++        "contractProductType", row.get("contract_product_type"),
++        "paymentOption", payment(row),
++        "priceUsdGpuHour", decimal(effectiveAmount(row)),
++        "collectedAt", time(row, "collected_at"),
++        "sources", sources.get(id(row, "observation_check_id")));
++  }
++
++  private PublicPriceLookupDto publicPrices(Map<String, String> input, Instant asOf) {
+     var params = query(filters(input, false), asOf);
+-    params.put("publicPriceCutoff", utc(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS)));
+-    params.put("pageSize", PUBLIC_PRICE_BATCH_SIZE);
++    params.put("publicPriceOnly", true);
++    var eligible =
++        repository.offers(params).stream()
++            .filter(row -> priceExclusion(row, asOf, false) == null)
++            .sorted(
++                Comparator.comparing((Map<String, Object> row) -> time(row, "collected_at"))
++                    .reversed())
++            .toList();
++    var related = related(repository, eligible, asOf);
+     var items = new ArrayList<PublicPriceDto>();
+-    while (true) {
+-      var found = repository.offers(params);
+-      var eligible = found.stream().filter(row -> latestPriceExclusion(row, asOf) == null).toList();
+-      var related = related(repository, eligible, asOf);
+-      for (var row : eligible) {
+-        var sources =
+-            related.evidence().getOrDefault(id(row, "observation_check_id"), List.of()).stream()
+-                .filter(source -> publicSource(string(source.get("sourceUrl"))))
+-                .map(
+-                    source -> {
+-                      Map<String, Object> publicEvidence = new LinkedHashMap<>(source);
+-                      publicEvidence.put("excerpt", null);
+-                      return publicEvidence;
+-                    })
+-                .toList();
+-        if (sources.isEmpty()) {
+-          continue;
+-        }
+-        if (items.size() == PUBLIC_PRICE_LIMIT) {
+-          return new PublicPriceLookupDto(items, asOf, true);
+-        }
+-        items.add(publicPrice(row, related, sources));
+-      }
+-      if (found.size() < PUBLIC_PRICE_BATCH_SIZE) {
+-        return new PublicPriceLookupDto(items, asOf, false);
++    for (var row : eligible) {
++      var sources =
++          related.evidence().getOrDefault(id(row, "observation_check_id"), List.of()).stream()
++              .filter(source -> publicSource(string(source.get("sourceUrl"))))
++              .map(
++                  source -> {
++                    Map<String, Object> publicEvidence = new LinkedHashMap<>(source);
++                    publicEvidence.put("excerpt", null);
++                    return publicEvidence;
++                  })
++              .toList();
++      if (sources.isEmpty()) {
++        continue;
+       }
+-      params.put("afterId", number(found.get(found.size() - 1), "offer_id"));
++      items.add(publicPrice(row, related, sources));
+     }
++    return new PublicPriceLookupDto(items, asOf);
+   }
+ 
+   private static PublicPriceDto publicPrice(
+@@ -154,7 +263,7 @@ public class MarketOfferService {
+         sources);
+   }
+ 
+-  private static boolean publicSource(String value) {
++  static boolean publicSource(String value) {
+     if (value == null) {
+       return false;
+     }
+@@ -206,6 +315,15 @@ public class MarketOfferService {
+   }
+ 
+   public ContractComparisonResponseDto contracts(long productId, Map<String, String> input) {
++    return contracts(productId, input, true);
++  }
++
++  public ContractComparisonResponseDto contractsLatest(long productId) {
++    return contracts(productId, Map.of(), false);
++  }
++
++  private ContractComparisonResponseDto contracts(
++      long productId, Map<String, String> input, boolean requireFresh) {
+     if (productId < 1 || !Set.of("currency").containsAll(input.keySet())) {
+       throw invalid("양의 상품 ID와 currency만 사용할 수 있습니다.");
+     }
+@@ -221,7 +339,7 @@ public class MarketOfferService {
+     var baselines =
+         rows.stream()
+             .filter(row -> "on_demand".equals(row.get("contract_type")))
+-            .filter(row -> latestPriceExclusion(row, asOf) == null)
++            .filter(row -> priceExclusion(row, asOf, requireFresh) == null)
+             .filter(row -> effectiveAmount(row).signum() > 0)
+             .toList();
+     var baseline = baselines.size() == 1 ? baselines.get(0) : null;
+@@ -231,7 +349,7 @@ public class MarketOfferService {
+                 .filter(row -> "commitment".equals(row.get("contract_type")))
+                 .filter(MarketOfferService::hasKnownCommitmentTerms)
+                 .filter(row -> "estimate".equals(row.get("price_certainty")))
+-                .filter(row -> "nonExactOffers".equals(latestPriceExclusion(row, asOf)))
++                .filter(row -> "nonExactOffers".equals(priceExclusion(row, asOf, requireFresh)))
+                 .map(row -> id(row, "observation_id"))
+                 .toList()
+             : List.<Long>of();
+@@ -248,7 +366,7 @@ public class MarketOfferService {
+       String offerId = string(row.get("offer_id"));
+       String type = upper(row.get("contract_type"));
+       var effective = price(row, "effective_usd_gpu_hour", certainty(row), exchangeRate);
+-      String exclusion = latestPriceExclusion(row, asOf);
++      String exclusion = priceExclusion(row, asOf, requireFresh);
+       if ("notFoundOffers".equals(exclusion)) {
+         effective.put("amount", null);
+         effective.put("status", "UNAVAILABLE");
+@@ -261,12 +379,13 @@ public class MarketOfferService {
+       if ("COMMITMENT".equals(type)) {
+         String unavailable = contractDiscountReason(baselines.size(), baseline, row, exclusion);
+         if (unavailable == null) {
+-          var baseAmount = effectiveAmount(baseline);
+-          var discount =
+-              baseAmount.subtract(effectiveAmount(row)).divide(baseAmount, 6, RoundingMode.HALF_UP);
+           discounts.add(
+               new DiscountDto(
+-                  string(baseline.get("offer_id")), offerId, decimal(discount), "OK", null));
++                  string(baseline.get("offer_id")),
++                  offerId,
++                  decimal(discountRate(baseline, row)),
++                  "OK",
++                  null));
+         } else {
+           discounts.add(
+               new DiscountDto(
+@@ -304,6 +423,137 @@ public class MarketOfferService {
+         Long.toString(productId), asOf, items, discounts, DISCLAIMER);
+   }
+ 
++  public Map<String, Object> productPricesForTerms(
++      Map<String, String> input, List<Integer> terms, Instant before) {
++    return productPricesForTerms(input, terms, null, before);
++  }
++
++  public Map<String, Object> productPricesForTerms(
++      Map<String, String> input, List<Integer> terms, Instant from, Instant before) {
++    var common = new LinkedHashMap<>(input);
++    common.remove("contractType");
++    common.remove("commitmentMonths");
++    String selectedPayment = common.remove("paymentOption");
++    String selectedPlan = common.remove("contractProductType");
++    Instant asOf = priceSnapshot(before);
++    var params = query(filters(common, true), asOf);
++    params.put("productPriceTerms", terms);
++    params.put("publicPriceOnly", true);
++    if (from != null) params.put("publicPriceFrom", utc(from));
++    var eligible =
++        repository.offers(params).stream()
++            .filter(
++                row ->
++                    "on_demand".equals(row.get("contract_type"))
++                        || ((selectedPayment == null || selectedPayment.equals(payment(row)))
++                            && (selectedPlan == null
++                                || selectedPlan.equalsIgnoreCase(
++                                    string(row.get("contract_product_type"))))))
++            .filter(row -> priceExclusion(row, asOf, false) == null)
++            .toList();
++    var sources = comparisonEvidence(eligible, asOf);
++    var published =
++        eligible.stream()
++            .filter(row -> sources.containsKey(id(row, "observation_check_id")))
++            .toList();
++    return map(
++        "kind",
++        "CONTRACT_COMPARISON",
++        "asOf",
++        asOf,
++        "requestedCommitmentMonths",
++        terms,
++        "items",
++        productPriceItems(published, sources));
++  }
++
++  private static Instant priceSnapshot(Instant before) {
++    Instant now = Instant.now();
++    if (before == null) return now;
++    Instant boundary = before.minus(1, ChronoUnit.MICROS);
++    return boundary.isAfter(now) ? now : boundary;
++  }
++
++  private static List<Map<String, Object>> productPriceItems(
++      List<Map<String, Object>> rows, Map<Long, List<Map<String, Object>>> sources) {
++    var byProduct = new LinkedHashMap<Long, List<Map<String, Object>>>();
++    for (var row : rows) {
++      byProduct.computeIfAbsent(id(row, "product_id"), ignored -> new ArrayList<>()).add(row);
++    }
++    return byProduct.values().stream()
++        .map(productRows -> productPrices(productRows, sources))
++        .sorted(
++            Comparator.comparing(
++                    (Map<String, Object> item) -> stringOrEmpty(item.get("providerName")))
++                .thenComparing(item -> stringOrEmpty(item.get("regionCode")))
++                .thenComparing(item -> stringOrEmpty(item.get("sku"))))
++        .toList();
++  }
++
++  private static Map<String, Object> productPrices(
++      List<Map<String, Object>> rows, Map<Long, List<Map<String, Object>>> sources) {
++    var product = rows.get(0);
++    var onDemand =
++        rows.stream().filter(row -> "on_demand".equals(row.get("contract_type"))).toList();
++    var baselines = onDemand.stream().filter(row -> effectiveAmount(row).signum() > 0).toList();
++    var baseline = baselines.size() == 1 ? baselines.get(0) : null;
++    var commitments =
++        rows.stream()
++            .filter(row -> "commitment".equals(row.get("contract_type")))
++            .map(
++                row -> {
++                  var quote = productQuote(row, sources);
++                  String reason = contractDiscountReason(baselines.size(), baseline, row, null);
++                  quote.put("discountReason", reason);
++                  quote.put(
++                      "discountPercent",
++                      reason == null
++                          ? discountRate(baseline, row)
++                              .movePointRight(2)
++                              .stripTrailingZeros()
++                              .toPlainString()
++                          : null);
++                  quote.put(
++                      "baseOfferId", baseline == null ? null : string(baseline.get("offer_id")));
++                  return quote;
++                })
++            .toList();
++    return map(
++        "productId", string(product.get("product_id")),
++        "providerName", product.get("provider_name"),
++        "productName", product.get("original_product_name"),
++        "sku", product.get("sku"),
++        "regionCode", product.get("region_code"),
++        "countryCode", upper(product.get("country_code")),
++        "gpuCount", product.get("gpu_count"),
++        "systemType", upper(product.get("system_type")),
++        "serviceOption", upper(product.get("service_option")),
++        "onDemand", onDemand.stream().map(row -> productQuote(row, sources)).toList(),
++        "commitments", commitments);
++  }
++
++  private static Map<String, Object> productQuote(
++      Map<String, Object> row, Map<Long, List<Map<String, Object>>> sources) {
++    return map(
++        "offerId", string(row.get("offer_id")),
++        "contractProductType", upper(row.get("contract_product_type")),
++        "months", row.get("commitment_months"),
++        "paymentOption", payment(row),
++        "minimumQuantity", row.get("minimum_quantity"),
++        "minimumQuantityUnit", row.get("minimum_quantity_unit"),
++        "priceUsdGpuHour", decimal(effectiveAmount(row)),
++        "collectedAt", time(row, "collected_at"),
++        "sources", sources.get(id(row, "observation_check_id")));
++  }
++
++  private static BigDecimal discountRate(
++      Map<String, Object> baseline, Map<String, Object> commitment) {
++    var baseAmount = effectiveAmount(baseline);
++    return baseAmount
++        .subtract(effectiveAmount(commitment))
++        .divide(baseAmount, 6, RoundingMode.HALF_UP);
++  }
++
+   private static String contractDiscountReason(
+       int baselineCount,
+       Map<String, Object> baseline,
+@@ -383,8 +633,92 @@ public class MarketOfferService {
+   }
+ 
+   public Map<String, Object> summary(Map<String, String> input) {
++    return summary(input, Instant.now(), true);
++  }
++
++  public Map<String, Object> summaryLatest(Map<String, String> input) {
++    return summary(input, Instant.now(), false);
++  }
++
++  public List<Map<String, Object>> confirmedPriceRemovals(
++      Map<String, String> input, Instant from, Instant until) {
++    Instant asOf = until.minus(1, ChronoUnit.MICROS);
++    var now = Instant.now();
++    if (asOf.isAfter(now)) asOf = now;
++    var params = query(filters(input, false), asOf);
++    params.put("publicPriceOnly", true);
++    var removed =
++        repository.offers(params).stream()
++            .filter(
++                row -> {
++                  Instant observed = time(row, "confirmed_at");
++                  Instant change = time(row, "disclosure_checked_at");
++                  return observed != null
++                      && change != null
++                      && change.isAfter(observed)
++                      && !change.isBefore(from)
++                      && change.isBefore(until)
++                      && ("not_found".equals(row.get("disclosure_processing_status"))
++                          || Set.of("not_disclosed", "contact_sales", "login_required")
++                              .contains(stringOrEmpty(row.get("disclosure_status"))));
++                })
++            .toList();
++    if (removed.isEmpty()) return List.of();
++    var prior = comparisonEvidence(removed, asOf);
++    var checkIds = removed.stream().map(row -> id(row, "disclosure_check_id")).distinct().toList();
++    var confirmations = new HashMap<Long, List<Map<String, Object>>>();
++    for (var row : repository.evidence(checkIds)) {
++      if (!"official".equals(row.get("evidence_role"))
++          || !Boolean.TRUE.equals(row.get("primary_verified"))
++          || !publicSource(string(row.get("source_url")))
++          || time(row, "captured_at") == null
++          || time(row, "captured_at").isAfter(asOf)
++          || (time(row, "verified_at") != null && time(row, "verified_at").isAfter(asOf))) continue;
++      var proof = evidence(row);
++      proof.put("excerpt", null);
++      confirmations.computeIfAbsent(id(row, "check_id"), ignored -> new ArrayList<>()).add(proof);
++    }
++    return removed.stream()
++        .filter(row -> prior.containsKey(id(row, "observation_check_id")))
++        .filter(row -> confirmations.containsKey(id(row, "disclosure_check_id")))
++        .map(
++            row ->
++                map(
++                    "offerId", string(row.get("offer_id")),
++                    "modelName", row.get("model_name"),
++                    "productName", row.get("original_product_name"),
++                    "providerName", row.get("provider_name"),
++                    "regionCode", row.get("region_code"),
++                    "contractType", upper(row.get("contract_type")),
++                    "lastCollectedAt", time(row, "collected_at"),
++                    "checkedAt", time(row, "disclosure_checked_at"),
++                    "previousSources", prior.get(id(row, "observation_check_id")),
++                    "sources", confirmations.get(id(row, "disclosure_check_id"))))
++        .toList();
++  }
++
++  public Map<String, Object> summaryBefore(Map<String, String> input, Instant before) {
++    return summary(input, before.minus(1, ChronoUnit.MICROS), false);
++  }
++
++  public Map<String, Object> summariesForTerms(
++      Map<String, String> input, List<Integer> terms, Instant before) {
++    var common = new LinkedHashMap<>(input);
++    common.remove("commitmentMonths");
++    Instant asOf = before == null ? Instant.now() : before.minus(1, ChronoUnit.MICROS);
++    var result = summary(common, asOf, false, terms);
++    result.put("requestedCommitmentMonths", terms);
++    return result;
++  }
++
++  private Map<String, Object> summary(
++      Map<String, String> input, Instant asOf, boolean requireFresh) {
++    return summary(input, asOf, requireFresh, List.of());
++  }
++
++  private Map<String, Object> summary(
++      Map<String, String> input, Instant asOf, boolean requireFresh, List<Integer> terms) {
+     var filters = filters(input, true);
+-    Instant asOf = Instant.now();
+     var groups = new LinkedHashMap<Map<String, Object>, Group>();
+     var excluded =
+         new LinkedHashMap<>(
+@@ -395,6 +729,8 @@ public class MarketOfferService {
+                 0,
+                 "nonExactOffers",
+                 0,
++                "missingEvidenceOffers",
++                0,
+                 "incomparableOffers",
+                 0,
+                 "missingPriceOffers",
+@@ -402,15 +738,32 @@ public class MarketOfferService {
+                 "unavailableNormalizationOffers",
+                 0));
+ 
+-    for (var row : repository.offers(query(filters, asOf))) {
+-      var decision = assess(row, asOf);
++    var eligibleByGroup = new LinkedHashMap<Map<String, Object>, List<Map<String, Object>>>();
++    var params = query(filters, asOf);
++    if (!terms.isEmpty()) params.put("commitmentMonthsIn", terms);
++    for (var row : repository.offers(params)) {
++      var decision = assess(row, asOf, requireFresh);
+       if (decision.reason() != null) {
+         excluded.merge(decision.reason(), 1, Integer::sum);
+         continue;
+       }
+-      groups.computeIfAbsent(decision.key(), key -> new Group()).add(row);
++      eligibleByGroup.computeIfAbsent(decision.key(), key -> new ArrayList<>()).add(row);
+     }
+ 
++    var evidenceByCheck =
++        comparisonEvidence(eligibleByGroup.values().stream().flatMap(List::stream).toList(), asOf);
++    eligibleByGroup.forEach(
++        (key, rows) -> {
++          for (var row : rows) {
++            var sources = evidenceByCheck.get(id(row, "observation_check_id"));
++            if (sources == null) {
++              excluded.merge("missingEvidenceOffers", 1, Integer::sum);
++              continue;
++            }
++            groups.computeIfAbsent(key, ignored -> new Group()).add(row, sources);
++          }
++        });
++
+     var rate = rate(filters.currency());
+     return map(
+         "appliedFilters",
+@@ -428,9 +781,9 @@ public class MarketOfferService {
+             "aggregationVersion",
+             "provider-lowest-v1",
+             "freshnessHours",
+-            FRESH_HOURS),
++            requireFresh ? FRESH_HOURS : null),
+         "disclaimer",
+-        DISCLAIMER);
++        COMPARISON_DISCLAIMER);
+   }
+ 
+   public List<ComparableGroup> comparablePrices(
+@@ -441,15 +794,7 @@ public class MarketOfferService {
+             .filter(row -> assess(row, asOf).reason() == null)
+             .filter(row -> !requirePositive || effectiveAmount(row).signum() > 0)
+             .toList();
+-    var checkIds =
+-        eligible.stream().map(row -> id(row, "observation_check_id")).distinct().toList();
+-    var byCheck = new HashMap<Long, List<Map<String, Object>>>();
+-    for (var source : repository.comparablePriceEvidence(checkIds, utc(asOf))) {
+-      var item = evidence(source);
+-      if (!isComparablePublicLink(string(item.get("sourceUrl")))) continue;
+-      item.put("excerpt", null);
+-      byCheck.computeIfAbsent(id(source, "check_id"), ignored -> new ArrayList<>()).add(item);
+-    }
++    var byCheck = comparisonEvidence(eligible, asOf);
+ 
+     var rowsByGroup = new LinkedHashMap<Map<String, Object>, List<Map<String, Object>>>();
+     for (var row : eligible) {
+@@ -490,16 +835,22 @@ public class MarketOfferService {
+         .toList();
+   }
+ 
+-  private static boolean isComparablePublicLink(String sourceUrl) {
+-    if (sourceUrl == null) return false;
+-    try {
+-      var uri = URI.create(sourceUrl);
+-      return "https".equalsIgnoreCase(uri.getScheme())
+-          && uri.getHost() != null
+-          && uri.getUserInfo() == null;
+-    } catch (IllegalArgumentException ex) {
+-      return false;
++  private Map<Long, List<Map<String, Object>>> comparisonEvidence(
++      List<Map<String, Object>> eligible, Instant asOf) {
++    var checkIds =
++        eligible.stream()
++            .map(row -> id(row, "observation_check_id"))
++            .filter(Objects::nonNull)
++            .distinct()
++            .toList();
++    var byCheck = new HashMap<Long, List<Map<String, Object>>>();
++    for (var source : repository.comparablePriceEvidence(checkIds, utc(asOf))) {
++      var item = evidence(source);
++      if (!publicSource(string(item.get("sourceUrl")))) continue;
++      item.put("excerpt", null);
++      byCheck.computeIfAbsent(id(source, "check_id"), ignored -> new ArrayList<>()).add(item);
+     }
++    return byCheck;
+   }
+ 
+   public record ComparableGroup(
+@@ -517,12 +868,17 @@ public class MarketOfferService {
+       List<Map<String, Object>> evidence) {}
+ 
+   private static Decision assess(Map<String, Object> row, Instant asOf) {
++    return assess(row, asOf, true);
++  }
++
++  private static Decision assess(Map<String, Object> row, Instant asOf, boolean requireFresh) {
+     var key = groupKey(row);
+-    String exclusion = latestPriceExclusion(row, asOf);
++    String exclusion = priceExclusion(row, asOf, requireFresh);
+     return new Decision(key, exclusion == null && key == null ? "incomparableOffers" : exclusion);
+   }
+ 
+-  private static String latestPriceExclusion(Map<String, Object> row, Instant asOf) {
++  private static String priceExclusion(
++      Map<String, Object> row, Instant asOf, boolean requireFresh) {
+     Instant confirmedAt = time(row, "confirmed_at");
+     Instant checkedAt = time(row, "disclosure_checked_at");
+     boolean latest = checkedAt != null && (confirmedAt == null || !checkedAt.isBefore(confirmedAt));
+@@ -535,7 +891,7 @@ public class MarketOfferService {
+     if (row.get("observation_id") == null) {
+       return "missingPriceOffers";
+     }
+-    if (confirmedAt.isBefore(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS))) {
++    if (requireFresh && confirmedAt.isBefore(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS))) {
+       return "staleOffers";
+     }
+     if (!"firm".equals(row.get("price_certainty"))) {
+@@ -1173,23 +1529,26 @@ public class MarketOfferService {
+   }
+ 
+   private static class Group {
+-    private final Map<Long, BigDecimal> providers = new HashMap<>();
++    private final Map<Long, Representative> providers = new LinkedHashMap<>();
+     private final Set<Long> products = new HashSet<>();
+-    private int offers;
++    private final List<String> offerIds = new ArrayList<>();
+ 
+-    void add(Map<String, Object> row) {
++    void add(Map<String, Object> row, List<Map<String, Object>> sources) {
+       providers.merge(
+           number(row, "provider_id"),
+-          (BigDecimal) row.get("effective_usd_gpu_hour"),
+-          BigDecimal::min);
++          new Representative(row, effectiveAmount(row), sources),
++          (current, candidate) ->
++              current.amount().compareTo(candidate.amount()) <= 0 ? current : candidate);
+       products.add(number(row, "product_id"));
+-      offers++;
++      offerIds.add(string(row.get("offer_id")));
+     }
+ 
+     Map<String, Object> response(
+         Map<String, Object> key, Instant asOf, LatestExchangeRateResponseDto rate) {
+       int size = providers.size();
+-      var summary = PriceSummary.fromRepresentatives(providers.values());
++      var summary =
++          PriceSummary.fromRepresentatives(
++              providers.values().stream().map(Representative::amount).toList());
+       var min = summary.minimum();
+       var median = summary.median();
+       var max = summary.maximum();
+@@ -1206,6 +1565,15 @@ public class MarketOfferService {
+           decimal(median),
+           "maximum",
+           decimal(max),
++          "lowestProviderIds",
++          providers.entrySet().stream()
++              .filter(entry -> entry.getValue().amount().compareTo(min) == 0)
++              .map(entry -> Long.toString(entry.getKey()))
++              .toList(),
++          "representatives",
++          providers.values().stream().map(Representative::response).toList(),
++          "offerIds",
++          offerIds,
+           "sampleCounts",
+           map(
+               "providerCount",
+@@ -1213,9 +1581,9 @@ public class MarketOfferService {
+               "productCount",
+               products.size(),
+               "offerCount",
+-              offers,
++              offerIds.size(),
+               "observationCount",
+-              offers),
++              offerIds.size()),
+           "warnings",
+           size == 1 ? List.of("SINGLE_PROVIDER") : List.of(),
+           "krwSummary",
+@@ -1224,4 +1592,21 @@ public class MarketOfferService {
+           asOf);
+     }
+   }
++
++  private record Representative(
++      Map<String, Object> row, BigDecimal amount, List<Map<String, Object>> sources) {
++    Map<String, Object> response() {
++      return map(
++          "providerId", string(row.get("provider_id")),
++          "providerName", row.get("provider_name"),
++          "productId", string(row.get("product_id")),
++          "offerId", string(row.get("offer_id")),
++          "observationId", string(row.get("observation_id")),
++          "normalizationId", string(row.get("normalization_id")),
++          "priceUsdGpuHour", decimal(amount),
++          "collectedAt", time(row, "collected_at"),
++          "confirmedAt", time(row, "confirmed_at"),
++          "sources", sources);
++    }
++  }
+ }
+diff --git a/src/main/java/com/gpumarket/domain/simulation/controller/PricingRecommendationController.java b/src/main/java/com/gpumarket/domain/simulation/controller/PricingRecommendationController.java
+new file mode 100644
+index 0000000..7cb292d
+--- /dev/null
++++ b/src/main/java/com/gpumarket/domain/simulation/controller/PricingRecommendationController.java
+@@ -0,0 +1,200 @@
++package com.gpumarket.domain.simulation.controller;
++
++import com.gpumarket.domain.market.service.MarketForecastService;
++import com.gpumarket.domain.market.service.MarketOfferService;
++import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.MarketFilters;
++import com.gpumarket.domain.simulation.dto.IrrSimulationRequestDto;
++import com.gpumarket.domain.simulation.dto.IrrSimulationRequestDto.CostAssumptions;
++import com.gpumarket.domain.simulation.dto.IrrSimulationRequestDto.CostInput;
++import com.gpumarket.domain.simulation.dto.IrrSimulationRequestDto.MarketConstraint;
++import com.gpumarket.domain.simulation.service.IrrSimulationService;
++import com.gpumarket.global.api.ApiResponse;
++import com.gpumarket.global.api.InvalidRequestException;
++import jakarta.validation.Valid;
++import jakarta.validation.constraints.DecimalMax;
++import jakarta.validation.constraints.Digits;
++import jakarta.validation.constraints.NotNull;
++import jakarta.validation.constraints.Pattern;
++import jakarta.validation.constraints.Positive;
++import jakarta.validation.constraints.Size;
++import java.math.BigDecimal;
++import java.time.Instant;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RestController;
++
++@RestController
++public class PricingRecommendationController {
++  private static final List<String> SCENARIOS = List.of("보수", "기준", "낙관");
++  private static final List<String> QUANTILES = List.of("p10", "p50", "p90");
++  private final IrrSimulationService irr;
++  private final MarketForecastService forecasts;
++  private final MarketOfferService offers;
++
++  public PricingRecommendationController(
++      IrrSimulationService irr, MarketForecastService forecasts, MarketOfferService offers) {
++    this.irr = irr;
++    this.forecasts = forecasts;
++    this.offers = offers;
++  }
++
++  public record RecommendationRequest(
++      @NotNull @Valid IrrSimulationRequestDto calculation,
++      @NotNull @Pattern(regexp = "[1-9][0-9]{0,17}") String offerId,
++      @NotNull @Size(min = 3, max = 3)
++          List<@NotNull @Positive @DecimalMax("1") @Digits(integer = 1, fraction = 8) BigDecimal>
++              utilizations) {}
++
++  @PostMapping("/api/v1/price-recommendations")
++  public ApiResponse<Map<String, Object>> recommend(
++      @Valid @RequestBody RecommendationRequest request) {
++    var calculated = request.calculation();
++    var rates = request.utilizations();
++    if (rates.get(0).compareTo(rates.get(1)) > 0 || rates.get(1).compareTo(rates.get(2)) > 0) {
++      throw new InvalidRequestException("가동률은 보수, 기준, 낙관 순으로 입력해 주세요.");
++    }
++    var detail =
++        (Map<?, ?>) offers.detail(Long.parseLong(request.offerId()), Map.of()).get("offer");
++    String model = calculated.costInput().modelId();
++    if (!model.equals(detail.get("modelId"))) {
++      throw new InvalidRequestException("예측 오퍼의 GPU 모델이 입력한 모델과 다릅니다.");
++    }
++    var product = (Map<?, ?>) detail.get("product");
++    var contract = (Map<?, ?>) detail.get("contract");
++    String contractType = text(contract, "type");
++    String region = text(product, "regionCode");
++    if (region == null
++        || contractType == null
++        || "UNKNOWN".equals(contractType)
++        || product.get("gpuCount") == null
++        || text(product, "systemType") == null
++        || ((Number) product.get("gpuCount")).intValue()
++            != calculated.costInput().assumptions().gpuCount()) {
++      throw new InvalidRequestException("GPU 수와 리전·계약이 확인된 동일 구성의 오퍼를 선택해 주세요.");
++    }
++    var scope =
++        new MarketFilters(
++            model,
++            null,
++            text(detail, "providerType"),
++            text(product, "countryCode"),
++            region,
++            text(product, "systemType"),
++            text(product, "serviceOption"),
++            ((Number) product.get("gpuCount")).intValue(),
++            contractType,
++            (Integer) contract.get("months"),
++            text(contract, "productType"),
++            text(product, "intraNodeInterconnect"),
++            text(contract, "paymentOption"));
++    var market =
++        irr.simulate(
++                withUtilization(
++                    calculated, rates.get(1), MarketConstraint.MEDIAN, scope, List.of()))
++            .marketReference();
++    var forecast =
++        forecasts.forecast(Map.of("modelId", model, "offerId", request.offerId()), Instant.now());
++    var months = MarketForecastService.records(forecast.get("monthly"));
++    var scenarios = new ArrayList<Map<String, Object>>();
++    for (int i = 0; i < rates.size(); i++) {
++      var row = new LinkedHashMap<String, Object>();
++      row.put("scenario", SCENARIOS.get(i));
++      row.put("utilization", rates.get(i));
++      var untethered =
++          irr.simulate(
++              withUtilization(
++                  calculated,
++                  rates.get(i),
++                  MarketConstraint.NONE,
++                  null,
++                  calculated.candidatePrices()));
++      var floor = untethered.targetPrice().amount();
++      row.put("minimumForTarget", floor);
++      row.put("candidateResults", untethered.candidateResults());
++      row.put("assumptions", untethered.assumptions());
++      if (market.amount() == null || months.isEmpty() || floor == null) {
++        row.put("status", "UNAVAILABLE");
++        row.put(
++            "reason",
++            floor == null
++                ? "목표 IRR 최소가를 계산할 수 없습니다."
++                : market.amount() == null
++                    ? "출처 있는 현재 동일 조건의 비교 시세가 없습니다."
++                    : "12개월 실데이터 예측 범위를 확보하지 못했습니다.");
++      } else {
++        String quantile = QUANTILES.get(i);
++        var forecastCap = new BigDecimal(months.get(months.size() - 1).get(quantile).toString());
++        var cap = forecastCap.min(new BigDecimal(market.amount()));
++        var lower = new BigDecimal(floor);
++        row.put("forecastQuantile", quantile);
++        row.put("forecastCap", forecastCap.toPlainString());
++        row.put("upperBound", cap.toPlainString());
++        if (lower.compareTo(cap) > 0) {
++          row.put("status", "NO_FEASIBLE_PRICE");
++          row.put("reason", "목표 IRR 최소가가 현재 및 예측 시장 기준 상한을 초과합니다.");
++        } else {
++          row.put("status", "OK");
++          row.put("lowerBound", floor);
++          row.put(
++              "rangeCandidates",
++              irr.simulate(
++                      withUtilization(
++                          calculated,
++                          rates.get(i),
++                          MarketConstraint.NONE,
++                          null,
++                          List.of(lower, cap)))
++                  .candidateResults());
++        }
++      }
++      scenarios.add(row);
++    }
++    return ApiResponse.success(
++        Map.of(
++            "scenarios",
++            scenarios,
++            "forecast",
++            forecast,
++            "market",
++            market,
++            "method",
++            "하한은 목표 IRR 최소가, 상한은 현재 동일 조건 중앙값과 12개월 예측 분위수 중 낮은 값입니다.",
++            "disclaimer",
++            "사용자 입력 가동률의 분석입니다. 공개가격 기준이며 협상가·대형 고객 할인을 반영하지 않습니다. 3~5년 약정은 공개 자료가 제한적일 수 있습니다."));
++  }
++
++  private static IrrSimulationRequestDto withUtilization(
++      IrrSimulationRequestDto base,
++      BigDecimal rate,
++      MarketConstraint constraint,
++      MarketFilters filters,
++      List<BigDecimal> candidates) {
++    var input = base.costInput();
++    var old = input.assumptions();
++    var assumptions =
++        new CostAssumptions(
++            old.gpuCount(),
++            old.depreciationYears(),
++            rate,
++            old.annualInterestRate(),
++            old.interestRateType());
++    return new IrrSimulationRequestDto(
++        new CostInput(input.modelId(), input.items(), assumptions, input.inputFxKrwPerUsd()),
++        base.investment(),
++        base.analysisYears(),
++        base.residualValue(),
++        base.targetIrr(),
++        candidates,
++        constraint,
++        filters);
++  }
++
++  private static String text(Map<?, ?> map, String key) {
++    var value = map.get(key);
++    return value == null ? null : value.toString();
++  }
++}
+diff --git a/src/main/java/com/gpumarket/global/LocalSecurityConfig.java b/src/main/java/com/gpumarket/global/LocalSecurityConfig.java
+index b12ea89..b1ce44e 100644
+--- a/src/main/java/com/gpumarket/global/LocalSecurityConfig.java
++++ b/src/main/java/com/gpumarket/global/LocalSecurityConfig.java
+@@ -23,6 +23,10 @@ public class LocalSecurityConfig {
+                       "/v3/api-docs/**")
+                   .permitAll();
+               PublicApiAccess.permitPublicApis(auth);
++              auth.requestMatchers(HttpMethod.GET, "/api/v1/market/forecasts")
++                  .permitAll()
++                  .requestMatchers(HttpMethod.POST, "/api/v1/price-recommendations")
++                  .permitAll();
+               auth.anyRequest().denyAll();
+             })
+         .build();
+diff --git a/src/test/java/com/gpumarket/domain/market/ContractComparisonTest.java b/src/test/java/com/gpumarket/domain/market/ContractComparisonTest.java
+index 41740c7..9dc2a36 100644
+--- a/src/test/java/com/gpumarket/domain/market/ContractComparisonTest.java
++++ b/src/test/java/com/gpumarket/domain/market/ContractComparisonTest.java
+@@ -2,7 +2,9 @@ package com.gpumarket.domain.market;
+ 
+ import static org.assertj.core.api.Assertions.assertThat;
+ import static org.assertj.core.api.Assertions.assertThatThrownBy;
++import static org.mockito.ArgumentMatchers.any;
+ import static org.mockito.ArgumentMatchers.anyMap;
++import static org.mockito.ArgumentMatchers.eq;
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.when;
+ 
+@@ -11,10 +13,12 @@ import com.gpumarket.domain.market.repository.MarketOfferRepository;
+ import com.gpumarket.domain.market.service.MarketOfferService;
+ import java.math.BigDecimal;
+ import java.time.Instant;
++import java.time.ZoneOffset;
+ import java.time.temporal.ChronoUnit;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
++import java.util.stream.IntStream;
+ import org.junit.jupiter.api.Test;
+ import org.springframework.web.server.ResponseStatusException;
+ 
+@@ -23,6 +27,347 @@ class ContractComparisonTest {
+   private final MarketOfferService service =
+       new MarketOfferService(repository, mock(ExchangeService.class));
+ 
++  @Test
++  @SuppressWarnings("unchecked")
++  void rangeUsesOffersBeyondTheFirstFiveAndKeepsTiesWithVerifiedEvidence() {
++    var cutoff = Instant.parse("2026-11-18T15:00:00Z");
++    var asOf = cutoff.minus(1, ChronoUnit.MICROS).atOffset(ZoneOffset.UTC);
++    var observed = cutoff.minus(4, ChronoUnit.DAYS);
++    var amounts = List.of("9", "10", "11", "12", "13", "7", "7.0", "21", "30");
++    var rows =
++        IntStream.range(0, amounts.size())
++            .mapToObj(
++                index -> {
++                  var row =
++                      historicalOffer(
++                          index + 1L, index + 10L, "on_demand", amounts.get(index), observed);
++                  row.put("provider_id", index % 2L + 1);
++                  return row;
++                })
++            .toList();
++    when(repository.offers(
++            Map.of(
++                "modelId", 1L, "contractType", "ON_DEMAND", "asOf", asOf, "publicPriceOnly", true)))
++        .thenReturn(rows);
++    when(repository.comparablePriceEvidence(
++            eq(List.of(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L)), eq(asOf)))
++        .thenReturn(
++            IntStream.rangeClosed(1, 8)
++                .mapToObj(
++                    id ->
++                        Map.<String, Object>of(
++                            "check_id",
++                            (long) id,
++                            "evidence_id",
++                            (long) id,
++                            "source_url",
++                            "https://example.com/price"))
++                .toList());
++
++    var range =
++        service.publicPriceRange(Map.of("modelId", "1", "contractType", "ON_DEMAND"), cutoff);
++    assertThat(range).containsEntry("offerCount", 8).containsEntry("providerCount", 2L);
++    var compared = (List<Map<String, Object>>) range.get("comparedOffers");
++    assertThat(compared)
++        .extracting(row -> new BigDecimal((String) row.get("priceUsdGpuHour")))
++        .usingComparatorForType(BigDecimal::compareTo, BigDecimal.class)
++        .containsExactly(
++            new BigDecimal("7"),
++            new BigDecimal("7"),
++            new BigDecimal("9"),
++            new BigDecimal("10"),
++            new BigDecimal("11"),
++            new BigDecimal("12"),
++            new BigDecimal("13"),
++            new BigDecimal("21"));
++    for (var offer : compared) {
++      assertThat(offer)
++          .containsEntry("contractType", "ON_DEMAND")
++          .containsEntry("collectedAt", observed);
++      assertThat((List<?>) offer.get("sources")).hasSize(1);
++    }
++    var endpoints = (List<Map<String, Object>>) range.get("items");
++    assertThat(endpoints).hasSize(2);
++    assertThat(endpoints.get(0))
++        .containsEntry("endpoint", "MINIMUM")
++        .containsEntry("priceUsdGpuHour", "7");
++    assertThat((List<?>) endpoints.get(0).get("matches")).hasSize(2);
++    assertThat(endpoints.get(1))
++        .containsEntry("endpoint", "MAXIMUM")
++        .containsEntry("priceUsdGpuHour", "21");
++
++    var minimum =
++        service.publicMinimumPrice(Map.of("modelId", "1", "contractType", "ON_DEMAND"), cutoff);
++    assertThat(minimum)
++        .containsEntry("items", List.of(endpoints.get(0)))
++        .containsEntry("comparedOffers", compared);
++  }
++
++  @Test
++  void datedExtremaRequirePublicObservationsCollectedWithinTheDay() {
++    var from = Instant.now().minus(3, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS);
++    var until = from.plus(1, ChronoUnit.DAYS);
++    var asOf = until.minus(1, ChronoUnit.MICROS).atOffset(ZoneOffset.UTC);
++    when(repository.offers(
++            Map.of(
++                "modelId",
++                1L,
++                "asOf",
++                asOf,
++                "publicPriceOnly",
++                true,
++                "publicPriceFrom",
++                from.atOffset(ZoneOffset.UTC))))
++        .thenReturn(List.of());
++    assertThat(service.publicMinimumPrice(Map.of("modelId", "1"), from, until))
++        .containsEntry("items", List.of())
++        .doesNotContainKey("historicalReference");
++    org.mockito.Mockito.verify(repository)
++        .offers(
++            Map.of(
++                "modelId",
++                1L,
++                "asOf",
++                asOf,
++                "publicPriceOnly",
++                true,
++                "publicPriceFrom",
++                from.atOffset(ZoneOffset.UTC)));
++  }
++
++  @Test
++  @SuppressWarnings("unchecked")
++  void minimumUsesTheLatestStoredPublicPriceOfEachOfferWithoutAnAgeCutoff() {
++    var older = Instant.now().minus(4, ChronoUnit.DAYS);
++    var cheap = historicalOffer(1, 20, "on_demand", "7", older);
++    var expensive = historicalOffer(2, 21, "on_demand", "9", older);
++    when(repository.offers(anyMap())).thenReturn(List.of(cheap, expensive));
++    when(repository.comparablePriceEvidence(eq(List.of(1L, 2L)), any()))
++        .thenReturn(
++            List.of(
++                Map.of(
++                    "check_id", 1L, "evidence_id", 1L, "source_url", "https://example.com/cheap"),
++                Map.of(
++                    "check_id",
++                    2L,
++                    "evidence_id",
++                    2L,
++                    "source_url",
++                    "https://example.com/expensive")));
++    var result = service.publicMinimumPrice(Map.of("modelId", "1"), null);
++    assertThat((List<Map<String, Object>>) result.get("items"))
++        .singleElement()
++        .satisfies(
++            row ->
++                assertThat(row)
++                    .containsEntry("endpoint", "MINIMUM")
++                    .containsEntry("priceUsdGpuHour", "7"));
++    expensive.put("confirmed_at", Instant.now());
++    var current = service.publicMinimumPrice(Map.of("modelId", "1"), null);
++    assertThat(current).doesNotContainKey("historicalReference");
++    assertThat(current.get("items")).isEqualTo(result.get("items"));
++  }
++
++  @Test
++  void daySpecificContractComparisonUsesTheCollectionDateAndDoesNotFallBackToOtherDays() {
++    var start = Instant.now().minus(4, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS);
++    var end = start.plus(1, ChronoUnit.DAYS);
++    var params =
++        Map.of(
++            "modelId",
++            1L,
++            "productPriceTerms",
++            List.of(12, 36),
++            "publicPriceOnly",
++            true,
++            "publicPriceFrom",
++            start.atOffset(ZoneOffset.UTC),
++            "asOf",
++            end.minus(1, ChronoUnit.MICROS).atOffset(ZoneOffset.UTC));
++    when(repository.offers(params)).thenReturn(List.of());
++    var result = service.productPricesForTerms(Map.of("modelId", "1"), List.of(12, 36), start, end);
++    assertThat(result).containsEntry("items", List.of()).doesNotContainKey("historicalReference");
++    org.mockito.Mockito.verify(repository).offers(params);
++  }
++
++  @Test
++  void reportsOnlyOfferRemovalsWithAPriorPublicObservationAndOfficialProof() {
++    var from = Instant.parse("2026-11-15T15:00:00Z");
++    var until = from.plus(7, ChronoUnit.DAYS);
++    var observed = from.minus(1, ChronoUnit.DAYS);
++    var changed = from.plus(1, ChronoUnit.DAYS);
++    var asOf = until.minus(1, ChronoUnit.MICROS).atOffset(ZoneOffset.UTC);
++    var removed = historicalOffer(1, 20, "on_demand", "10", observed);
++    removed.put("disclosure_check_id", 11L);
++    removed.put("disclosure_checked_at", changed);
++    removed.put("disclosure_processing_status", "not_found");
++    var unverified = historicalOffer(2, 21, "on_demand", "8", observed);
++    unverified.put("disclosure_check_id", 12L);
++    unverified.put("disclosure_checked_at", changed);
++    unverified.put("disclosure_processing_status", "not_found");
++    var late = new HashMap<>(removed);
++    late.put("disclosure_checked_at", until);
++    when(repository.offers(Map.of("asOf", asOf, "publicPriceOnly", true)))
++        .thenReturn(List.of(removed, unverified, late));
++    when(repository.comparablePriceEvidence(List.of(1L, 2L), asOf))
++        .thenReturn(
++            List.of(
++                Map.of(
++                    "check_id",
++                    1L,
++                    "evidence_id",
++                    101L,
++                    "source_url",
++                    "https://example.com/public"),
++                Map.of(
++                    "check_id",
++                    2L,
++                    "evidence_id",
++                    102L,
++                    "source_url",
++                    "https://example.com/public2")));
++    when(repository.evidence(List.of(11L, 12L)))
++        .thenReturn(
++            List.of(
++                Map.of(
++                    "check_id",
++                    11L,
++                    "evidence_id",
++                    111L,
++                    "source_url",
++                    "https://example.com/changed",
++                    "evidence_role",
++                    "official",
++                    "primary_verified",
++                    true,
++                    "captured_at",
++                    changed),
++                Map.of(
++                    "check_id",
++                    12L,
++                    "evidence_id",
++                    112L,
++                    "source_url",
++                    "https://example.com/late",
++                    "evidence_role",
++                    "official",
++                    "primary_verified",
++                    true,
++                    "captured_at",
++                    until)));
++    assertThat(service.confirmedPriceRemovals(Map.of(), from, until))
++        .singleElement()
++        .satisfies(
++            item ->
++                assertThat(item).containsEntry("offerId", "1").containsEntry("checkedAt", changed));
++  }
++
++  @Test
++  @SuppressWarnings("unchecked")
++  void comparesTheLastKnownQuotesEvenWhenBothAreOlderThanTwoDays() {
++    var old = Instant.now().minus(4, ChronoUnit.DAYS);
++    var base = historicalOffer(1, 20, "on_demand", "10", old);
++    var contract = historicalOffer(2, 20, "commitment", "8", old.minus(1, ChronoUnit.HOURS));
++    when(repository.offers(anyMap())).thenReturn(List.of(base, contract));
++    when(repository.comparablePriceEvidence(eq(List.of(1L, 2L)), any()))
++        .thenReturn(
++            List.of(
++                Map.of(
++                    "check_id",
++                    1L,
++                    "evidence_id",
++                    1L,
++                    "source_url",
++                    "https://example.com/on-demand"),
++                Map.of(
++                    "check_id",
++                    2L,
++                    "evidence_id",
++                    2L,
++                    "source_url",
++                    "https://example.com/commitment")));
++
++    var result = service.productPricesForTerms(Map.of("modelId", "1"), List.of(12), null);
++    assertThat(result).doesNotContainKey("historicalReference");
++    var products = (List<Map<String, Object>>) result.get("items");
++    assertThat(products).hasSize(1);
++    assertThat((List<Map<String, Object>>) products.get(0).get("commitments"))
++        .singleElement()
++        .satisfies(row -> assertThat(row).containsEntry("discountPercent", "20"));
++  }
++
++  @Test
++  @SuppressWarnings("unchecked")
++  void pairsPublishedPricesOnlyWithinTheSameProductAtTheRequestedCutoff() {
++    var cutoff = Instant.parse("2026-11-18T15:00:00Z");
++    var storedAt = cutoff.minus(4, ChronoUnit.DAYS);
++    var base = historicalOffer(1, 20, "on_demand", "10", storedAt);
++    var oneYear = historicalOffer(2, 20, "commitment", "8", storedAt);
++    var threeYears = historicalOffer(3, 20, "commitment", "7", storedAt);
++    threeYears.put("commitment_months", 36);
++    var otherProduct = historicalOffer(4, 21, "commitment", "5", storedAt);
++    var unverifiedBase = historicalOffer(5, 21, "on_demand", "9", storedAt);
++    var incompatible = historicalOffer(6, 20, "commitment", "4", storedAt);
++    incompatible.put("minimum_quantity", BigDecimal.valueOf(16));
++    incompatible.put("minimum_quantity_unit", "GPU");
++    var asOf = cutoff.minus(1, ChronoUnit.MICROS).atOffset(ZoneOffset.UTC);
++    when(repository.offers(
++            eq(
++                Map.of(
++                    "modelId",
++                    1L,
++                    "asOf",
++                    asOf,
++                    "productPriceTerms",
++                    List.of(12, 36),
++                    "publicPriceOnly",
++                    true))))
++        .thenReturn(List.of(base, oneYear, threeYears, otherProduct, unverifiedBase, incompatible));
++    when(repository.comparablePriceEvidence(List.of(1L, 2L, 3L, 4L, 5L, 6L), asOf))
++        .thenReturn(
++            List.of(1L, 2L, 3L, 4L, 6L).stream()
++                .map(
++                    id ->
++                        Map.<String, Object>of(
++                            "check_id",
++                            id,
++                            "evidence_id",
++                            id,
++                            "source_url",
++                            "https://example.com/price"))
++                .toList());
++
++    var result =
++        service.productPricesForTerms(
++            Map.of("modelId", "1", "contractType", "COMMITMENT", "commitmentMonths", "12"),
++            List.of(12, 36),
++            cutoff);
++    var products = (List<Map<String, Object>>) result.get("items");
++    assertThat(products).hasSize(2);
++    var firstOffers = (List<Map<String, Object>>) products.get(0).get("commitments");
++    assertThat(firstOffers.get(0))
++        .containsEntry("discountPercent", "20")
++        .containsEntry("baseOfferId", "1");
++    assertThat(firstOffers.get(1))
++        .containsEntry("discountPercent", "30")
++        .containsEntry("months", 36);
++    assertThat(firstOffers.get(2)).containsEntry("discountReason", "CONDITIONS_NOT_COMPARABLE");
++    assertThat((List<?>) products.get(1).get("onDemand")).isEmpty();
++    assertThat(((List<Map<String, Object>>) products.get(1).get("commitments")).get(0))
++        .containsEntry("discountReason", "BASE_PRICE_MISSING");
++  }
++
++  private static Map<String, Object> historicalOffer(
++      long id, long productId, String type, String amount, Instant collectedAt) {
++    var row = offer(id, type, amount);
++    row.put("product_id", productId);
++    row.put("sku", "sku-" + productId);
++    row.put("observation_check_id", id);
++    row.put("collected_at", collectedAt);
++    row.put("confirmed_at", collectedAt);
++    return row;
++  }
++
+   @Test
+   void calculatesFirmDiscountAndKeepsSpotAndEstimateOutOfFirmDiscounts() {
+     var estimate = offer(4, "commitment", "0");
+diff --git a/src/test/java/com/gpumarket/domain/market/MarketCostImpactServiceTest.java b/src/test/java/com/gpumarket/domain/market/MarketCostImpactServiceTest.java
+new file mode 100644
+index 0000000..bd8c7b5
+--- /dev/null
++++ b/src/test/java/com/gpumarket/domain/market/MarketCostImpactServiceTest.java
+@@ -0,0 +1,113 @@
++package com.gpumarket.domain.market;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyMap;
++import static org.mockito.ArgumentMatchers.eq;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import com.gpumarket.domain.catalog.dto.CatalogResponseDto.GpuModelDto;
++import com.gpumarket.domain.market.repository.MarketCostIndexRepository;
++import com.gpumarket.domain.market.repository.MarketCostIndexRepository.IndexPoint;
++import com.gpumarket.domain.market.service.MarketCostImpactService;
++import com.gpumarket.domain.market.service.MarketCostImpactService.Comparison;
++import com.gpumarket.domain.market.service.MarketCostImpactService.Factor;
++import com.gpumarket.domain.market.service.MarketCostImpactService.Query;
++import com.gpumarket.domain.market.service.MarketHistoryService;
++import java.math.BigDecimal;
++import java.time.LocalDate;
++import java.util.List;
++import java.util.Map;
++import org.junit.jupiter.api.Test;
++
++class MarketCostImpactServiceTest {
++  private final MarketCostIndexRepository costs = mock(MarketCostIndexRepository.class);
++  private final MarketHistoryService history = mock(MarketHistoryService.class);
++  private final MarketCostImpactService service = new MarketCostImpactService(costs, history);
++  private final LocalDate from = LocalDate.parse("2026-08-24");
++
++  @Test
++  void comparesFullSpotWeeksAndReportsTheNextWeeksActualChange() {
++    when(costs.powerWeeks(eq("PJM WH Real Time Peak"), any(), any()))
++        .thenReturn(
++            List.of(index(from, 50), index(from.plusWeeks(1), 75), index(from.plusWeeks(2), 78)));
++    when(history.publicHistory(anyMap(), any()))
++        .thenReturn(
++            historyWith(
++                List.of(
++                    spot("2026-08-24T04:00:00Z", "4"),
++                    spot("2026-08-31T04:00:00Z", "5"),
++                    spot("2026-09-07T04:00:00Z", "6"),
++                    spot("2026-09-14T04:00:00Z", "9"),
++                    spot("2026-09-21T04:00:00Z", "7"),
++                    spot("2026-09-28T04:00:00Z", "8"))));
++    var result = service.analyze(query(Factor.POWER, "use1-az6", "SPOT", from, from.plusWeeks(6)));
++    var comparison = (Comparison) ((List<?>) result.get("items")).get(0);
++    assertThat(comparison.levels()).hasSize(3);
++    assertThat(comparison.rises()).hasSize(1);
++    assertThat(comparison.rises().get(0).reactions().get(1).changeUsd()).isEqualTo(1.0);
++    assertThat(comparison.rises().get(0).reactions().get(1).changePercent()).isEqualTo(20.0);
++    assertThat(comparison.lags()).allMatch(lag -> lag.sampleCount() == 1);
++    assertThat(result.get("featuredOffers")).isEqualTo(Map.of(Factor.POWER, "1"));
++    assertThat(comparison.lags().get(1).correlation()).isNull();
++  }
++
++  @Test
++  void usesMonthlyDramAndDoesNotMakeAChangeAcrossAMissingRentalMonth() {
++    var first = LocalDate.parse("2026-07-01");
++    when(costs.dramMonths(any(), any()))
++        .thenReturn(
++            List.of(
++                index(first, 100),
++                index(first.plusMonths(1), 115),
++                index(first.plusMonths(2), 120)));
++    when(history.publicHistory(anyMap(), any()))
++        .thenReturn(
++            historyWith(
++                List.of(spot("2026-07-02T08:00:00Z", "4"), spot("2026-09-03T08:00:00Z", "7"))));
++    var result =
++        service.analyze(query(Factor.DRAM, "us-east-1", "ON_DEMAND", first, first.plusMonths(3)));
++    var comparison = (Comparison) ((List<?>) result.get("items")).get(0);
++    assertThat(comparison.factor()).isEqualTo(Factor.DRAM);
++    assertThat(comparison.levels().get(1).gpu()).isNull();
++    assertThat(comparison.rises()).isEmpty();
++    assertThat(comparison.lags())
++        .allMatch(lag -> lag.sampleCount() == 0 && lag.correlation() == null);
++  }
++
++  private static IndexPoint index(LocalDate date, int value) {
++    return new IndexPoint(date, BigDecimal.valueOf(value), 4);
++  }
++
++  private static Query query(
++      Factor factor, String region, String contract, LocalDate start, LocalDate end) {
++    return new Query(
++        List.of(factor),
++        List.of(new GpuModelDto("1", "B200", null, null, null)),
++        "7",
++        List.of(region),
++        region,
++        contract,
++        null,
++        null,
++        start,
++        end);
++  }
++
++  private static Map<String, Object> spot(String timestamp, String price) {
++    return Map.of(
++        "collectedAt",
++        timestamp,
++        "effectiveFrom",
++        timestamp,
++        "effectiveUsdGpuHour",
++        price,
++        "status",
++        "OK");
++  }
++
++  private static Map<String, Object> historyWith(List<Map<String, Object>> points) {
++    return Map.of("series", List.of(Map.of("offerId", "1", "gpuCount", 8, "points", points)));
++  }
++}
+diff --git a/src/test/java/com/gpumarket/domain/market/MarketForecastServiceTest.java b/src/test/java/com/gpumarket/domain/market/MarketForecastServiceTest.java
+new file mode 100644
+index 0000000..6ea4de4
+--- /dev/null
++++ b/src/test/java/com/gpumarket/domain/market/MarketForecastServiceTest.java
+@@ -0,0 +1,60 @@
++package com.gpumarket.domain.market;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.ArgumentMatchers.anyMap;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++import com.gpumarket.domain.market.service.MarketForecastService;
++import com.gpumarket.domain.market.service.MarketHistoryService;
++import java.time.Instant;
++import java.time.YearMonth;
++import java.time.ZoneOffset;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Map;
++import org.junit.jupiter.api.Test;
++
++class MarketForecastServiceTest {
++  @Test
++  void forecastsVerifiedMonthlyPricesAndTestsAgainstLaterObservations() {
++    var history = mock(MarketHistoryService.class);
++    var points = new ArrayList<Map<String, Object>>();
++    YearMonth first = YearMonth.of(2024, 1);
++    for (int n = 0; n < 36; n++) {
++      points.add(
++          Map.of(
++              "effectiveUsdGpuHour",
++              "5.00",
++              "observationId",
++              "" + n,
++              "collectedAt",
++              first.plusMonths(n).atDay(15).atStartOfDay().toInstant(ZoneOffset.UTC),
++              "evidenceIds",
++              List.of("official")));
++    }
++    when(history.publicHistory(anyMap()))
++        .thenReturn(
++            Map.of(
++                "series", List.of(Map.of("offerId", "1", "points", points)),
++                "sources",
++                    List.of(
++                        Map.of("evidenceId", "official", "sourceUrl", "https://example.com/"))));
++
++    var forecast =
++        new MarketForecastService(history)
++            .forecast(
++                Map.of("modelId", "1", "offerId", "1"), Instant.parse("2027-01-01T00:00:00Z"));
++    assertThat(forecast.get("status")).isEqualTo("OK");
++    var results = MarketForecastService.records(forecast.get("monthly"));
++    assertThat(results).hasSize(12);
++    assertThat(results.stream().map(row -> row.get("p50").toString())).containsOnly("5");
++    assertThat(results.stream().map(row -> row.get("p10").toString())).containsOnly("5");
++    var backtest = (Map<?, ?>) forecast.get("backtest");
++    assertThat(backtest.get("status")).isEqualTo("EVALUATED");
++    assertThat(
++            MarketForecastService.records(backtest.get("horizons")).stream()
++                .map(row -> row.get("mae").toString()))
++        .containsOnly("0");
++  }
++}
+diff --git a/src/test/java/com/gpumarket/domain/market/MarketHistoryLimitTest.java b/src/test/java/com/gpumarket/domain/market/MarketHistoryLimitTest.java
+index 96b4941..10d0779 100644
+--- a/src/test/java/com/gpumarket/domain/market/MarketHistoryLimitTest.java
++++ b/src/test/java/com/gpumarket/domain/market/MarketHistoryLimitTest.java
+@@ -21,7 +21,10 @@ class MarketHistoryLimitTest {
+     var jdbc = mock(NamedParameterJdbcTemplate.class);
+     when(jdbc.queryForList(anyString(), anyMap()))
+         .thenReturn(Collections.nCopies(12_001, Map.of("check_id", 1L)));
+-    var controller = new MarketHistoryController(jdbc);
++    var controller =
++        new MarketHistoryController(
++            new com.gpumarket.domain.market.service.MarketHistoryService(
++                jdbc, mock(com.gpumarket.domain.market.repository.MarketOfferRepository.class)));
+ 
+     assertThatThrownBy(
+             () ->
+diff --git a/src/test/java/com/gpumarket/domain/market/MarketOfferPostgresIntegrationTest.java b/src/test/java/com/gpumarket/domain/market/MarketOfferPostgresIntegrationTest.java
+index 96ec57b..eeadf94 100644
+--- a/src/test/java/com/gpumarket/domain/market/MarketOfferPostgresIntegrationTest.java
++++ b/src/test/java/com/gpumarket/domain/market/MarketOfferPostgresIntegrationTest.java
+@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
+ import com.gpumarket.domain.market.dto.PublicPriceLookupDto.PublicPriceDto;
+ import com.gpumarket.domain.market.repository.MarketOfferRepository;
+ import com.gpumarket.domain.market.service.MarketOfferService;
++import java.time.Instant;
+ import java.time.OffsetDateTime;
++import java.util.List;
+ import java.util.Map;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+@@ -126,6 +128,9 @@ INSERT INTO provider VALUES (1, 'AWS', 'hyperscaler');
+ INSERT INTO gpu_model VALUES (1, 'B300', 'Blackwell');
+ INSERT INTO product (product_id, provider_id, gpu_model_id, region_code)
+   VALUES (1, 1, 1, 'us-east-1');
++UPDATE product SET country_code = 'US', system_type = 'instance', service_option = 'standard',
++  gpu_count = 8, vcpu_count = 32, ram_gb = 64, intra_node_interconnect = 'NVLink',
++  interconnect_status = 'confirmed';
+ INSERT INTO offer
+   SELECT id, 1, 'on_demand', 'On-demand' FROM generate_series(1, 105) AS id;
+ INSERT INTO collection_target VALUES (1, 1, 1, 1, 'us-east-1', 'on_demand');
+@@ -150,13 +155,59 @@ VALUES
+   (105, 1, 'official', false, 'https://example.org/price', now(), NULL);
+ """);
+       var repository = new MarketOfferRepository(new NamedParameterJdbcTemplate(jdbc));
+-      var prices =
+-          new MarketOfferService(repository, null)
+-              .publicPrices(Map.of("modelId", "1", "contractType", "ON_DEMAND"));
++      var service = new MarketOfferService(repository, null);
++      var filters = Map.of("modelId", "1", "contractType", "ON_DEMAND");
++      var prices = service.publicPrices(filters);
+       assertThat(prices.items()).extracting(PublicPriceDto::offerId).containsExactly("105");
+       assertThat(prices.items().get(0).sources().get(0))
+           .containsEntry("sourceUrl", "https://example.org/price");
+-      assertThat(prices.limited()).isFalse();
++      var group = (Map<?, ?>) ((List<?>) service.summary(filters).get("groups")).get(0);
++      assertThat(group.get("offerIds")).isEqualTo(List.of("105"));
++      var representative = (Map<?, ?>) ((List<?>) group.get("representatives")).get(0);
++      var source = (Map<?, ?>) ((List<?>) representative.get("sources")).get(0);
++      assertThat(source.get("sourceUrl")).isEqualTo("https://example.org/price");
++
++      jdbc.execute(
++          """
++UPDATE price_observation SET collected_at = '2024-11-15T03:00:00Z' WHERE observation_id = 105;
++UPDATE collection_check SET checked_at = '2024-11-15T03:00:00Z' WHERE check_id = 105;
++UPDATE source_evidence SET captured_at = '2024-11-15T03:00:00Z' WHERE check_id = 105;
++
++UPDATE price_observation SET collected_at = '2024-11-18T15:00:00Z' WHERE observation_id = 104;
++UPDATE collection_check SET checked_at = '2024-11-18T15:00:00Z' WHERE check_id = 104;
++UPDATE source_evidence SET captured_at = '2024-11-18T15:00:00Z',
++  verified_at = '2024-11-18T15:00:00Z' WHERE check_id = 104;
++""");
++      var before = Instant.parse("2024-11-18T15:00:00Z");
++      var history = service.publicPricesBefore(filters, before);
++      assertThat(history.items()).extracting(PublicPriceDto::offerId).containsExactly("105");
++      assertThat(history.items().get(0).sources().get(0))
++          .containsEntry("sourceUrl", "https://example.org/price");
++      var pastGroup =
++          (Map<?, ?>) ((List<?>) service.summaryBefore(filters, before).get("groups")).get(0);
++      assertThat(pastGroup.get("offerIds")).isEqualTo(List.of("105"));
++      assertThat(service.publicPricesBefore(filters, Instant.parse("2024-11-15T03:00:00Z")).items())
++          .isEmpty();
++
++      jdbc.execute(
++          """
++UPDATE price_observation
++SET collected_at = '2024-11-16T03:00:00Z'::timestamptz + observation_id * interval '1 hour'
++WHERE observation_id BETWEEN 2 AND 7;
++UPDATE collection_check c
++SET checked_at = p.collected_at FROM price_observation p
++WHERE c.check_id = p.observation_id AND c.check_id BETWEEN 2 AND 7;
++INSERT INTO source_evidence
++  (check_id, source_id, evidence_role, primary_verified, source_url, captured_at, verified_at)
++SELECT observation_id, 1, 'official', true, 'https://example.org/price', collected_at, NULL
++FROM price_observation WHERE observation_id BETWEEN 2 AND 7;
++""");
++      assertThat(service.publicPrices(filters).items())
++          .extracting(PublicPriceDto::offerId)
++          .containsExactly("104", "7", "6", "5", "4", "3", "2", "105");
++      assertThat(service.publicPricesBefore(filters, before).items())
++          .extracting(PublicPriceDto::offerId)
++          .containsExactly("7", "6", "5", "4", "3", "2", "105");
+     } finally {
+       ds.destroy();
+     }
+diff --git a/src/test/java/com/gpumarket/domain/market/MarketOfferSummaryTest.java b/src/test/java/com/gpumarket/domain/market/MarketOfferSummaryTest.java
+index 3c04f7d..0926936 100644
+--- a/src/test/java/com/gpumarket/domain/market/MarketOfferSummaryTest.java
++++ b/src/test/java/com/gpumarket/domain/market/MarketOfferSummaryTest.java
+@@ -1,6 +1,8 @@
+ package com.gpumarket.domain.market;
+ 
+ import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyList;
+ import static org.mockito.ArgumentMatchers.anyMap;
+ import static org.mockito.Mockito.mock;
+ import static org.mockito.Mockito.when;
+@@ -10,13 +12,81 @@ import com.gpumarket.domain.market.repository.MarketOfferRepository;
+ import com.gpumarket.domain.market.service.MarketOfferService;
+ import java.math.BigDecimal;
+ import java.time.Instant;
++import java.time.OffsetDateTime;
+ import java.time.temporal.ChronoUnit;
++import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+ import org.junit.jupiter.api.Test;
+ 
+ class MarketOfferSummaryTest {
++  @Test
++  void includesEveryLowestProviderAndUsesTheSuccessfulCheckForTheFreshnessBoundary() {
++    var repository = mock(MarketOfferRepository.class);
++    var service = new MarketOfferService(repository, mock(ExchangeService.class));
++    when(repository.offers(anyMap()))
++        .thenAnswer(
++            call -> {
++              Map<String, Object> filters = call.getArgument(0);
++              var asOf = ((OffsetDateTime) filters.get("asOf")).toInstant();
++              var boundary = asOf.minus(48, ChronoUnit.HOURS);
++              var offers = new ArrayList<Map<String, Object>>();
++              for (long id = 1; id <= 8; id++) {
++                String price =
++                    switch ((int) id) {
++                      case 1 -> "3.20";
++                      case 6 -> "3.200000";
++                      case 7, 8 -> "0.50";
++                      default -> "5.00";
++                    };
++                var row = row(id, "east", 32, "firm", boundary, price);
++                row.put("offer_id", id);
++                row.put("observation_id", id);
++                row.put("observation_check_id", id);
++                row.put("provider_name", "Provider " + id);
++                row.put("collected_at", boundary.minusSeconds(60));
++                if (id == 6) {
++                  row.put("processing_status", "collection_failed");
++                  row.put("checked_at", asOf);
++                }
++                if (id == 8) {
++                  row.put("confirmed_at", boundary.minusNanos(1));
++                }
++                offers.add(row);
++              }
++              return offers;
++            });
++    when(repository.comparablePriceEvidence(anyList(), any()))
++        .thenAnswer(
++            call -> {
++              List<Long> checkIds = call.getArgument(0);
++              return checkIds.stream()
++                  .filter(id -> id != 7L)
++                  .map(MarketOfferSummaryTest::source)
++                  .toList();
++            });
++
++    var summary = service.summary(Map.of("modelId", "1"));
++    var group = (Map<?, ?>) ((List<?>) summary.get("groups")).get(0);
++    assertThat(group.get("minimum")).isEqualTo("3.20");
++    assertThat(group.get("sampleCounts"))
++        .isEqualTo(
++            Map.of("providerCount", 6, "productCount", 6, "offerCount", 6, "observationCount", 6));
++    assertThat(group.get("lowestProviderIds")).isEqualTo(List.of("1", "6"));
++    assertThat((List<?>) group.get("representatives")).hasSize(6);
++    var representative = (Map<?, ?>) ((List<?>) group.get("representatives")).get(5);
++    var asOf = (Instant) summary.get("asOf");
++    assertThat(representative.get("collectedAt"))
++        .isEqualTo(asOf.minus(48, ChronoUnit.HOURS).minusSeconds(60));
++    assertThat(representative.get("confirmedAt")).isEqualTo(asOf.minus(48, ChronoUnit.HOURS));
++    var evidence = (Map<?, ?>) ((List<?>) representative.get("sources")).get(0);
++    assertThat(evidence.get("sourceUrl")).isEqualTo("https://example.org/pricing/6");
++    var excluded = (Map<?, ?>) summary.get("excludedSummary");
++    assertThat(excluded.get("staleOffers")).isEqualTo(1);
++    assertThat(excluded.get("missingEvidenceOffers")).isEqualTo(1);
++  }
++
+   @Test
+   void separatesRegionsAndConfigurationsAndCountsOnlyRecentExactPrices() {
+     var repository = mock(MarketOfferRepository.class);
+@@ -43,6 +113,8 @@ class MarketOfferSummaryTest {
+                 estimate,
+                 missing,
+                 unknownConfig));
++    when(repository.comparablePriceEvidence(anyList(), any()))
++        .thenReturn(List.of(source(1L), source(2L)));
+ 
+     var result = service.summary(Map.of("modelId", "1"));
+     var groups = (List<?>) result.get("groups");
+@@ -67,6 +139,8 @@ class MarketOfferSummaryTest {
+     row.put("provider_id", provider);
+     row.put("product_id", provider);
+     row.put("observation_id", 100L);
++    row.put("offer_id", provider);
++    row.put("observation_check_id", provider);
+     row.put("gpu_model_id", 1L);
+     row.put("provider_type", "GENERAL_CLOUD");
+     row.put("country_code", "US");
+@@ -86,4 +160,20 @@ class MarketOfferSummaryTest {
+     row.put("effective_usd_gpu_hour", new BigDecimal(amount));
+     return row;
+   }
++
++  private static Map<String, Object> source(long checkId) {
++    return Map.of(
++        "check_id",
++        checkId,
++        "evidence_id",
++        checkId + 200,
++        "source_id",
++        9L,
++        "evidence_role",
++        "official",
++        "source_name",
++        "Provider pricing",
++        "source_url",
++        "https://example.org/pricing/" + checkId);
++  }
+ }
