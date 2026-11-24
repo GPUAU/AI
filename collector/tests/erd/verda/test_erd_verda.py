@@ -284,6 +284,58 @@ class BackfillTests(VerdaDb):
         self.assertEqual([g["status"] for g in summary["groups"]], ["success", "validation_failed", "success"])
 
 
+class HourlyTests(VerdaDb):
+    """--hourly: 그날 첫 실행은 매일 수집과 같고, 이후 실행은 바뀐 오퍼만 관측을 추가한다."""
+
+    def hourly(self):
+        return verda.collect(self.conn, now=self.now, get_json=self.get_json, pause=lambda _s: None, hourly=True)
+
+    def count(self, sql, *args):
+        return self.conn.execute(sql, args).fetchone()[0]
+
+    def test_first_hourly_run_is_daily(self):
+        summary = self.hourly()
+        self.assertEqual([g["status"] for g in summary["groups"]], ["success", "success"])
+        self.assertIsNotNone(self.latest("8B300.240V", "FIN-01", "commitment", 24))
+
+    def test_later_run_adds_only_changed_offers(self):
+        self.collect()
+        before = self.count("SELECT count(*) FROM price_observation")
+        self.instances = instances("13.00")          # 1B300 FIN-01 온디맨드만 바뀜
+        self.clock[0] += timedelta(hours=1)
+        summary = self.hourly()
+        group, long_term = summary["groups"]
+        self.assertEqual((group["status"], group["changed"]), ("success", 1))
+        self.assertEqual(group["unchanged"], group["offers"] - 1)
+        self.assertTrue(group["slot"].startswith("hourly:2026-11-18T13"))
+        self.assertEqual(long_term["status"], "skipped")                 # 약정은 하루 1번
+        self.assertEqual(self.count("SELECT count(*) FROM price_observation"), before + 1)
+        self.assertEqual(self.latest("1B300.30V", "FIN-01", "on_demand")[0], Decimal("13.00"))
+        # 대상마다 점검 하나(변경 건수), 오퍼 미발견 판정은 하지 않는다
+        reasons = [r[0] for r in self.conn.execute(
+            "SELECT reason FROM collection_check WHERE run_id = %s AND check_scope = 'target'",
+            (summary["run_id"],)).fetchall()]
+        self.assertTrue(reasons and all(r.startswith("시간 단위 확인: 변경") for r in reasons))
+        self.assertEqual(self.count("SELECT count(*) FROM collection_check WHERE run_id = %s AND processing_status = "
+                                    "'not_found' AND check_scope = 'offer'", summary["run_id"]), 0)
+
+    def test_same_hour_rerun_skips(self):
+        self.collect()
+        self.clock[0] += timedelta(hours=1)
+        self.hourly()
+        self.instances = instances("13.00")
+        again = self.hourly()
+        self.assertEqual(again["groups"][0]["status"], "skipped")
+        self.assertEqual(self.latest("1B300.30V", "FIN-01", "on_demand")[0], Decimal("12.66"))
+
+    def test_change_over_30_percent_raises_spike(self):
+        self.collect()
+        self.instances = instances("20.00")          # 12.66 → 20.00 (+58%)
+        self.clock[0] += timedelta(hours=1)
+        self.hourly()
+        self.assertEqual(self.count("SELECT count(*) FROM collection_alert WHERE alert_type = 'price_spike'"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 

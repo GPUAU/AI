@@ -111,11 +111,13 @@ class TargetResult:
 
 # 매일 수집 ----------------------------------------------------------------------
 
-def collect(conn, *, trigger_type="manual", now=None, date=None, get_json=fetch.get_json, pause=time.sleep):
+def collect(conn, *, trigger_type="manual", now=None, date=None, get_json=fetch.get_json, pause=time.sleep,
+            hourly=False):
     """Verda 수집 1회. 인스턴스(온디맨드·스팟) 다음에 약정(할인율)을 처리한다. date: 수집 기준일(KST, 생략하면 오늘).
 
     같은 수집 기준일에 이미 적재한 묶음은 건너뛴다. 인스턴스 묶음을 건너뛰고 약정만 다시 적재할 때는
-    그날 적재한 온디맨드 관측을 약정 계산 기준으로 쓴다. 반환: 실행 요약."""
+    그날 적재한 온디맨드 관측을 약정 계산 기준으로 쓴다. hourly면 그날 적재가 끝난 인스턴스 가격을 시간대마다
+    다시 확인해 바뀐 오퍼만 관측을 추가한다(intraday). 반환: 실행 요약."""
     now = now or (lambda: datetime.now(timezone.utc))
     day = runs.collection_date(date, now)
     targets = db.enabled_targets(conn, PROVIDER)
@@ -132,7 +134,10 @@ def collect(conn, *, trigger_type="manual", now=None, date=None, get_json=fetch.
     long_term_done = bool(long_term_targets) and runs.group_done(conn, context, long_term_targets)
     try:
         if runs.group_done(conn, context, instance_targets + detect_targets):
-            outcomes.append(runs.skipped({"source": SOURCE_INSTANCES}))
+            if hourly:
+                outcomes.append(intraday(conn, runs.hourly(context, now()), instance_targets, get_json))
+            else:
+                outcomes.append(runs.skipped({"source": SOURCE_INSTANCES}))
             if long_term_targets and not long_term_done:
                 bases.update(saved_bases(conn, context, instance_targets))
         else:
@@ -187,6 +192,25 @@ def _fail(conn, context, targets, source, error):
     record_failure(conn, context, targets, processing, reason,
                    key=lambda t: runs.failure_key(context, t))
     return {"source": source, "status": processing, "reason": reason}
+
+
+def intraday(conn, context, targets, get_json):
+    """그날 daily 적재 뒤의 시간 단위 확인(context는 runs.hourly).
+
+    직전 관측과 시간당 요금이 다른 오퍼(그날 처음 보이는 오퍼 포함)만 관측을 추가한다(DR-01의 예외: Verda는 가격
+    이력 API가 없어 바뀐 시각을 잡으려고 자주 확인하되, 같은 값은 다시 쌓지 않는다). 대상마다 점검 하나에
+    '변경 N건·변경 없음 M건'을 남긴다. 약정·등재 확인·오퍼 미발견 판정은 하루 1번(daily)만 한다."""
+    if runs.group_done(conn, context, targets):
+        return runs.skipped({"source": SOURCE_INSTANCES}, context)
+    try:
+        rows = read_instances(get_json(INSTANCE_URL, REQUEST_CONFIG))
+        checked = context["now"]()
+        results = instance_results(targets, rows, INSTANCE_URL, None, "instance-types")
+        counts = write_changes(conn, context, targets, results, checked)
+        conn.commit()
+        return {"source": SOURCE_INSTANCES, "status": "success", "slot": runs.slot(context), **counts}
+    except EXPECTED_ERRORS as error:
+        return _fail(conn, context, targets, SOURCE_INSTANCES, error)
 
 
 # 원천 → 대상별 결과 (매일 수집·Wayback 공통) ---------------------------------------------
@@ -394,21 +418,7 @@ def write_group(conn, context, targets, results, checked_at, *, bases=None):
         for hit in result.hits:
             product_id, previous = db.ensure_product(conn, hit.product)
             offer_id = db.ensure_offer(conn, product_id, hit.offer)
-            check_id, created = db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "public",
-                                             "success", True, runs.offer_key(context, target, offer_id),
-                                             product_id=product_id, offer_id=offer_id)
-            if not created:
-                raise SourceInvalid(f"duplicate_offer_in_run: offer {offer_id}")
-            if previous is not None:
-                db.add_alert(conn, "config_changed", checked_at, f"config_changed:{product_id}", run_id=run_id,
-                             target_id=target["target_id"], check_id=check_id, source_id=target["source_id"],
-                             rule_version="DR-05", reason=f"상품 {previous}의 구성이 바뀌어 새 구성 버전 {product_id}로 적재")
-            ensure_spec_evidence(conn, context, target, product_id, hit.product["gpu_count"], checked_at)
-            db.add_evidence(conn, check_id, target["source_id"], "official", hit.source_url, hit.source_version,
-                            hit.excerpt, checked_at)
-            observation_id = write_observation(conn, context, offer_id, check_id, hit, checked_at, checked_at)
-            if hit.kind != "commitment":
-                check_spike(conn, context, target, offer_id, check_id, observation_id, checked_at)
+            observation_id = write_hit(conn, context, target, hit, checked_at, product_id, offer_id, previous)
             if bases is not None and hit.kind == "on_demand":
                 bases[product_id] = {"model": target["model_name"], "product": hit.product,
                                      "observation_id": observation_id, "hourly": hit.components[0]["amount"],
@@ -433,6 +443,66 @@ def write_group(conn, context, targets, results, checked_at, *, bases=None):
                          reason="이전에 확인한 오퍼가 이번 수집 범위에서 발견되지 않음")
             counts["offers_missing"] += 1
     return counts
+
+
+def write_hit(conn, context, target, hit, checked_at, product_id, offer_id, previous):
+    """오퍼 점검 + 근거 + 관측·환산 + 급변 점검. 반환: 관측 ID."""
+    run_id = context["run_id"]
+    check_id, created = db.add_check(conn, run_id, target["target_id"], "offer", checked_at, "public",
+                                     "success", True, runs.offer_key(context, target, offer_id),
+                                     product_id=product_id, offer_id=offer_id)
+    if not created:
+        raise SourceInvalid(f"duplicate_offer_in_run: offer {offer_id}")
+    if previous is not None:
+        db.add_alert(conn, "config_changed", checked_at, f"config_changed:{product_id}", run_id=run_id,
+                     target_id=target["target_id"], check_id=check_id, source_id=target["source_id"],
+                     rule_version="DR-05", reason=f"상품 {previous}의 구성이 바뀌어 새 구성 버전 {product_id}로 적재")
+    ensure_spec_evidence(conn, context, target, product_id, hit.product["gpu_count"], checked_at)
+    db.add_evidence(conn, check_id, target["source_id"], "official", hit.source_url, hit.source_version,
+                    hit.excerpt, checked_at)
+    observation_id = write_observation(conn, context, offer_id, check_id, hit, checked_at, checked_at)
+    if hit.kind != "commitment":
+        check_spike(conn, context, target, offer_id, check_id, observation_id, checked_at)
+    return observation_id
+
+
+def write_changes(conn, context, targets, results, checked_at):
+    """시간 단위 확인 적재(intraday). 바뀐 오퍼만 write_hit, 대상마다 점검 하나."""
+    counts = {"targets": len(targets), "offers": 0, "changed": 0, "unchanged": 0}
+    for target in targets:
+        result = results[target["target_id"]]
+        changed = unchanged = 0
+        for hit in result.hits:
+            product_id, previous = db.ensure_product(conn, hit.product)
+            offer_id = db.ensure_offer(conn, product_id, hit.offer)
+            if last_hourly_rate(conn, offer_id) == hit.components[0]["amount"]:
+                unchanged += 1
+                continue
+            write_hit(conn, context, target, hit, checked_at, product_id, offer_id, previous)
+            changed += 1
+        counts["offers"] += len(result.hits)
+        counts["changed"] += changed
+        counts["unchanged"] += unchanged
+        found = bool(result.hits)
+        note = f"시간 단위 확인: 변경 {changed}건, 변경 없음 {unchanged}건"
+        check_id, _ = db.add_check(conn, context["run_id"], target["target_id"], "target", checked_at,
+                                   "public" if found else "unknown", "success" if found else "not_found", True,
+                                   runs.target_key(context, target),
+                                   reason=note if found else f"{note}. {result.reason}")
+        db.add_evidence(conn, check_id, target["source_id"], "official", result.source_url, result.source_version,
+                        {"scope": scope(target), "offers_found": len(result.hits), "changed": changed,
+                         "unchanged": unchanged, **result.note}, checked_at)
+    return counts
+
+
+def last_hourly_rate(conn, offer_id):
+    """오퍼의 마지막 관측 시간당 요금(없으면 None)."""
+    row = conn.execute(
+        """SELECT pc.amount FROM price_observation ob
+           JOIN price_component pc ON pc.observation_id = ob.observation_id AND pc.component_type = 'hourly_rate'
+           WHERE ob.offer_id = %s ORDER BY ob.collected_at DESC, ob.observation_id DESC LIMIT 1""",
+        (offer_id,)).fetchone()
+    return row[0] if row else None
 
 
 def write_observation(conn, context, offer_id, check_id, hit, collected_at, calculated_at):

@@ -66,6 +66,8 @@ uv 없이 할 때: `python3.12 -m venv .venv && source .venv/bin/activate && pip
 python -m gpu_collector.erd init                  # 빈 DB면 DDL 적용, 이어서 seed 적용
 python -m gpu_collector.erd collect aws           # 매일 수집: aws | azure | verda | nebius | oracle | scaleway | fx(환율)
 python -m gpu_collector.erd collect aws --date 2026-11-20     # 수집 기준일 지정(KST, 생략하면 오늘)
+python -m gpu_collector.erd collect verda --hourly           # 시간 단위(verda·aws·nebius, 아래 참고)
+python -m gpu_collector.erd collect nebius --only nebius_spot_price_api   # 출처 고르기(aws·nebius)
 python -m gpu_collector.erd backfill aws --since 2023-07      # 과거 이력 (사업자별 옵션은 --help)
 python -m gpu_collector.erd backfill fx --since 2023-07-01    # 과거 환율(날짜는 YYYY-MM-DD, 하루 1,000회 제한)
 python -m gpu_collector.erd convert krw                       # USD 환산값을 원화로(원화 환산이 없는 행만)
@@ -79,6 +81,7 @@ python -m gpu_collector.erd report --model B300   # 최신 가격과 대상별 �
 ### 재실행·동시 실행
 
 - **같은 날 다시 실행해도 된다.** 매일 수집은 수집 기준일(`--date`, KST) 단위로 중복을 막는다. 그날 이미 적재한 묶음(사업자의 출처·리전 단위)은 원천을 호출하지 않고 건너뛰고(`skipped`), 실패한 묶음만 다시 적재한다.
+- **시간 단위 수집(`--hourly`, verda·aws·nebius).** 그날 첫 실행은 매일 수집과 같다. 이후 실행은 시간대 키(`hourly:{날짜}T{시}`)로 다시 처리하고, 같은 시간대에 다시 실행하면 건너뛴다. AWS·Nebius는 스팟 시계열의 새 기록만 적재하고(다른 출처는 하루 1번), Verda는 instance-types를 다시 읽어 직전 관측과 시간당 요금이 다른 오퍼만 관측을 추가한다. 가격이 같아도 실행마다 관측을 남기는 원칙(DR-01)의 예외로, Verda는 가격 이력 API가 없어 바뀐 시각을 잡으려고 자주 확인하되 같은 값은 다시 쌓지 않는다. 대상마다 '변경 N건·변경 없음 M건' 점검 하나를 남긴다. 약정(할인율)·등재 확인·오퍼 미발견 판정은 하루 1번(첫 실행)만 한다.
 - **같은 사업자는 동시에 하나만 실행된다.** 같은 사업자의 collect·backfill·specs가 이미 실행 중이면 아무것도 하지 않고 종료 코드 75로 끝난다(DB advisory lock).
 - **중단된 실행은 다음 실행이 정리한다.** 강제 종료로 `running`에 남은 실행은 같은 사업자의 다음 실행이 실패(`abandoned`)로 닫는다. SIGTERM을 받으면 진행 중인 묶음을 되돌리고 실행을 실패로 기록한다.
 - **일시적 원천 오류는 짧게 다시 시도한다.** 접속 실패·시간 초과와 429·5xx는 최대 3번(2초, 4초 간격, `Retry-After`가 있으면 그만큼) 시도한다. 403 등 거부는 다시 시도하지 않는다.

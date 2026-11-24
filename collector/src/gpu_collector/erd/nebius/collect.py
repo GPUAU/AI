@@ -118,14 +118,19 @@ class TargetResult:
 # 매일 수집 ----------------------------------------------------------------------
 
 def collect(conn, *, trigger_type="manual", now=None, date=None, get_text=None, get_json=fetch.get_json,
-            pause=time.sleep):
+            pause=time.sleep, only=None, hourly=False):
     """Nebius 수집 1회: 문서 가격표(온디맨드·약정 상태) → 스팟 API. date: 수집 기준일(KST, 생략하면 오늘).
 
-    같은 수집 기준일에 이미 적재한 묶음(문서 가격표·스팟)은 건너뛴다. 반환: 실행 요약."""
+    only: 처리할 출처 이름 모음(nebius_pricing_docs·nebius_spot_price_api, 생략하면 둘 다).
+    같은 수집 기준일에 이미 적재한 묶음(문서 가격표·스팟)은 건너뛴다. hourly면 그날 적재가 끝난 스팟을
+    시간대 키로 다시 처리해 마지막 기록 이후의 새 기록만 적재한다(문서 가격표는 하루 1번). 반환: 실행 요약."""
     now = now or (lambda: datetime.now(timezone.utc))
     day = runs.collection_date(date, now)
     get_text = get_text or fetch_text
-    targets = db.enabled_targets(conn, PROVIDER)
+    unknown = set(only or ()) - {SOURCE_DOCS, SOURCE_SPOT}
+    if unknown:
+        raise LookupError(f"Nebius 매일 수집 출처가 아님: {', '.join(sorted(unknown))}")
+    targets = [t for t in db.enabled_targets(conn, PROVIDER) if only is None or t["source_name"] in only]
     docs_targets_ = [t for t in targets if t["source_name"] == SOURCE_DOCS and t["contract_filter"]]
     detect_targets = [t for t in targets if t["source_name"] == SOURCE_DOCS and t["model_name"] in DETECT]
     spot_targets = [t for t in targets if t["source_name"] == SOURCE_SPOT]
@@ -151,20 +156,24 @@ def collect(conn, *, trigger_type="manual", now=None, date=None, get_text=None, 
                 outcomes.append({"source": SOURCE_DOCS, "status": "success", **counts})
             except EXPECTED_ERRORS as error:
                 outcomes.append(_fail(conn, context, docs_targets_ + detect_targets, SOURCE_DOCS, error))
-        if spot_targets and runs.group_done(conn, context, spot_targets):
-            outcomes.append(runs.skipped({"source": SOURCE_SPOT}))
+        spot_context = context
+        if spot_targets and runs.group_done(conn, context, spot_targets) and hourly:
+            spot_context = runs.hourly(context, now())
+        if spot_targets and runs.group_done(conn, spot_context, spot_targets):
+            outcomes.append(runs.skipped({"source": SOURCE_SPOT}, spot_context))
         elif spot_targets:
             try:
                 if docs_targets_:
                     pause(SECONDS_BETWEEN_REQUESTS)
                 checked = now()
                 start = series_start(conn, checked)
-                counts = write_spot_series(conn, context, spot_targets, fetch_series(get_json, pause, start), start,
-                                           checked)
+                counts = write_spot_series(conn, spot_context, spot_targets, fetch_series(get_json, pause, start),
+                                           start, checked)
                 conn.commit()
-                outcomes.append({"source": SOURCE_SPOT, "status": "success", **counts})
+                outcomes.append({"source": SOURCE_SPOT, "status": "success", "slot": runs.slot(spot_context),
+                                 **counts})
             except EXPECTED_ERRORS as error:
-                outcomes.append(_fail(conn, context, spot_targets, SOURCE_SPOT, error))
+                outcomes.append(_fail(conn, spot_context, spot_targets, SOURCE_SPOT, error))
     except Exception as error:
         conn.rollback()
         db.finish_run(conn, run_id, now(), "failed", f"unexpected: {type(error).__name__}")
@@ -450,6 +459,8 @@ def write_spot_series(conn, context, targets, items, start, checked_at):
                          **({"excluded": excluded} if excluded else {})}, checked_at)
         if not found:
             counts["not_found"] += 1
+        if context.get("intraday"):
+            continue        # 시간 단위 실행은 오퍼 미발견을 판정하지 않는다(다음 날 daily가 판정)
         for offer_id, product_id in sorted(db.previously_seen_offers(conn, target["target_id"]).items()):
             if offer_id in seen:
                 continue
