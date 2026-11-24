@@ -163,6 +163,17 @@ def aggregate(lines: list[MappedLine], currency: Currency | None, default_period
     for item, parent in included.items():
         if item not in yearly:
             drafts.append(CostItemDraft(item_type=item, status=ItemStatus.INCLUDED_IN_OTHER, included_in=parent))
+    # IDC의 상면료에는 공간이, 코로케이션(공간 임대)에는 랙·시설이 들어 있다.
+    # 한쪽만 청구됐으면 다른 쪽을 '포함'으로 표시해 BE가 누락으로 보지 않게 한다.
+    present = {d.item_type for d in drafts}
+    for have, other in ((ItemType.RACK_FACILITY, ItemType.RENT), (ItemType.RENT, ItemType.RACK_FACILITY)):
+        if have in yearly and other not in present:
+            drafts.append(CostItemDraft(item_type=other, status=ItemStatus.INCLUDED_IN_OTHER, included_in=have))
+            present.add(other)
+            issues.append(Issue(level=IssueLevel.INFO, code="SPACE_INCLUDED",
+                                message=("청구서에 상면 요금만 있어 공간 임대는 상면 요금에 포함된 것으로 표시했습니다."
+                                         if have == ItemType.RACK_FACILITY else
+                                         "청구서에 공간 임대 요금만 있어 랙·시설은 임대 요금에 포함된 것으로 표시했습니다.")))
     if currency is None and drafts:
         issues.append(Issue(level=IssueLevel.ERROR, code="NO_CURRENCY",
                             message="통화(원/달러)를 알 수 없습니다. 통화를 지정하세요."))

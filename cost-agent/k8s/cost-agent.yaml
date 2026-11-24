@@ -1,0 +1,90 @@
+# 원가 에이전트(cost-agent). FE nginx의 /agent/ 가 http://cost-agent.u1-3.svc.cluster.local:8000 으로 넘긴다.
+# 이미지: IMAGE_PLACEHOLDER 를 실제 이미지로 바꿔 적용한다.
+#   sed "s|IMAGE_PLACEHOLDER|harbor.skala-us.com/u1-3/cost-agent:<sha>|" k8s/cost-agent.yaml | kubectl apply -f -
+# Secret cost-agent-openai(키: OPENAI_API_KEY)는 미리 만들어 둔다. 값은 Git에 넣지 않는다.
+# Harbor pull 인증은 기본 ServiceAccount에 연결된 harbor-cred를 쓴다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cost-agent
+  namespace: u1-3
+  labels:
+    app: cost-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cost-agent
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: cost-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: cost-agent
+          image: IMAGE_PLACEHOLDER
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: MAPPER
+              value: auto
+            - name: OPENAI_MODEL
+              value: gpt-4o-mini
+            - name: SPRING_URL
+              value: http://backend.u1-3.svc.cluster.local
+            - name: TEMPLATE_DIR
+              value: /data/templates
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cost-agent-openai
+                  key: OPENAI_API_KEY
+          volumeMounts:
+            # MVP: 확정 템플릿은 Pod 재시작 시 사라진다. 유지하려면 PVC 또는 DB로 옮긴다.
+            - name: templates
+              mountPath: /data/templates
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      volumes:
+        - name: templates
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cost-agent
+  namespace: u1-3
+  labels:
+    app: cost-agent
+spec:
+  selector:
+    app: cost-agent
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
