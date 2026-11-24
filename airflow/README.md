@@ -102,6 +102,48 @@ docker run --rm --entrypoint bash -v "$PWD/collector/tests:/tests:ro" \
   gpu-collector-airflow:dev -c 'pip install -q --user pytest && cd / && python -m pytest -q /tests'
 ```
 
+## EKS 배포 (u1-3)
+
+`main`에 `airflow/`·`collector/`·`k8s/airflow/`가 바뀌어 들어가면 `.github/workflows/airflow-deploy.yml`이 배포한다(수동 실행 `workflow_dispatch`도 됨).
+
+```
+self-hosted runner(u1-3, 캠퍼스 Mac) → 이미지 빌드(linux/amd64) → Harbor u1-3/airflow:<sha>
+  → OIDC(gha-u1-3) → kubectl apply k8s/airflow → rollout status
+```
+
+| 파일 | 내용 |
+| --- | --- |
+| `k8s/airflow/configmap.yaml` | 비밀값 아닌 설정(LocalExecutor, `airflow` 스키마, `/airflow` 하위 경로, S3 로그, 로그인 사용자) |
+| `k8s/airflow/scheduler.yaml` | scheduler + task 실행. initContainer가 스키마 준비 → `db migrate` → pool 생성 |
+| `k8s/airflow/dag-processor.yaml` | DAG 파일 등록 |
+| `k8s/airflow/api-server.yaml` | UI·API·Execution API + Service |
+| `k8s/airflow/ingress.yaml` | `https://u1-3.skala-us.com/airflow`, 캠퍼스 IP만 |
+| `k8s/airflow/create-secrets.sh` | Secret 2개 만들기·갱신(개인 kubeconfig) |
+
+- 자원(limits): scheduler 600m/2.5Gi, dag-processor 150m/512Mi, api-server 300m/1Gi. 팀 쿼터 4코어에서 FE·BE·cost-agent(1.75)와 BE 롤링(+1)을 빼고 남는 몫이라 모두 `Recreate`(롤링 여유분 없음).
+- 모든 pod는 SA `s3-access`(S3 IRSA)를 쓰고, 이 SA에는 pull secret이 없어 `imagePullSecrets: harbor-cred`를 직접 둔다.
+- 메타 DB 접속 문자열은 `rds-credentials`의 `DATABASE_URL`(`?sslmode=require` 포함) 뒤에 `&options=-csearch_path%3Dairflow`를 붙인다.
+- api-server: Simple auth가 비밀번호 파일을 쓰기 모드로 열어서, Secret(읽기 전용)을 시작할 때 emptyDir로 복사해 쓴다.
+
+### 처음 한 번
+
+1. runner: AI 레포 Settings → Actions → Runners에 캠퍼스 Mac 등록(라벨 `u1-3`, 레포 밖 폴더, `./svc.sh install && ./svc.sh start`).
+2. 레포 Secrets: `HARBOR_USERNAME`·`HARBOR_PASSWORD`(Harbor robot 계정).
+3. 클러스터 Secret(배포 workflow 역할은 Secret을 못 만든다): `export KUBECONFIG=~/.kube/u1-3.yaml && bash k8s/airflow/create-secrets.sh`
+   - `airflow-secrets`: 수출입은행·Hyperstack·AWS(가격 조회 전용) 키, Slack 웹훅, JWT·Fernet(자동 생성)
+   - `airflow-auth`: UI 비밀번호(admin·team)
+   - 키를 바꿀 때도 다시 실행한 뒤 `rollout restart`(스크립트가 명령을 출력한다).
+
+### 배포 뒤 확인
+
+```bash
+kubectl -n u1-3 get pod -l app=airflow
+kubectl -n u1-3 logs deploy/airflow-scheduler -c migrate      # 스키마·마이그레이션
+open https://u1-3.skala-us.com/airflow                         # 캠퍼스에서, admin 로그인
+```
+
+DAG는 일시정지 상태로 올라온다. 로컬 적재를 멈추고 덤프를 RDS에 다시 적재한 뒤 켠다.
+
 ## DAG 추가
 
 사업자는 `COLLECT`에 한 줄 추가한다. 종료 코드 처리·재시도·실패 알림·가격 변동 알림이 같이 따라온다.
@@ -117,4 +159,4 @@ docker run --rm --entrypoint bash -v "$PWD/collector/tests:/tests:ro" \
 
 - Executor는 LocalExecutor. task는 scheduler pod 안에서 collector CLI를 subprocess로 실행한다(Role을 만들 수 없어 KubernetesPodOperator는 안 씀).
 - DAG와 collector 패키지는 한 이미지로 함께 배포한다(git-sync 안 씀).
-- 과거 데이터 백필은 DAG가 아니라 같은 이미지로 수동 Job을 띄운다(EKS 배포 이슈에서).
+- 과거 데이터 백필은 DAG가 아니라 같은 이미지로 수동 Job을 띄운다(필요해지면 매니페스트를 만든다).

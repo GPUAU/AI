@@ -1,0 +1,50 @@
+# dag-processor: 이미지 안 DAG 파일(/opt/airflow/dags)을 읽어 메타 DB에 등록한다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-dag-processor
+  namespace: u1-3
+  labels:
+    app: airflow
+    component: dag-processor
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: airflow
+      component: dag-processor
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: dag-processor
+    spec:
+      serviceAccountName: s3-access
+      imagePullSecrets:
+        - name: harbor-cred
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 50000
+        fsGroup: 0
+      containers:
+        - name: dag-processor
+          image: IMAGE_PLACEHOLDER
+          args: ["dag-processor"]
+          envFrom:
+            - configMapRef: {name: airflow-config}
+            - secretRef: {name: airflow-secrets}
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: rds-credentials, key: DATABASE_URL}}
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "$(DATABASE_URL)&options=-csearch_path%3Dairflow"
+          resources:
+            requests: {cpu: 50m, memory: 256Mi}
+            limits: {cpu: 150m, memory: 512Mi}
+          volumeMounts:
+            - {name: logs, mountPath: /opt/airflow/logs}
+      volumes:
+        - name: logs
+          emptyDir: {sizeLimit: 1Gi}

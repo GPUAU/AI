@@ -1,0 +1,88 @@
+# api-server: UI·REST API·Task Execution API(/airflow/execution). Ingress /airflow와 scheduler의 task가 이 Service로 온다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-api-server
+  namespace: u1-3
+  labels:
+    app: airflow
+    component: api-server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate                           # 쿼터 여유가 작아 롤링 여유분을 두지 않는다
+  selector:
+    matchLabels:
+      app: airflow
+      component: api-server
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: api-server
+    spec:
+      serviceAccountName: s3-access          # UI가 S3 로그를 읽는다
+      imagePullSecrets:
+        - name: harbor-cred
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 50000
+        fsGroup: 0
+      containers:
+        - name: api-server
+          image: IMAGE_PLACEHOLDER
+          # Simple auth가 비밀번호 파일을 쓰기 모드로 여는데 Secret 볼륨은 읽기 전용이라, 쓸 수 있는 곳에 복사해 둔다
+          args:
+            - bash
+            - -c
+            - cp /opt/airflow/auth-secret/passwords.json /opt/airflow/auth/passwords.json && exec airflow api-server
+          envFrom:
+            - configMapRef: {name: airflow-config}
+            - secretRef: {name: airflow-secrets}
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: rds-credentials, key: DATABASE_URL}}
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "$(DATABASE_URL)&options=-csearch_path%3Dairflow"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /airflow/api/v2/monitor/health, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet: {path: /airflow/api/v2/monitor/health, port: http}
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests: {cpu: 100m, memory: 512Mi}
+            limits: {cpu: 300m, memory: 1Gi}
+          volumeMounts:
+            - {name: auth, mountPath: /opt/airflow/auth}
+            - {name: auth-secret, mountPath: /opt/airflow/auth-secret, readOnly: true}
+      volumes:
+        - name: auth
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        - name: auth-secret
+          secret: {secretName: airflow-auth}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-api-server
+  namespace: u1-3
+  labels:
+    app: airflow
+    component: api-server
+spec:
+  selector:
+    app: airflow
+    component: api-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

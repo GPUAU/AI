@@ -1,0 +1,30 @@
+# Airflow 설정(비밀값 아님). 비밀값은 Secret airflow-secrets·airflow-auth·rds-credentials에서 받는다(airflow/README.md).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-config
+  namespace: u1-3
+  labels:
+    app: airflow
+data:
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__PARALLELISM: "4"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+  AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "True"
+  # 메타 테이블은 RDS u1_3 DB의 airflow 스키마(수집 테이블과 분리). 접속 문자열의 search_path는 Deployment env에서 붙인다
+  AIRFLOW__DATABASE__SQL_ALCHEMY_SCHEMA: airflow
+  # Ingress /airflow 하위 경로. task는 클러스터 안 Service로 Execution API를 부른다
+  AIRFLOW__API__BASE_URL: https://u1-3.skala-us.com/airflow
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/airflow/execution/
+  AIRFLOW__API__WORKERS: "1"
+  # 로그인: Simple auth manager. admin(관리자)·team(읽기 전용), 비밀번호는 Secret airflow-auth 파일
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin,team:viewer
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/auth/passwords.json
+  # task 로그는 S3(SA s3-access의 IRSA). aws_default는 키 없이 기본 자격(IRSA)을 쓴다
+  AIRFLOW__LOGGING__REMOTE_LOGGING: "True"
+  AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER: s3://skala-us-finalproj-u1-3/airflow-logs
+  AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID: aws_default
+  AIRFLOW_CONN_AWS_DEFAULT: '{"conn_type": "aws", "extra": {"region_name": "ap-northeast-2"}}'
+  # scheduler 상태 확인(/health, 8974)
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "True"

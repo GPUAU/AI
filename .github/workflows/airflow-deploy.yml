@@ -1,0 +1,55 @@
+# Airflow 배포: 이미지 빌드 → Harbor push → OIDC(gha-u1-3) → k8s/airflow 적용 → rollout 확인.
+# runner: AI 레포 self-hosted(u1-3 라벨, 캠퍼스 Mac). EKS API가 캠퍼스 IP만 받아 캠퍼스에서 돌아야 한다.
+# Secret(airflow-secrets·airflow-auth)은 이 역할로 만들 수 없어 개인 kubeconfig로 먼저 만든다(airflow/README.md).
+name: airflow-deploy
+on:
+  push:
+    branches: [main]
+    paths:
+      - "airflow/**"
+      - "collector/**"
+      - "k8s/airflow/**"
+      - ".github/workflows/airflow-deploy.yml"
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: airflow-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: [self-hosted, u1-3]
+    timeout-minutes: 60
+    env:
+      IMAGE: harbor.skala-us.com/u1-3/airflow:${{ github.sha }}
+      # runner Mac의 ~/.docker에 Harbor 로그인 정보를 남기지 않는다
+      DOCKER_CONFIG: ${{ runner.temp }}/docker
+    steps:
+      - uses: actions/checkout@v4
+      - name: Harbor login
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          echo "$HARBOR_PASSWORD" | docker login harbor.skala-us.com -u "$HARBOR_USERNAME" --password-stdin
+      - name: Build & push (linux/amd64)
+        run: |
+          docker buildx build --platform linux/amd64 -f airflow/Dockerfile \
+            --build-arg GIT_SHA=${{ github.sha }} -t "$IMAGE" --push .
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::430986759212:role/gha-u1-3
+          aws-region: ap-northeast-2
+      - name: Deploy
+        run: |
+          aws eks update-kubeconfig --name skala-us --region ap-northeast-2 --kubeconfig "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          for f in k8s/airflow/*.yaml; do sed "s|IMAGE_PLACEHOLDER|$IMAGE|g" "$f"; echo "---"; done | kubectl apply -f -
+          for d in airflow-api-server airflow-scheduler airflow-dag-processor; do
+            kubectl -n u1-3 rollout status "deployment/$d" --timeout=15m
+          done
+      - name: Harbor logout
+        if: always()
+        run: docker logout harbor.skala-us.com || true
