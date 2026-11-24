@@ -10,7 +10,7 @@ import uuid
 from typing import Protocol
 
 from .mapping.llm import LLMMappingError
-from .mapping.rules import RulesMapper
+from .mapping.rules import RulesMapper, detect_period
 from .mapping.templates import TemplateStore, apply_template, fingerprint, template_from_lines
 from .models import (
     BillDraft,
@@ -19,8 +19,10 @@ from .models import (
     ExtractedDocument,
     Issue,
     IssueLevel,
+    LLMDisclosure,
     LineRole,
     MappedLine,
+    Period,
     RowMapping,
 )
 from .validation import aggregate, check_coverage, check_lines, reconcile
@@ -69,6 +71,12 @@ class BillService:
                 used = self.fallback.name
         if mapping.currency is None:
             mapping = mapping.model_copy(update={"currency": doc.currency_hint})
+        # 청구 기간은 숫자를 가리기 전 원문에서 코드가 판단한다 (LLM은 가려진 날짜를 볼 수 없음)
+        period = detect_period(doc)
+        if period and period != mapping.default_period:
+            mapping = mapping.model_copy(update={"default_period": period})
+        elif mapping.default_period is None:
+            mapping = mapping.model_copy(update={"default_period": Period.MONTH})
         draft_id = uuid.uuid4().hex[:12]
         self._docs[draft_id] = doc
         self._mappings[draft_id] = mapping
@@ -134,9 +142,13 @@ class BillService:
         rec, rec_issues = reconcile(lines, mapping.currency)
         items, agg_issues = aggregate(lines, mapping.currency, mapping.default_period)
         all_issues = issues + check_lines(lines) + rec_issues + check_coverage(lines) + agg_issues
+        missing = [t for i in all_issues if i.code == "MISSING_CORE_ITEM" for t in i.items]
+        llm = (LLMDisclosure(destination=mapping.llm_destination or "LLM", masked=bool(mapping.llm_masked),
+                             sent=mapping.llm_input) if mapping.llm_input else None)
         return BillDraft(
             id=draft_id, file_name=doc.file_name, fingerprint=fp, mapper=used,
             vendor=mapping.vendor, currency=mapping.currency, period=mapping.default_period,
             lines=lines, reconciliation=rec, cost_items=items, issues=all_issues,
             needs_review=any(i.level in (IssueLevel.ERROR, IssueLevel.WARNING) for i in all_issues),
+            missing_items=missing, llm=llm,
         )

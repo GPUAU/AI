@@ -102,7 +102,7 @@ def check_coverage(lines: list[MappedLine]) -> list[Issue]:
     issues = []
     for name, types in BILL_CORE_ITEMS.items():
         if not present.intersection(types):
-            issues.append(Issue(level=IssueLevel.WARNING, code="MISSING_CORE_ITEM",
+            issues.append(Issue(level=IssueLevel.WARNING, code="MISSING_CORE_ITEM", items=list(types),
                                 message=f"청구서에 '{name}' 비용이 없습니다. 다른 계약에 포함됐거나 별도 청구인지 확인하세요. "
                                         "큰 비용이 빠지면 원가 전체를 믿을 수 없습니다."))
     issues.append(Issue(level=IssueLevel.INFO, code="ACQUISITION_OUTSIDE_BILL",

@@ -12,6 +12,7 @@ from typing import Callable, Protocol
 from pydantic import ValidationError
 
 from ..models import DocumentMapping, ExtractedDocument, ItemType, LineRole, Period
+from ..privacy import mask_cells, sensitive_terms
 
 MAX_ROWS_FOR_LLM = 250
 
@@ -28,6 +29,8 @@ ITEM_GUIDE = """\
 
 SYSTEM_PROMPT = f"""너는 데이터센터(IDC) 청구서를 원가 항목으로 분류하는 도우미다.
 입력은 엑셀에서 읽은 줄 목록이다. 각 줄: id, cells(칸 글자 배열, 0부터 번호), number_cols(숫자가 있는 칸 번호).
+보안을 위해 숫자는 가려져 있다: 숫자 칸은 "#NUM", 글자 속 숫자는 "#", 고객·사업자명은 "[가림]". 가려진 값을 추측하지 않는다.
+금액 칸은 머리글(금액·청구액·Amount 등)과 위치로 판단한다.
 
 각 줄마다 판단해서 JSON으로만 답한다.
 1. role: COST(원가 항목) / SUBTOTAL(소계·공급가액) / TOTAL(청구 총액) / TAX(부가세) / DISCOUNT(할인) / IGNORE(제목·머리글·메모·숫자 없는 줄)
@@ -87,10 +90,11 @@ class LLMMappingError(RuntimeError):
     pass
 
 
-def openai_completion(api_key: str, model: str, timeout: float = 60.0) -> Completion:
+def openai_completion(api_key: str, model: str, timeout: float = 60.0, base_url: str | None = None) -> Completion:
+    """OpenAI 또는 OpenAI 호환 서버(사내 sLLM: vLLM·Ollama 등)를 부른다. base_url이 있으면 그 서버로만 보낸다."""
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key, timeout=timeout)
+    client = OpenAI(api_key=api_key or "not-needed", timeout=timeout, base_url=base_url or None)
 
     def complete(system: str, user: str, schema: dict) -> str:
         resp = client.chat.completions.create(
@@ -107,24 +111,32 @@ def openai_completion(api_key: str, model: str, timeout: float = 60.0) -> Comple
     return complete
 
 
-def build_user_prompt(doc: ExtractedDocument, only_refs: set[str] | None = None) -> str:
+def build_user_prompt(doc: ExtractedDocument, only_refs: set[str] | None = None, mask: bool = True) -> str:
+    """LLM에 보낼 내용. mask=True면 금액·숫자·식별자를 가리고 파일명을 보내지 않는다."""
+    terms = sensitive_terms() if mask else []
     lines = []
     for r in doc.rows[:MAX_ROWS_FOR_LLM]:
         if only_refs is not None and r.ref not in only_refs:
             continue
-        lines.append(json.dumps({"id": r.ref, "cells": r.cells, "number_cols": sorted(r.numbers)}, ensure_ascii=False))
-    return f"파일: {doc.file_name}\n시트: {', '.join(doc.sheets)}\n줄 목록(JSON Lines):\n" + "\n".join(lines)
+        cells = mask_cells(r.cells, set(r.numbers), terms) if mask else r.cells
+        lines.append(json.dumps({"id": r.ref, "cells": cells, "number_cols": sorted(r.numbers)}, ensure_ascii=False))
+    head = f"시트: {', '.join(doc.sheets)}" if mask else f"파일: {doc.file_name}\n시트: {', '.join(doc.sheets)}"
+    return head + "\n줄 목록(JSON Lines):\n" + "\n".join(lines)
 
 
 class LLMMapper:
     name = "llm"
 
-    def __init__(self, complete: Completion | Callable[[str, str, dict], str]):
+    def __init__(self, complete: Completion | Callable[[str, str, dict], str], mask: bool = True,
+                 destination: str = "OpenAI"):
         self._complete = complete
+        self.mask = mask
+        self.destination = destination
 
     def map(self, doc: ExtractedDocument, only_refs: set[str] | None = None) -> DocumentMapping:
+        prompt = build_user_prompt(doc, only_refs, self.mask)
         try:
-            raw = self._complete(SYSTEM_PROMPT, build_user_prompt(doc, only_refs), RESPONSE_SCHEMA)
+            raw = self._complete(SYSTEM_PROMPT, prompt, RESPONSE_SCHEMA)
         except Exception as exc:  # noqa: BLE001 - 인증·네트워크·한도 오류는 규칙 매퍼로 대체한다
             raise LLMMappingError(f"AI 호출 실패({type(exc).__name__})") from exc
         try:
@@ -144,4 +156,5 @@ class LLMMapper:
                 m = m.model_copy(update={"amount_col": None, "confidence": min(m.confidence, 0.3),
                                          "reason": m.reason + " (지정한 금액 칸에 숫자가 없음)"})
             cleaned.append(m)
-        return mapping.model_copy(update={"rows": cleaned})
+        return mapping.model_copy(update={"rows": cleaned, "llm_input": prompt, "llm_destination": self.destination,
+                                          "llm_masked": self.mask})

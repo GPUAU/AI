@@ -27,6 +27,8 @@ def load_env_file(path: Path = ENV_FILE) -> None:
 class Settings:
     openai_api_key: str | None
     openai_model: str
+    openai_base_url: str | None  # 사내 sLLM(OpenAI 호환) 주소. 있으면 외부 OpenAI 대신 여기로 보낸다
+    llm_mask: bool  # 금액·숫자·식별자 가림 (기본 켬)
     mapper: str  # auto | openai | rules
     spring_url: str
     template_dir: str
@@ -38,6 +40,8 @@ class Settings:
         return cls(
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
+            llm_mask=os.getenv("LLM_MASK", "true").lower() not in ("0", "false", "off", "no"),
             mapper=os.getenv("MAPPER", "auto").lower(),
             spring_url=os.getenv("SPRING_URL", "http://backend"),
             template_dir=os.getenv("TEMPLATE_DIR", "./data/templates"),
