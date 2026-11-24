@@ -71,3 +71,13 @@ def test_schema_is_strict():
     assert RESPONSE_SCHEMA["additionalProperties"] is False
     item = RESPONSE_SCHEMA["properties"]["rows"]["items"]
     assert set(item["required"]) == set(item["properties"])
+
+
+def test_llm_api_error_falls_back_to_rules(tmp_path, doc):
+    def boom(*_):
+        raise RuntimeError("401 project archived")
+    s = BillService(LLMMapper(boom), TemplateStore(tmp_path))
+    draft = s.ingest(doc("b"))
+    assert draft.mapper == "rules"
+    msg = next(i.message for i in draft.issues if i.code == "LLM_FAILED")
+    assert "RuntimeError" in msg and "archived" not in msg

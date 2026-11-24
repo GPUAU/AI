@@ -123,7 +123,10 @@ class LLMMapper:
         self._complete = complete
 
     def map(self, doc: ExtractedDocument, only_refs: set[str] | None = None) -> DocumentMapping:
-        raw = self._complete(SYSTEM_PROMPT, build_user_prompt(doc, only_refs), RESPONSE_SCHEMA)
+        try:
+            raw = self._complete(SYSTEM_PROMPT, build_user_prompt(doc, only_refs), RESPONSE_SCHEMA)
+        except Exception as exc:  # noqa: BLE001 - 인증·네트워크·한도 오류는 규칙 매퍼로 대체한다
+            raise LLMMappingError(f"AI 호출 실패({type(exc).__name__})") from exc
         try:
             data = json.loads(raw)
             # 스키마의 "ref" 필드 = 입력의 id

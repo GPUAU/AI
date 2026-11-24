@@ -171,8 +171,9 @@ def aggregate(lines: list[MappedLine], currency: Currency | None, default_period
             drafts.append(CostItemDraft(item_type=other, status=ItemStatus.INCLUDED_IN_OTHER, included_in=have))
             present.add(other)
             issues.append(Issue(level=IssueLevel.INFO, code="SPACE_INCLUDED",
-                                message=f"청구서에 {'상면' if have == ItemType.RACK_FACILITY else '공간 임대'} 요금만 있어 "
-                                        f"{'공간 임대' if other == ItemType.RENT else '랙·시설'}는 그 요금에 포함된 것으로 표시했습니다."))
+                                message=("청구서에 상면 요금만 있어 공간 임대는 상면 요금에 포함된 것으로 표시했습니다."
+                                         if have == ItemType.RACK_FACILITY else
+                                         "청구서에 공간 임대 요금만 있어 랙·시설은 임대 요금에 포함된 것으로 표시했습니다.")))
     if currency is None and drafts:
         issues.append(Issue(level=IssueLevel.ERROR, code="NO_CURRENCY",
                             message="통화(원/달러)를 알 수 없습니다. 통화를 지정하세요."))
