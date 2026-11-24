@@ -13,7 +13,20 @@ sys.path.insert(0, str(DAGS))
 
 import common  # noqa: E402
 
-PROVIDERS = ["aws", "azure", "hyperstack", "nebius", "oracle", "scaleway", "verda"]
+AWS_ENV = {"AWS_ACCESS_KEY_ID": "COLLECTOR_AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY": "COLLECTOR_AWS_SECRET_ACCESS_KEY"}
+# dag_id: (collect task 명령들, cron)
+EXPECTED = {
+    "collect_aws": ([["collect", "aws", "--only", "aws_ec2_pricing_api"],
+                     ["collect", "aws", "--only", "aws_savings_plans_api"]], "10 12 * * *"),
+    "collect_aws_spot": ([["collect", "aws", "--only", "aws_ec2_spot_api", "--hourly"]], "40 * * * *"),
+    "collect_azure": ([["collect", "azure"]], "10 12 * * *"),
+    "collect_verda": ([["collect", "verda", "--hourly"]], "10 * * * *"),
+    "collect_nebius": ([["collect", "nebius", "--only", "nebius_pricing_docs"]], "10 12 * * *"),
+    "collect_nebius_spot": ([["collect", "nebius", "--only", "nebius_spot_price_api", "--hourly"]], "40 * * * *"),
+    "collect_oracle": ([["collect", "oracle"]], "10 12 * * *"),
+    "collect_scaleway": ([["collect", "scaleway"]], "10 12 * * *"),
+    "collect_hyperstack": ([["collect", "hyperstack"]], "10 12 * * *"),
+}
 
 
 @pytest.fixture(scope="module")
@@ -24,35 +37,29 @@ def dagbag():
 
 def test_dags_import(dagbag):
     assert dagbag.import_errors == {}
-    assert sorted(dagbag.dags) == sorted([f"collect_{p}" for p in PROVIDERS] + ["gpu_fx_krw"])
+    assert sorted(dagbag.dags) == sorted([*EXPECTED, "gpu_fx_krw"])
 
 
-def test_provider_dags(dagbag):
-    for provider in PROVIDERS:
-        dag = dagbag.dags[f"collect_{provider}"]
-        assert dag.catchup is False and dag.max_active_runs == 1
-        if provider == "aws":
-            continue
-        (op,) = dag.tasks
-        assert op.command == ["collect", provider] and op.pool == "collector"
-        assert op.retries == 3
-
-
-def test_aws_split_by_source(dagbag):
-    dag = dagbag.dags["collect_aws"]
-    pricing, savings, spot = (dag.get_task(t) for t in ("pricing", "savings_plans", "spot"))
-    assert pricing.command == ["collect", "aws", "--only", "aws_ec2_pricing_api"]
-    assert savings.command == ["collect", "aws", "--only", "aws_savings_plans_api"]
-    assert spot.command == ["collect", "aws", "--only", "aws_ec2_spot_api"]
-    # 같은 사업자 잠금 때문에 순서대로, 앞이 실패해도 다음은 돈다
-    assert pricing.downstream_task_ids == {"savings_plans", "check_failures"}
-    assert savings.downstream_task_ids == {"spot", "check_failures"}
-    assert pricing.trigger_rule == "all_success" and savings.trigger_rule == spot.trigger_rule == "all_done"
-    assert dag.get_task("check_failures").upstream_task_ids == {"pricing", "savings_plans", "spot"}
-    for op in (pricing, savings, spot):
-        assert op.pool == "collector" and op.retries == 3
-        assert op.env_map == {"AWS_ACCESS_KEY_ID": "COLLECTOR_AWS_ACCESS_KEY_ID",
-                              "AWS_SECRET_ACCESS_KEY": "COLLECTOR_AWS_SECRET_ACCESS_KEY"}
+@pytest.mark.parametrize("dag_id", sorted(EXPECTED))
+def test_collect_dags(dagbag, dag_id):
+    commands, cron = EXPECTED[dag_id]
+    dag = dagbag.dags[dag_id]
+    assert dag.catchup is False and dag.max_active_runs == 1 and dag.timetable.summary == cron
+    collects = [t for t in dag.tasks if isinstance(t, common.CollectorOperator)]
+    assert [t.command for t in collects] == commands
+    hourly = "--hourly" in commands[0]
+    for i, op in enumerate(collects):
+        assert op.pool == "collector"
+        assert op.retries == (1 if hourly else 3)
+        assert op.trigger_rule == ("all_success" if i == 0 else "all_done")   # 앞 출처가 실패해도 다음 출처는 수집
+        assert op.env_map == (AWS_ENV if dag_id.startswith("collect_aws") else {})
+    for upstream, downstream in zip(collects, collects[1:]):                 # 같은 사업자 잠금 때문에 순서대로
+        assert downstream.task_id in upstream.downstream_task_ids
+    notify, check = dag.get_task("notify_changes"), dag.get_task("check_failures")
+    assert collects[-1].downstream_task_ids == {"notify_changes", "check_failures"}
+    assert notify.trigger_rule == "all_done"
+    assert check.upstream_task_ids == {*(t.task_id for t in collects), "notify_changes"}
+    assert check.trigger_rule == "one_failed" and check.retries == 0 and not check.on_failure_callback
 
 
 def test_fx_krw_dag(dagbag):
@@ -125,3 +132,32 @@ def test_summary_problems_expand():
     assert lines[0].startswith("⚠️") and "환율 기준일 없음" in lines[0]
     assert "관측 없음: AWS" in lines and "실패 점검: AWS 2" in lines
     assert "알림 7건: collection_failed 7" in lines and lines[-1] == " - 외 2건"
+
+
+def test_changes_text_none_when_nothing_changed():
+    assert common.changes_text("Verda", {"list": [], "spikes": []}) is None
+
+
+def test_changes_text_lists_spikes_then_list_changes():
+    from decimal import Decimal as D
+    spikes = [("AWS", "spot", None, "p5.48xlarge", "use1-az2", "실효 단가 3.1 → 4.5 (+45.2%)")]
+    listed = [("AWS", "on_demand", None, "p5.48xlarge", "us-east-1", D("6.88"), D("7.20")),
+              ("AWS", "commitment", 12, "p5.48xlarge", "us-east-1", D("4.10"), D("3.90"))]
+    lines = common.changes_text("AWS", {"list": listed, "spikes": spikes}).splitlines()
+    assert lines[0] == "🚨 AWS 급변 1건 (직전 대비 ±30% 초과)"
+    assert lines[1] == " - p5.48xlarge use1-az2 스팟: 실효 단가 3.1 → 4.5 (+45.2%)"
+    assert lines[2] == "💲 AWS 정가 변동 2건 (USD/GPU·시간)"
+    assert lines[3] == " - p5.48xlarge us-east-1 온디맨드: $6.88 → $7.20 (+4.7%)"
+    assert lines[4] == " - p5.48xlarge us-east-1 약정 12개월: $4.10 → $3.90 (-4.9%)"
+
+
+def test_summary_price_change_lines():
+    from decimal import Decimal as D
+    changes = [("Nebius", "spot", None, "gpu-h100 8gpu", "eu-north1", D("0.79"), D("2.07")),
+               ("Nebius", "spot", None, "gpu-h200 8gpu", "eu-north1", D("2.00"), D("2.10")),
+               ("Verda", "on_demand", None, "1B300.30V", "FIN-01", D("13.05"), D("13.18"))]
+    lines = common.summary_text(summary(changes=changes)).splitlines()
+    assert lines[0].startswith("✅")                       # 가격 변동은 문제가 아니다
+    assert lines[2] == "가격 변동: Nebius 스팟 2 · Verda 온디맨드 1"
+    assert lines[3] == " - [Nebius] gpu-h100 8gpu eu-north1 스팟: $0.7900 → $2.07 (+162.0%)"   # 변동 폭 큰 순
+    assert len(lines) == 5                                  # 스팟만 상위 목록(최대 3)

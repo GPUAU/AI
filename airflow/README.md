@@ -15,16 +15,21 @@
 
 ## DAG
 
-| DAG | 주기(KST) | task |
+| DAG | 주기(KST) | collect task |
 | --- | --- | --- |
-| `collect_<사업자>` ×7 | 매일 12:10 | `collect` (`collect <사업자>`)<br>AWS만 `pricing` → `savings_plans` → `spot`, `check_failures` |
-| `gpu_fx_krw` | 매일 14:00 | `collect_fx` → `convert_krw` → `notify_summary`, `check_failures` |
+| `collect_aws` | 매일 12:10 | `pricing` → `savings_plans` (`--only` 출처별) |
+| `collect_aws_spot` | 매시 40분 | `collect aws --only aws_ec2_spot_api --hourly` |
+| `collect_verda` | 매시 10분 | `collect verda --hourly` |
+| `collect_nebius` | 매일 12:10 | `collect nebius --only nebius_pricing_docs` |
+| `collect_nebius_spot` | 매시 40분 | `collect nebius --only nebius_spot_price_api --hourly` |
+| `collect_azure`·`collect_oracle`·`collect_scaleway`·`collect_hyperstack` | 매일 12:10 | `collect <사업자>` |
+| `gpu_fx_krw` | 매일 14:00 | `collect_fx` → `convert_krw` → `notify_summary` |
 
-- 사업자마다 DAG 하나라 주기·일시정지·재실행을 사업자별로 한다. 주기는 `gpu_collect.py`의 `PROVIDERS`에서 바꾼다.
-- AWS는 출처별(`--only`)로 task를 나눠 재시도·알림을 따로 한다. 같은 사업자는 DB 잠금 때문에 동시에 못 돌아 순서대로 잇고, 앞이 실패해도 다음은 돈다. AWS 출처를 새로 켜면 `parts`에도 넣는다.
-- `gpu_fx_krw`는 사업자 수집이 재시도까지 끝난 뒤에 돈다. 환산·요약은 앞 task가 실패해도 실행한다(`all_done`).
-  `check_failures`는 앞 task가 하나라도 실패하면 실행을 실패로 표시한다(요약만 보면 성공으로 보이는 것을 막음, 알림은 안 보냄).
-- 모두 `catchup=False`, `max_active_runs=1`. 사업자 수집은 pool `collector`(3자리)로 동시에 3개까지.
+- 수집 DAG는 모두 collect → `notify_changes`(가격 변동 알림) → `check_failures`. 주기·출처는 `gpu_collect.py`의 `COLLECT`에서 바꾼다.
+- 1시간 주기는 가격이 실제로 움직이는 출처만: Verda(이력 API 없음, 하루 중 변동), AWS·Nebius 스팟(이력 API에서 새 기록만 이어 적재). 나머지는 최근 10일 변동이 없어 하루 1번. `--hourly`의 동작은 collector README.
+- 같은 사업자는 DB 잠금 때문에 동시에 못 돈다. 출처별 task는 순서대로 잇고(앞이 실패해도 다음은 돈다), 하루 1번 DAG(12:10)와 1시간 DAG(매시 40분)는 시각을 엇갈린다. 출처를 새로 켜면 `COLLECT`에도 넣는다.
+- `check_failures`는 앞 task가 하나라도 실패하면 실행을 실패로 표시한다(알림 task가 `all_done`이라 실행이 성공으로 보이는 것을 막음, 알림은 안 보냄).
+- 모두 `catchup=False`, `max_active_runs=1`. 사업자 수집은 pool `collector`(3자리)로 동시에 3개까지. 1시간 DAG는 재시도 1회(5분 뒤), 제한 20분.
 - task는 `--trigger`(scheduled·manual·retry)와 `--date`(실행 시각의 KST 날짜)를 collector에 넘긴다. 재시도도 같은 날짜 키를 쓴다.
 
 ### 종료 코드
@@ -42,7 +47,18 @@
   ```
   AIRFLOW_CONN_SLACK_DEFAULT='{"conn_type": "slackwebhook", "password": "https://hooks.slack.com/services/..."}'
   ```
-- 마지막 재시도까지 실패한 task는 바로 알린다. `notify_summary`는 하루 요약 1건을 보낸다(합계 + 사업자별 관측 수, 문제가 있으면 실패·알림을 펼침).
+- 마지막 재시도까지 실패한 task는 바로 알린다. `notify_summary`는 하루 요약 1건을 보낸다(합계 + 사업자별 관측 수 + 가격 변동, 문제가 있으면 실패·알림을 펼침).
+- 가격 변동(`notify_changes`, 이번 실행이 적재한 것만, 없으면 안 보냄)
+
+  | 변동 | 바로 알림 | 하루 요약 |
+  | --- | --- | --- |
+  | 정가(온디맨드·약정) | 💲 금액이 바뀌면 | 건수 |
+  | 급변 ±30% 초과(collector `price_spike`, OR-06) | 🚨 | 알림 목록 |
+  | 스팟 일반 변동 | 안 보냄(너무 잦음) | 사업자별 건수 + 변동 폭 큰 3건 |
+
+  - 정가 비교는 원래 통화의 가격 구성 요소로 한다. 환율만 바뀐 경우(Scaleway EUR)는 변동이 아니다. 추정 관측(Verda 약정 가정)은 제외.
+  - Nebius 스팟은 collector가 급변 알림에서 뺀다(최근 10일 ±30% 넘는 시간 변동 186건, 하루 약 19건). 하루 요약으로만 본다.
+  - 기준 근거: 정가는 드물고 사업자 정책 변화라 즉시, 스팟은 시장 가격이라 추세만. 운영하며 알림 양을 보고 조정한다.
 - 웹훅 주소는 저장소·이슈·로그에 남기지 않는다. 연결이 없거나 전송이 실패하면 task 로그에 내용만 남기고 task는 그대로 둔다.
 
 ### AWS 키
@@ -88,10 +104,10 @@ docker run --rm --entrypoint bash -v "$PWD/collector/tests:/tests:ro" \
 
 ## DAG 추가
 
-사업자는 `PROVIDERS`에 한 줄 추가한다. 종료 코드 처리·재시도·실패 알림이 같이 따라온다.
+사업자는 `COLLECT`에 한 줄 추가한다. 종료 코드 처리·재시도·실패 알림·가격 변동 알림이 같이 따라온다.
 
 ```python
-"vultr": {"schedule": "10 12 * * *"},
+"collect_vultr": {"provider": "vultr", "name": "Vultr", "schedule": DAILY},
 ```
 
 - `CollectorOperator`는 `python -m gpu_collector.erd <command> --trigger …`(collect면 `--date`도)를 실행한다. 다른 모듈은 `argv()`를 바꿔 쓴다.

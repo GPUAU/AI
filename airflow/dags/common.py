@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timedelta
 
 import pendulum
+import psycopg
 from airflow.sdk.exceptions import AirflowException, AirflowFailException
 from airflow.providers.standard.hooks.subprocess import SubprocessHook
 from airflow.sdk import BaseOperator, task
@@ -84,20 +85,27 @@ class CollectorOperator(BaseOperator):
             self._hook.send_sigterm()
 
 
-def provider_tasks(provider, conf, operator=CollectorOperator):
-    """사업자 DAG의 task. parts가 있으면 출처별 task를 순서대로 잇는다.
+def provider_tasks(spec, operator=CollectorOperator):
+    """수집 DAG의 task: collect(출처별이면 여러 개) → notify_changes → check_failures.
 
-    같은 사업자는 DB 잠금 때문에 동시에 못 돈다. 앞 출처가 실패해도 다음 출처는 수집하고(all_done),
-    하나라도 실패하면 check_failures가 실행을 실패로 표시한다.
+    parts가 있으면 출처별 task를 순서대로 잇는다. 같은 사업자는 DB 잠금 때문에 동시에 못 돈다.
+    앞 task가 실패해도 다음 출처 수집과 변동 알림은 하고(all_done), 하나라도 실패하면 check_failures가
+    실행을 실패로 표시한다. 반환: collect task 목록.
     """
-    if "parts" not in conf:
-        return [operator(task_id="collect", command=["collect", provider], env_map=conf.get("env"), pool=POOL)]
-    tasks = [operator(task_id=task_id, command=["collect", provider, "--only", source], env_map=conf.get("env"),
-                      pool=POOL, trigger_rule="all_success" if i == 0 else "all_done")
-             for i, (task_id, source) in enumerate(conf["parts"])]
+    provider, extra = spec["provider"], (["--hourly"] if spec.get("hourly") else [])
+    if "parts" in spec:
+        parts = spec["parts"]
+    else:
+        parts = [("collect", spec.get("only"))]
+    tasks = [operator(task_id=task_id, command=["collect", provider, *(["--only", source] if source else []), *extra],
+                      env_map=spec.get("env"), pool=POOL, trigger_rule="all_success" if i == 0 else "all_done")
+             for i, (task_id, source) in enumerate(parts)]
     for upstream, downstream in zip(tasks, tasks[1:]):
         upstream >> downstream
-    tasks >> check_failures()
+    sources = [source for _, source in parts if source] or None
+    notify = notify_changes(spec["name"], sources)
+    tasks[-1] >> notify
+    [*tasks, notify] >> check_failures()
     return tasks
 
 
@@ -197,6 +205,7 @@ def load_summary(conn, day):
         "alerts": query("alerts"),
         "fx_date": query("fx_date")[0][0],
         "krw": query("krw")[0][0],
+        "changes": conn.execute(CHANGE_SQL["daily_changes"], window).fetchall(),
     }
 
 
@@ -211,6 +220,7 @@ def summary_text(s, max_alerts=5):
             f"원화 환산 {s['krw']:,}건 · 환율 기준일 {fx}")
     mark = "⚠️" if (missing or failed or alerts) else "✅"
     lines = [f"{mark} {head}", " · ".join(f"{name} {count:,}" for name, count in obs.items())]
+    lines += daily_changes_lines(s.get("changes") or [])
     if missing:
         lines.append("관측 없음: " + ", ".join(missing))
     if failed:
@@ -224,3 +234,158 @@ def summary_text(s, max_alerts=5):
         if len(alerts) > max_alerts:
             lines.append(f" - 외 {len(alerts) - max_alerts}건")
     return "\n".join(lines)
+
+
+# 가격 변동 ---------------------------------------------------------------------------------
+# 정가(온디맨드·약정) 변동은 바로 알린다. 원래 통화의 가격 구성 요소로 비교해 환율만 바뀐 경우(EUR 등)는 변동이 아니다.
+# 스팟은 시장 가격이라 자주 바뀌어 하루 요약으로만 보고, ±30% 넘는 급변(collector의 price_spike, OR-06)은 바로 알린다.
+# 추정 관측(Verda 약정 할인율 가정 등)은 온디맨드가 바뀌면 따라 바뀌므로 비교하지 않는다.
+
+# 관측의 가격 구성 요소(원래 통화) 서명과 실효 USD/GPU·시간. obs에는 바깥 행을 별칭으로 한정해 넣는다(pair.…)
+# — 한정하지 않으면 안쪽 테이블의 같은 이름 컬럼으로 묶인다.
+_SIGNATURE = """(SELECT string_agg(pc.component_type || ':' || coalesce(pc.amount::text, '') || ':' ||
+                                    coalesce(pc.discount_rate::text, ''), ',' ORDER BY pc.component_type, pc.amount)
+                  FROM price_component pc WHERE pc.observation_id = {obs})"""
+_EFFECTIVE = """(SELECT n.effective_usd_gpu_hour FROM price_normalization n
+                  WHERE n.observation_id = {obs} ORDER BY n.rule_id DESC LIMIT 1)"""
+_LABEL = """pr.provider_name, o.contract_type, o.commitment_months, p.original_product_name, p.region_code"""
+
+CHANGE_SQL = {
+    # 이번 DAG 실행이 적재한 관측 중 직전 관측과 가격이 다른 정가 오퍼
+    "list_changes": f"""
+        WITH cur AS (
+            SELECT ob.observation_id, ob.offer_id, ob.collected_at, {_LABEL}
+            FROM price_observation ob
+            JOIN collection_check c ON c.check_id = ob.check_id
+            JOIN collection_run r ON r.run_id = c.run_id
+            JOIN collection_target t ON t.target_id = c.target_id
+            JOIN data_source ds ON ds.source_id = t.source_id
+            JOIN provider pr ON pr.provider_id = t.provider_id
+            JOIN offer o ON o.offer_id = ob.offer_id
+            JOIN product p ON p.product_id = o.product_id
+            WHERE r.started_at >= %(since)s AND pr.provider_name = %(provider)s
+              AND (%(sources)s::text[] IS NULL OR ds.source_name = ANY(%(sources)s))
+              AND o.contract_type IN ('on_demand', 'commitment') AND ob.price_certainty <> 'estimate'
+        ), pair AS (
+            SELECT cur.*, (SELECT o2.observation_id FROM price_observation o2
+                           WHERE o2.offer_id = cur.offer_id AND o2.price_certainty <> 'estimate'
+                             AND (o2.collected_at, o2.observation_id) < (cur.collected_at, cur.observation_id)
+                           ORDER BY o2.collected_at DESC, o2.observation_id DESC LIMIT 1) AS prev_id
+            FROM cur
+        )
+        SELECT provider_name, contract_type, commitment_months, original_product_name, region_code,
+               {_EFFECTIVE.format(obs="pair.prev_id")}, {_EFFECTIVE.format(obs="pair.observation_id")}
+        FROM pair
+        WHERE pair.prev_id IS NOT NULL
+          AND {_SIGNATURE.format(obs="pair.prev_id")} IS DISTINCT FROM {_SIGNATURE.format(obs="pair.observation_id")}
+        ORDER BY original_product_name, region_code, contract_type, commitment_months""",
+    # 이번 DAG 실행에서 collector가 남긴 급변 알림(스팟 포함)
+    "spikes": f"""
+        SELECT {_LABEL}, a.reason
+        FROM collection_alert a
+        JOIN collection_run r ON r.run_id = a.run_id
+        JOIN collection_target t ON t.target_id = a.target_id
+        JOIN data_source ds ON ds.source_id = t.source_id
+        JOIN provider pr ON pr.provider_id = t.provider_id
+        JOIN price_observation ob ON ob.observation_id = a.current_observation_id
+        JOIN offer o ON o.offer_id = ob.offer_id
+        JOIN product p ON p.product_id = o.product_id
+        WHERE a.alert_type = 'price_spike' AND r.started_at >= %(since)s AND pr.provider_name = %(provider)s
+          AND (%(sources)s::text[] IS NULL OR ds.source_name = ANY(%(sources)s))
+        ORDER BY a.detected_at""",
+    # 하루 요약: 그날 마지막 관측 vs 그 전날까지의 마지막 관측(오퍼별)
+    "daily_changes": f"""
+        WITH today AS (
+            SELECT DISTINCT ON (ob.offer_id) ob.offer_id, ob.observation_id
+            FROM price_observation ob
+            WHERE ob.collected_at >= %(start)s AND ob.collected_at < %(end)s AND ob.price_certainty <> 'estimate'
+            ORDER BY ob.offer_id, ob.collected_at DESC, ob.observation_id DESC
+        ), pair AS (
+            SELECT today.*, (SELECT o2.observation_id FROM price_observation o2
+                             WHERE o2.offer_id = today.offer_id AND o2.price_certainty <> 'estimate'
+                               AND o2.collected_at < %(start)s
+                             ORDER BY o2.collected_at DESC, o2.observation_id DESC LIMIT 1) AS prev_id
+            FROM today
+        )
+        SELECT {_LABEL}, {_EFFECTIVE.format(obs="pair.prev_id")}, {_EFFECTIVE.format(obs="pair.observation_id")}
+        FROM pair
+        JOIN offer o ON o.offer_id = pair.offer_id
+        JOIN product p ON p.product_id = o.product_id
+        JOIN provider pr ON pr.provider_id = p.provider_id
+        WHERE pair.prev_id IS NOT NULL
+          AND {_SIGNATURE.format(obs="pair.prev_id")} IS DISTINCT FROM {_SIGNATURE.format(obs="pair.observation_id")}
+        ORDER BY pr.provider_name, o.contract_type""",
+}
+
+CONTRACT_KO = {"on_demand": "온디맨드", "spot": "스팟", "commitment": "약정"}
+
+
+def offer_label(contract, months, product, region):
+    term = CONTRACT_KO.get(contract, contract) + (f" {months}개월" if months else "")
+    return f"{product} {region or '리전 미상'} {term}"
+
+
+def money(value):
+    return "-" if value is None else (f"${value:,.2f}" if value >= 1 else f"${value:.4f}")
+
+
+def change_line(prev, cur):
+    if prev is None or cur is None or not prev:
+        return f"{money(prev)} → {money(cur)}"
+    return f"{money(prev)} → {money(cur)} ({(cur - prev) / prev * 100:+.1f}%)"
+
+
+def load_changes(conn, provider, sources, since):
+    params = {"provider": provider, "sources": sources, "since": since}
+    return {"list": conn.execute(CHANGE_SQL["list_changes"], params).fetchall(),
+            "spikes": conn.execute(CHANGE_SQL["spikes"], params).fetchall()}
+
+
+def changes_text(provider, changes, max_lines=10):
+    """바뀐 게 없으면 None(보내지 않음)."""
+    lines = []
+    spikes = changes["spikes"]
+    if spikes:
+        lines.append(f"🚨 {provider} 급변 {len(spikes)}건 (직전 대비 ±30% 초과)")
+        lines += [f" - {offer_label(c, m, p, r)}: {reason}" for _, c, m, p, r, reason in spikes[:max_lines]]
+        if len(spikes) > max_lines:
+            lines.append(f" - 외 {len(spikes) - max_lines}건")
+    listed = changes["list"]
+    if listed:
+        lines.append(f"💲 {provider} 정가 변동 {len(listed)}건 (USD/GPU·시간)")
+        lines += [f" - {offer_label(c, m, p, r)}: {change_line(prev, cur)}"
+                  for _, c, m, p, r, prev, cur in listed[:max_lines]]
+        if len(listed) > max_lines:
+            lines.append(f" - 외 {len(listed) - max_lines}건")
+    return "\n".join(lines) or None
+
+
+def run_started(context):
+    dag_run = context["dag_run"]
+    return getattr(dag_run, "start_date", None) or dag_run.run_after
+
+
+@task(trigger_rule="all_done", retries=1)
+def notify_changes(provider, sources, **context):
+    """이번 실행이 적재한 정가 변동·급변을 Slack으로. 없으면 보내지 않는다."""
+    with psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10) as conn:
+        text = changes_text(provider, load_changes(conn, provider, sources, run_started(context)))
+    print(text or "가격 변동 없음")
+    if text:
+        send_slack(text)
+
+
+def daily_changes_lines(rows, top=3):
+    """하루 요약의 가격 변동 줄: 사업자·계약별 건수 + 스팟 변동 폭 큰 순."""
+    if not rows:
+        return []
+    counts = {}
+    for name, contract, *_ in rows:
+        key = f"{name} {CONTRACT_KO.get(contract, contract)}"
+        counts[key] = counts.get(key, 0) + 1
+    lines = ["가격 변동: " + " · ".join(f"{k} {v}" for k, v in counts.items())]
+    spot = [row for row in rows if row[1] == "spot" and row[5] and row[6] is not None]
+    spot.sort(key=lambda row: -abs((row[6] - row[5]) / row[5]))
+    for name, contract, months, product, region, prev, cur in spot[:top]:
+        lines.append(f" - [{name}] {offer_label(contract, months, product, region)}: {change_line(prev, cur)}")
+    return lines
