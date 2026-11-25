@@ -158,16 +158,31 @@ pytest
 - 수식 셀은 엑셀에 저장된 결과값으로 읽는다. 결과값이 저장되지 않은 파일(일부 생성 도구)은 금액이 비어 보일 수 있다.
 - 다음 단계: 견적서·보고서 엑셀 내보내기, 경쟁사 가격 변동 → 제안가 영향 알림, BE `agent-messages`와 연결.
 
-## 8. 배포 (수동 · Harbor, 2026-11-24 테스트 배포)
+## 8. 배포 (자동 · ECR)
 
-CI(deploy workflow)는 아직 없다. AI 저장소용 self-hosted runner가 없어서, 캠퍼스 PC에서 Harbor 로봇 계정으로 push하고 kubectl로 적용했다.
+`main`에 `cost-agent/`가 바뀌어 들어가면 `.github/workflows/cost-agent-deploy.yml`이 배포한다(수동 실행 `workflow_dispatch`도 됨).
+
+```
+self-hosted runner(u1-3, 캠퍼스 Mac) → OIDC(gha-u1-3) → 이미지 빌드(linux/amd64)
+  → ECR teams/u1-3/app:cost-agent-<sha> → kubectl apply cost-agent/k8s → rollout status
+```
+
+- 이미지는 BE·FE·Airflow와 같은 ECR 리포지토리에 `cost-agent-<sha>` 태그로 둔다. 태그는 덮어쓸 수 없어(IMMUTABLE) 같은 커밋을 다시 배포하면 push를 건너뛴다. 노드 IAM으로 pull하므로 imagePullSecrets는 쓰지 않는다.
+- runner가 꺼져 있거나 캠퍼스 밖이면 배포가 대기한다. runner 설정은 `airflow/README.md`의 EKS 배포 절.
+- Secret(최초 1회, 배포 workflow 역할은 Secret을 못 만든다): 개인 kubeconfig로 `cost-agent-openai` / 키 `OPENAI_API_KEY`. 값은 Git·채팅에 남기지 않는다.
+- RollingUpdate(`maxSurge: 1`)라 배포 중 CPU 한도 500m가 잠깐 더 잡힌다. BE 롤링과 겹치면 팀 쿼터(4코어)에 걸려 새 pod가 늦게 뜰 수 있다.
+
+### 비상용 수동 배포
+
+runner를 쓸 수 없을 때만. 캠퍼스망·개인 kubeconfig, ECR 로그인 권한이 있는 AWS 자격이 필요하다(없으면 runner를 살려 workflow를 수동 실행한다).
 
 ```bash
-docker login harbor.skala-us.com -u 'robot$u1-3+ci'          # 비밀번호는 팀 가이드 페이지
-docker buildx build --platform linux/amd64 -t harbor.skala-us.com/u1-3/cost-agent:<sha> --push cost-agent
-# Secret(최초 1회): cost-agent-openai / 키 OPENAI_API_KEY  — 값은 Git·채팅에 남기지 않는다
-sed "s|IMAGE_PLACEHOLDER|harbor.skala-us.com/u1-3/cost-agent:<sha>|" cost-agent/k8s/cost-agent.yaml | kubectl apply -f -
+IMAGE=<계정>.dkr.ecr.ap-northeast-2.amazonaws.com/teams/u1-3/app:cost-agent-$(git rev-parse HEAD)
+docker buildx build --platform linux/amd64 -t "$IMAGE" --push cost-agent
+sed "s|IMAGE_PLACEHOLDER|$IMAGE|" cost-agent/k8s/cost-agent.yaml | kubectl apply -f -
 kubectl -n u1-3 rollout status deployment/cost-agent
 ```
+
+예전(2026-11-24~25) 이미지는 Harbor `u1-3/cost-agent:<sha>`에 있다. ECR로 옮긴 뒤 Harbor 쪽 태그는 팀 계정으로 정리한다.
 
 FE nginx의 `/agent/`가 `http://cost-agent.u1-3.svc.cluster.local:8000`으로 넘긴다 (GPUAU/FE PR #18).
