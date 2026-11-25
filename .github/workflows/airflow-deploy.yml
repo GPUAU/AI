@@ -22,11 +22,11 @@ jobs:
   deploy:
     runs-on: [self-hosted, u1-3]
     timeout-minutes: 60
-    env:
-      # runner Mac의 ~/.docker에 레지스트리 로그인 정보를 남기지 않는다
-      DOCKER_CONFIG: ${{ runner.temp }}/docker
     steps:
       - uses: actions/checkout@v4
+      # runner Mac의 ~/.docker에 레지스트리 로그인 정보를 남기지 않는다(job env에서는 runner 컨텍스트를 못 써서 여기서 설정)
+      - name: Docker config in runner temp
+        run: echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::430986759212:role/gha-u1-3
