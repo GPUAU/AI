@@ -13,6 +13,8 @@
 | `scripts/prepare_db.py` | 메타 DB 스키마 준비(`airflow db migrate` 전) |
 | `tests/` | DAG 구조·공통 함수 테스트 |
 
+이미지 레이어는 잘 안 바뀌는 순서로 쌓는다: 의존성(`pyproject.toml`만 보고 설치, 약 160MB) → collector 소스(`--no-deps`) → DAG·스크립트 → Git SHA(`COLLECTOR_BUILD`). collector·DAG만 바뀌면 의존성 레이어는 캐시를 쓰고 레지스트리에도 다시 올라가지 않는다(약 3MB만 새로 push).
+
 ## DAG
 
 | DAG | 주기(KST) | collect task |
@@ -97,18 +99,20 @@ docker run --rm --entrypoint bash -v "$PWD/airflow:/src:ro" gpu-collector-airflo
 collector 테스트는 `collector/README.md`를 따른다. 이미지로 돌릴 때:
 
 ```bash
-docker run --rm --entrypoint bash -v "$PWD/collector/tests:/tests:ro" \
+docker run --rm --entrypoint bash -v "$PWD/collector/tests:/tests:ro" -e COLLECTOR_BUILD= \
   -e TEST_DATABASE_URL="postgresql://postgres:postgres@host.docker.internal:5435/postgres" \
   gpu-collector-airflow:dev -c 'pip install -q --user pytest && cd / && python -m pytest -q /tests'
 ```
+
+`COLLECTOR_BUILD`(이미지에 들어간 Git SHA)를 비운다. 있으면 실행 기록 버전 뒤에 `@<sha>`가 붙어 버전 문자열을 비교하는 테스트가 실패한다.
 
 ## EKS 배포 (u1-3)
 
 `main`에 `airflow/`·`collector/`·`k8s/airflow/`가 바뀌어 들어가면 `.github/workflows/airflow-deploy.yml`이 배포한다(수동 실행 `workflow_dispatch`도 됨).
 
 ```
-self-hosted runner(u1-3, 캠퍼스 Mac) → 이미지 빌드(linux/amd64) → Harbor u1-3/airflow:<sha>
-  → OIDC(gha-u1-3) → kubectl apply k8s/airflow → rollout status
+self-hosted runner(u1-3, 캠퍼스 Mac) → OIDC(gha-u1-3) → 이미지 빌드(linux/amd64)
+  → ECR teams/u1-3/app:airflow-<sha> → kubectl apply k8s/airflow → rollout status
 ```
 
 | 파일 | 내용 |
@@ -121,15 +125,15 @@ self-hosted runner(u1-3, 캠퍼스 Mac) → 이미지 빌드(linux/amd64) → Ha
 | `k8s/airflow/create-secrets.sh` | Secret 2개 만들기·갱신(개인 kubeconfig) |
 
 - 자원(limits): scheduler 600m/2.5Gi, dag-processor 150m/512Mi, api-server 300m/1Gi. 팀 쿼터 4코어에서 FE·BE·cost-agent(1.75)와 BE 롤링(+1)을 빼고 남는 몫이라 모두 `Recreate`(롤링 여유분 없음).
-- 모든 pod는 SA `s3-access`(S3 IRSA)를 쓰고, 이 SA에는 pull secret이 없어 `imagePullSecrets: harbor-cred`를 직접 둔다.
+- 이미지는 BE·FE와 같은 ECR 리포지토리 `teams/u1-3/app`에 `airflow-<sha>` 태그로 둔다. 태그는 덮어쓸 수 없어(IMMUTABLE) 같은 커밋을 다시 배포하면 push를 건너뛴다. 노드 IAM으로 pull하므로 imagePullSecrets는 쓰지 않는다.
+- 모든 pod는 SA `s3-access`(S3 IRSA)를 쓴다.
 - 메타 DB 접속 문자열은 `rds-credentials`의 `DATABASE_URL`(`?sslmode=require` 포함) 뒤에 `&options=-csearch_path%3Dairflow`를 붙인다.
 - api-server: Simple auth가 비밀번호 파일을 쓰기 모드로 열어서, Secret(읽기 전용)을 시작할 때 emptyDir로 복사해 쓴다.
 
 ### 처음 한 번
 
 1. runner: AI 레포 Settings → Actions → Runners에 캠퍼스 Mac 등록(라벨 `u1-3`, 레포 밖 폴더, `./svc.sh install && ./svc.sh start`).
-2. 레포 Secrets: `HARBOR_USERNAME`·`HARBOR_PASSWORD`(Harbor robot 계정).
-3. 클러스터 Secret(배포 workflow 역할은 Secret을 못 만든다): `export KUBECONFIG=~/.kube/u1-3.yaml && bash k8s/airflow/create-secrets.sh`
+2. 클러스터 Secret(배포 workflow 역할은 Secret을 못 만든다): `export KUBECONFIG=~/.kube/u1-3.yaml && bash k8s/airflow/create-secrets.sh`
    - `airflow-secrets`: 수출입은행·Hyperstack·AWS(가격 조회 전용) 키, Slack 웹훅, JWT·Fernet(자동 생성)
    - `airflow-auth`: UI 비밀번호(admin·team)
    - 키를 바꿀 때도 다시 실행한 뒤 `rollout restart`(스크립트가 명령을 출력한다).

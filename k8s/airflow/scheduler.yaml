@@ -23,8 +23,6 @@ spec:
         component: scheduler
     spec:
       serviceAccountName: s3-access          # S3 로그(IRSA)
-      imagePullSecrets:
-        - name: harbor-cred                  # s3-access SA에는 pull secret이 없다
       securityContext:
         runAsNonRoot: true
         runAsUser: 50000

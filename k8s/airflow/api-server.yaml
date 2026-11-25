@@ -22,8 +22,6 @@ spec:
         component: api-server
     spec:
       serviceAccountName: s3-access          # UI가 S3 로그를 읽는다
-      imagePullSecrets:
-        - name: harbor-cred
       securityContext:
         runAsNonRoot: true
         runAsUser: 50000

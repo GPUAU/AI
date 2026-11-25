@@ -1,4 +1,5 @@
-# Airflow 배포: 이미지 빌드 → Harbor push → OIDC(gha-u1-3) → k8s/airflow 적용 → rollout 확인.
+# Airflow 배포: OIDC(gha-u1-3) → ECR(teams/u1-3/app:airflow-<sha>) push → k8s/airflow 적용 → rollout 확인.
+# BE·FE와 같은 ECR 리포지토리에 태그 접두사(airflow-)로 둔다. 레포 Secret이 필요 없다.
 # runner: AI 레포 self-hosted(u1-3 라벨, 캠퍼스 Mac). EKS API가 캠퍼스 IP만 받아 캠퍼스에서 돌아야 한다.
 # Secret(airflow-secrets·airflow-auth)은 이 역할로 만들 수 없어 개인 kubeconfig로 먼저 만든다(airflow/README.md).
 name: airflow-deploy
@@ -22,26 +23,27 @@ jobs:
     runs-on: [self-hosted, u1-3]
     timeout-minutes: 60
     env:
-      IMAGE: harbor.skala-us.com/u1-3/airflow:${{ github.sha }}
-      # runner Mac의 ~/.docker에 Harbor 로그인 정보를 남기지 않는다
+      # runner Mac의 ~/.docker에 레지스트리 로그인 정보를 남기지 않는다
       DOCKER_CONFIG: ${{ runner.temp }}/docker
     steps:
       - uses: actions/checkout@v4
-      - name: Harbor login
-        env:
-          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
-          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-        run: |
-          mkdir -p "$DOCKER_CONFIG"
-          echo "$HARBOR_PASSWORD" | docker login harbor.skala-us.com -u "$HARBOR_USERNAME" --password-stdin
-      - name: Build & push (linux/amd64)
-        run: |
-          docker buildx build --platform linux/amd64 -f airflow/Dockerfile \
-            --build-arg GIT_SHA=${{ github.sha }} -t "$IMAGE" --push .
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::430986759212:role/gha-u1-3
           aws-region: ap-northeast-2
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build & push (linux/amd64)
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/teams/u1-3/app:airflow-${{ github.sha }}
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          # ECR 태그는 덮어쓸 수 없다(IMMUTABLE). 같은 커밋을 다시 배포하면 빌드·push를 건너뛴다
+          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "이미 있는 이미지: $IMAGE (push 생략)"
+            exit 0
+          fi
+          docker buildx build --platform linux/amd64 -f airflow/Dockerfile \
+            --build-arg GIT_SHA=${{ github.sha }} -t "$IMAGE" --push .
       - name: Deploy
         run: |
           aws eks update-kubeconfig --name skala-us --region ap-northeast-2 --kubeconfig "$RUNNER_TEMP/kubeconfig"
@@ -50,6 +52,3 @@ jobs:
           for d in airflow-api-server airflow-scheduler airflow-dag-processor; do
             kubectl -n u1-3 rollout status "deployment/$d" --timeout=15m
           done
-      - name: Harbor logout
-        if: always()
-        run: docker logout harbor.skala-us.com || true

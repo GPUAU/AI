@@ -22,8 +22,6 @@ spec:
         component: dag-processor
     spec:
       serviceAccountName: s3-access
-      imagePullSecrets:
-        - name: harbor-cred
       securityContext:
         runAsNonRoot: true
         runAsUser: 50000
