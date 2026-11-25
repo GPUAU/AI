@@ -24,22 +24,17 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      # runner Mac의 ~/.docker에 레지스트리 로그인 정보를 남기지 않는다(job env에서는 runner 컨텍스트를 못 써서 여기서 설정).
-      # 설정 폴더를 바꾸면 buildx 플러그인(~/.docker/cli-plugins)을 못 찾으므로 링크해 둔다.
-      - name: Docker config in runner temp
-        run: |
-          mkdir -p "$RUNNER_TEMP/docker"
-          ln -sfn "$HOME/.docker/cli-plugins" "$RUNNER_TEMP/docker/cli-plugins"
-          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
-          DOCKER_CONFIG="$RUNNER_TEMP/docker" docker buildx version
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::430986759212:role/gha-u1-3
           aws-region: ap-northeast-2
+      # BE·FE와 같이 기본 ~/.docker(키체인)에 로그인하고, job이 끝나면 action이 로그아웃한다.
+      # runner 서비스 plist에 SessionCreate가 있으면 키체인을 못 열어 실패한다(-25308) → airflow/README.md
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
       - name: Build & push (linux/amd64)
         run: |
+          set -o pipefail
           IMAGE=${{ steps.ecr.outputs.registry }}/teams/u1-3/app:airflow-${{ github.sha }}
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           # ECR 태그는 덮어쓸 수 없다(IMMUTABLE). 같은 커밋을 다시 배포하면 빌드·push를 건너뛴다
@@ -47,8 +42,16 @@ jobs:
             echo "이미 있는 이미지: $IMAGE (push 생략)"
             exit 0
           fi
-          docker buildx build --platform linux/amd64 -f airflow/Dockerfile \
-            --build-arg GIT_SHA=${{ github.sha }} -t "$IMAGE" --push .
+          # 확인이 실패한 이유(태그 없음·권한 등)는 따지지 않고 빌드한다. push가 '이미 있는 태그'로 막히면
+          # 같은 커밋 이미지가 이미 있는 것이라 그대로 진행하고, 그 밖의 오류는 실패로 끝낸다
+          if ! docker buildx build --platform linux/amd64 -f airflow/Dockerfile \
+              --build-arg GIT_SHA=${{ github.sha }} -t "$IMAGE" --push . 2>&1 | tee "$RUNNER_TEMP/build.log"; then
+            if grep -qiE "already exists|immutable" "$RUNNER_TEMP/build.log"; then
+              echo "::notice::이미 있는 태그라 push 생략: $IMAGE"
+            else
+              exit 1
+            fi
+          fi
       - name: Deploy
         run: |
           aws eks update-kubeconfig --name skala-us --region ap-northeast-2 --kubeconfig "$RUNNER_TEMP/kubeconfig"

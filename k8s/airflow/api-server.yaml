@@ -26,6 +26,23 @@ spec:
         runAsNonRoot: true
         runAsUser: 50000
         fsGroup: 0
+      initContainers:
+        # DB 테이블 준비(db migrate)는 scheduler만 한다. 끝날 때까지 기다린 뒤 시작한다
+        - name: wait-migrations
+          image: IMAGE_PLACEHOLDER
+          command: ["bash", "-c"]
+          args: ["airflow db check-migrations --migration-wait-timeout 600"]
+          envFrom:
+            - configMapRef: {name: airflow-config}
+            - secretRef: {name: airflow-secrets}
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: rds-credentials, key: DATABASE_URL}}
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "$(DATABASE_URL)&options=-csearch_path%3Dairflow"
+          resources:                         # 확인만 해서 작게(파드 쿼터는 initContainer와 본 컨테이너 중 큰 값)
+            requests: {cpu: 50m, memory: 256Mi}
+            limits: {cpu: 150m, memory: 512Mi}
       containers:
         - name: api-server
           image: IMAGE_PLACEHOLDER
