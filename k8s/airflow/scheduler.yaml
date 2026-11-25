@@ -1,0 +1,79 @@
+# scheduler: 스케줄 판단 + LocalExecutor로 task(collector CLI)를 이 pod 안에서 실행한다.
+# initContainer가 메타 스키마 준비 → db migrate → pool 생성. 하나만 떠야 해서 Recreate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  namespace: u1-3
+  labels:
+    app: airflow
+    component: scheduler
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: airflow
+      component: scheduler
+  template:
+    metadata:
+      labels:
+        app: airflow
+        component: scheduler
+    spec:
+      serviceAccountName: s3-access          # S3 로그(IRSA)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 50000
+        fsGroup: 0
+      initContainers:
+        - name: migrate
+          image: IMAGE_PLACEHOLDER
+          command: ["bash", "-c"]
+          args:
+            - >-
+              python /opt/airflow/scripts/prepare_db.py &&
+              airflow db migrate &&
+              airflow pools set collector 3 "사업자 수집 동시 실행 수"
+          envFrom:
+            - configMapRef: {name: airflow-config}
+            - secretRef: {name: airflow-secrets}
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: rds-credentials, key: DATABASE_URL}}
+            # rds-credentials의 DATABASE_URL은 ?sslmode=require가 붙어 있어 &로 이어 붙인다
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "$(DATABASE_URL)&options=-csearch_path%3Dairflow"
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 300m, memory: 512Mi}
+      containers:
+        - name: scheduler
+          image: IMAGE_PLACEHOLDER
+          args: ["scheduler"]
+          envFrom:
+            - configMapRef: {name: airflow-config}
+            - secretRef: {name: airflow-secrets}
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: rds-credentials, key: DATABASE_URL}}
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "$(DATABASE_URL)&options=-csearch_path%3Dairflow"
+          ports:
+            - name: health
+              containerPort: 8974
+          livenessProbe:
+            httpGet: {path: /health, port: health}
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests: {cpu: 200m, memory: 1Gi}
+            limits: {cpu: 600m, memory: 2560Mi}
+          volumeMounts:
+            - {name: logs, mountPath: /opt/airflow/logs}
+      volumes:
+        - name: logs
+          emptyDir: {sizeLimit: 2Gi}

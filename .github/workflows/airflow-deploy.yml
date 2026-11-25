@@ -1,0 +1,59 @@
+# Airflow 배포: OIDC(gha-u1-3) → ECR(teams/u1-3/app:airflow-<sha>) push → k8s/airflow 적용 → rollout 확인.
+# BE·FE와 같은 ECR 리포지토리에 태그 접두사(airflow-)로 둔다. 레포 Secret이 필요 없다.
+# runner: AI 레포 self-hosted(u1-3 라벨, 캠퍼스 Mac). EKS API가 캠퍼스 IP만 받아 캠퍼스에서 돌아야 한다.
+# Secret(airflow-secrets·airflow-auth)은 이 역할로 만들 수 없어 개인 kubeconfig로 먼저 만든다(airflow/README.md).
+name: airflow-deploy
+on:
+  push:
+    branches: [main]
+    paths:
+      - "airflow/**"
+      - "collector/**"
+      - "k8s/airflow/**"
+      - ".github/workflows/airflow-deploy.yml"
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: airflow-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: [self-hosted, u1-3]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      # runner Mac의 ~/.docker에 레지스트리 로그인 정보를 남기지 않는다(job env에서는 runner 컨텍스트를 못 써서 여기서 설정).
+      # 설정 폴더를 바꾸면 buildx 플러그인(~/.docker/cli-plugins)을 못 찾으므로 링크해 둔다.
+      - name: Docker config in runner temp
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          ln -sfn "$HOME/.docker/cli-plugins" "$RUNNER_TEMP/docker/cli-plugins"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+          DOCKER_CONFIG="$RUNNER_TEMP/docker" docker buildx version
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::430986759212:role/gha-u1-3
+          aws-region: ap-northeast-2
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build & push (linux/amd64)
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/teams/u1-3/app:airflow-${{ github.sha }}
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          # ECR 태그는 덮어쓸 수 없다(IMMUTABLE). 같은 커밋을 다시 배포하면 빌드·push를 건너뛴다
+          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "이미 있는 이미지: $IMAGE (push 생략)"
+            exit 0
+          fi
+          docker buildx build --platform linux/amd64 -f airflow/Dockerfile \
+            --build-arg GIT_SHA=${{ github.sha }} -t "$IMAGE" --push .
+      - name: Deploy
+        run: |
+          aws eks update-kubeconfig --name skala-us --region ap-northeast-2 --kubeconfig "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          for f in k8s/airflow/*.yaml; do sed "s|IMAGE_PLACEHOLDER|$IMAGE|g" "$f"; echo "---"; done | kubectl apply -f -
+          for d in airflow-api-server airflow-scheduler airflow-dag-processor; do
+            kubectl -n u1-3 rollout status "deployment/$d" --timeout=15m
+          done

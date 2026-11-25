@@ -8,6 +8,7 @@ GPU 공개 가격을 수집·적재하고, 그 데이터를 AI Agent로 조회�
 | [`collector/`](collector/) | 사업자별 공개 가격 수집, ERD 스키마(DDL·seed) 소유, DB 적재 | Airflow 이미지에 패키지로 설치 |
 | [`airflow/`](airflow/) | 수집 일정·재시도·알림 (DAG) | Airflow 이미지 |
 | [`docs/`](docs/) | ERD 기준 문서, 수집 원천·이용 조건 | — |
+| [`cost-agent/`](cost-agent/) | IDC 청구서 엑셀 → 원가 항목 AI 매핑·검증 → BE 원가 계산 API 연동 (FastAPI) | 자체 이미지 |
 
 ## 컴포넌트 규칙
 
@@ -37,6 +38,7 @@ docker compose ps        # db 상태가 healthy인지 확인
 
 - [collector](collector/README.md)
 - [airflow](airflow/README.md)
+- [cost-agent](cost-agent/README.md)
 
 ## 브랜치·이슈 규칙
 

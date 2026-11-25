@@ -133,10 +133,11 @@ class TargetResult:
 
 def collect(conn, *, trigger_type="manual", only=None, cache_dir="var/cache", now=None, date=None,
             get_json=fetch.get_json, downloader=fetch.download, spot_history=aws_spot.price_history,
-            pricing_api=aws_api):
+            pricing_api=aws_api, hourly=False):
     """AWS 수집 1회. only: 처리할 출처 이름 모음(생략하면 전체). date: 수집 기준일(KST, 생략하면 오늘).
 
-    같은 수집 기준일에 이미 적재한 (출처, 리전) 묶음은 건너뛴다. 반환: 실행 요약."""
+    같은 수집 기준일에 이미 적재한 (출처, 리전) 묶음은 건너뛴다. hourly면 그날 적재가 끝난 스팟 묶음을
+    시간대 키로 다시 처리해 마지막 기록 이후의 새 기록만 적재한다(다른 출처는 하루 1번). 반환: 실행 요약."""
     now = now or (lambda: datetime.now(timezone.utc))
     day = runs.collection_date(date, now)
     provider = db.provider_id(conn, PROVIDER)
@@ -157,21 +158,28 @@ def collect(conn, *, trigger_type="manual", only=None, cache_dir="var/cache", no
                **spec_context(conn)}
     outcomes = []
     for (source_name, region), group in groups.items():
+        group_context = context
         if runs.group_done(conn, context, group):
-            outcomes.append(runs.skipped({"source": source_name, "region": region}))
-            continue
+            if not (hourly and source_name in HOURLY_SOURCES):
+                outcomes.append(runs.skipped({"source": source_name, "region": region}))
+                continue
+            group_context = runs.hourly(context, now())
+            if runs.group_done(conn, group_context, group):
+                outcomes.append(runs.skipped({"source": source_name, "region": region}, group_context))
+                continue
         try:
-            results = HANDLERS[source_name](conn, context, region, group)
-            counts = _write_group(conn, context, group, results)
+            results = HANDLERS[source_name](conn, group_context, region, group)
+            counts = _write_group(conn, group_context, group, results)
             conn.commit()
-            outcomes.append({"source": source_name, "region": region, "status": "success", **counts})
+            outcomes.append({"source": source_name, "region": region, "status": "success",
+                             "slot": runs.slot(group_context), **counts})
         except EXPECTED_ERRORS as error:
             processing = "validation_failed" if isinstance(error, SourceInvalid) else "collection_failed"
-            _record_failure(conn, context, group, processing, f"{type(error).__name__}: {error}")
+            _record_failure(conn, group_context, group, processing, f"{type(error).__name__}: {error}")
             outcomes.append({"source": source_name, "region": region, "status": processing,
                              "reason": f"{type(error).__name__}: {error}"})
         except Exception as error:
-            _record_failure(conn, context, group, "collection_failed", f"unexpected: {type(error).__name__}: {error}")
+            _record_failure(conn, group_context, group, "collection_failed", f"unexpected: {type(error).__name__}: {error}")
             db.finish_run(conn, run_id, now(), "failed", f"unexpected: {type(error).__name__}")
             conn.commit()
             raise
@@ -387,6 +395,8 @@ def _spot_watermark(conn, target, region):
         (SOURCE_SPOT, SOURCE_SPOT_HISTORY, region, target["gpu_model_id"])).fetchone()[0]
 
 
+# 시간 단위(--hourly)로 다시 처리하는 출처: 기록 시각별 시계열이라 새 기록만 이어 적재한다
+HOURLY_SOURCES = {SOURCE_SPOT}
 HANDLERS = {SOURCE_EC2: _handle_ec2, SOURCE_EC2_API: _handle_ec2_api, SOURCE_SP: _handle_savings,
             SOURCE_SP_API: _handle_savings_api, SOURCE_SPOT: _handle_spot}
 
@@ -549,6 +559,9 @@ def _write_group(conn, context, group, results):
         if not found:
             counts["not_found"] += 1
         # 전에 가격을 확인한 오퍼가 이번 범위 확인에서 빠졌으면 오퍼 미발견으로 남긴다(DR-08 최근 미발견 제외)
+        # 시간 단위 실행은 짧은 구간이라 판정하지 않는다(다음 날 daily가 판정)
+        if context.get("intraday"):
+            continue
         for offer_id, product_id in sorted(db.previously_seen_offers(conn, target["target_id"]).items()):
             if offer_id in seen:
                 continue

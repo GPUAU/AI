@@ -336,5 +336,49 @@ class DailySeriesTests(NebiusDb):
                          [Decimal("5.0"), Decimal("5.2")])
 
 
+class OnlyAndHourlyTests(NebiusDb):
+    def collect_with(self, **kwargs):
+        return nebius.collect(self.conn, now=self.now, get_text=self.get_text, get_json=self.get_json,
+                              pause=lambda _s: None, **kwargs)
+
+    def test_only_spot_does_not_read_docs(self):
+        self.get_text = lambda url, config: self.fail("문서 가격표를 읽으면 안 됨")
+        summary = self.collect_with(only={nebius.SOURCE_SPOT})
+        self.assertEqual([(g["source"], g["status"]) for g in summary["groups"]], [(nebius.SOURCE_SPOT, "success")])
+
+    def test_only_docs_does_not_read_series(self):
+        self.get_json = lambda url, config: self.fail("스팟 API를 읽으면 안 됨")
+        summary = self.collect_with(only={nebius.SOURCE_DOCS})
+        self.assertEqual([(g["source"], g["status"]) for g in summary["groups"]], [(nebius.SOURCE_DOCS, "success")])
+
+    def test_only_unknown_source_is_config_error(self):
+        with self.assertRaises(LookupError):
+            self.collect_with(only={"nebius_vm_types_docs"})
+
+    def test_hourly_adds_new_points_after_daily(self):
+        self.collect()                                                   # 11-17 10:00·11:00 기록
+        self.clock[0] += timedelta(hours=1)
+        self.series = series([("2026-11-17T10:00:00Z", "5.0"), ("2026-11-17T11:00:00Z", "5.2"),
+                              ("2026-11-18T09:00:00Z", "5.4")], SERIES_OTHERS)
+        summary = self.collect_with(only={nebius.SOURCE_SPOT}, hourly=True)
+        (group,) = summary["groups"]
+        self.assertEqual(group["status"], "success")
+        self.assertTrue(group["slot"].startswith("hourly:2026-11-18T19"))      # 10:00 UTC = 19시 KST
+        self.assertEqual(self.prices("gpu-b300-sxm 8gpu-192vcpu-2768gb", "uk-south1", "spot"),
+                         [Decimal("5.0"), Decimal("5.2"), Decimal("5.4")])
+        again = self.collect_with(only={nebius.SOURCE_SPOT}, hourly=True)            # 같은 시간대
+        self.assertEqual(again["groups"][0]["status"], "skipped")
+        missing = self.conn.execute("SELECT count(*) FROM collection_check WHERE run_id = %s AND "
+                                    "processing_status = 'not_found' AND check_scope = 'offer'", (summary["run_id"],)).fetchone()[0]
+        self.assertEqual(missing, 0)
+
+
+    def test_without_hourly_same_day_still_skips(self):
+        self.collect()
+        self.clock[0] += timedelta(hours=1)
+        summary = self.collect_with(only={nebius.SOURCE_SPOT})
+        self.assertEqual(summary["groups"][0]["status"], "skipped")
+
+
 if __name__ == "__main__":
     unittest.main()
