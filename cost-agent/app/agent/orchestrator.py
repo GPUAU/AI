@@ -103,49 +103,73 @@ class CostAgent:
     # 1) 청구서 분석 ------------------------------------------------------
     def _step_analyze(self, s: AgentSession) -> None:
         if s.draft is None:
-            self._board(s, Step.ANALYZE, Status.RUNNING)
-            self._log(s, Step.ANALYZE, "tool", "청구서를 읽고 각 줄을 원가 항목으로 분류합니다 (금액·숫자는 가리고 AI에 전송).")
-            s.draft = self.bills.ingest(self._docs[s.id])
-            d = s.draft
-            via = {"llm": "AI", "rules": "키워드 규칙", "template": "저장된 양식 템플릿"}.get(d.mapper, d.mapper)
-            self._log(s, Step.ANALYZE, "result", f"{via}로 {sum(1 for l in d.lines if l.role == LineRole.COST)}개 원가 줄을 분류했습니다.")
+            self._do_ingest(s)
         d = s.draft
         if d.currency is None:
-            self._board(s, Step.ANALYZE, Status.WAITING, "통화 확인 대기")
-            self._log(s, Step.ANALYZE, "ask", "청구서에서 통화(원·달러) 표시를 찾지 못해 담당자에게 확인합니다.")
-            s.question = Question(id=self._qid(), step=Step.ANALYZE, title="청구서 금액의 통화를 알려 주세요",
-                                  text="머리글이나 금액에 원·달러 표시가 없어 판단하지 못했어요. 잘못 고르면 원가가 크게 틀립니다.",
-                                  options=[Option(value="currency:KRW", label="원 (KRW)"),
-                                           Option(value="currency:USD", label="달러 (USD)")])
+            s.question = self._q_currency(s)
             return
         rec = d.reconciliation
         if rec.matched is False and s.remap_tries < MAX_REMAP:
-            s.remap_tries += 1
-            self._log(s, Step.ANALYZE, "think",
-                      f"원가 합계가 청구 총액과 맞지 않습니다. 분류를 다시 검토합니다 ({s.remap_tries}/{MAX_REMAP}회).")
-            redone = self.bills.remap(d.id, self._remap_feedback(d))
-            if redone is not None:
-                s.draft = redone
-                self._log(s, Step.ANALYZE, "result",
-                          "재분류 결과 총액이 일치합니다." if redone.reconciliation.matched else "재분류 후에도 총액이 맞지 않습니다.")
-                return  # 다시 점검
-            self._log(s, Step.ANALYZE, "warn", "AI 재분류를 쓸 수 없어 (규칙·템플릿 분류) 담당자 확인으로 넘깁니다.")
-            s.remap_tries = MAX_REMAP
-            return
+            self._do_remap(s)
+            return  # 다시 점검
         if rec.matched is False:
-            self._board(s, Step.ANALYZE, Status.WAITING, "총액 불일치 · 확인 필요")
-            s.question = Question(
-                id=self._qid(), step=Step.ANALYZE, title="청구 총액과 원가 합계가 맞지 않아요",
-                text=f"원가 합계가 청구서 총액과 {rec.difference:+,.0f} 차이 납니다. 빠진 줄이나 잘못 분류된 줄이 있을 수 있어요. "
-                     "아래 분류표에서 고친 뒤 다시 시작하거나, 차이를 알고 그대로 진행할 수 있어요.",
-                options=[Option(value="proceed", label="차이를 확인했고 그대로 진행"),
-                         Option(value="stop", label="여기서 멈추고 분류표 수정")])
+            s.question = self._q_mismatch(s)
             return
+        self._finish_analyze(s)
+        self._go(s, Step.MISSING)
+
+    # 단계 동작 (워크플로·그래프 에이전트가 함께 쓴다) ---------------------
+    def _do_ingest(self, s: AgentSession) -> None:
+        self._board(s, Step.ANALYZE, Status.RUNNING)
+        self._log(s, Step.ANALYZE, "tool", "청구서를 읽고 각 줄을 원가 항목으로 분류합니다 (금액·숫자는 가리고 AI에 전송).")
+        s.draft = self.bills.ingest(self._docs[s.id])
+        d = s.draft
+        via = {"llm": "AI", "rules": "키워드 규칙", "template": "저장된 양식 템플릿"}.get(d.mapper, d.mapper)
+        self._log(s, Step.ANALYZE, "result", f"{via}로 {sum(1 for l in d.lines if l.role == LineRole.COST)}개 원가 줄을 분류했습니다.")
+
+    def _do_remap(self, s: AgentSession, hypothesis: str = "") -> bool:
+        """총액이 안 맞을 때 피드백을 붙여 다시 분류한다. AI 분류를 쓸 수 없으면 False."""
+        d = s.draft
+        s.remap_tries += 1
+        self._log(s, Step.ANALYZE, "think",
+                  f"원가 합계가 청구 총액과 맞지 않습니다. 분류를 다시 검토합니다 ({s.remap_tries}/{MAX_REMAP}회).")
+        feedback = self._remap_feedback(d) + (f"\n[에이전트 가설] {hypothesis}" if hypothesis else "")
+        redone = self.bills.remap(d.id, feedback)
+        if redone is not None:
+            s.draft = redone
+            self._log(s, Step.ANALYZE, "result",
+                      "재분류 결과 총액이 일치합니다." if redone.reconciliation.matched else "재분류 후에도 총액이 맞지 않습니다.")
+            return True
+        self._log(s, Step.ANALYZE, "warn", "AI 재분류를 쓸 수 없어 (규칙·템플릿 분류) 담당자 확인으로 넘깁니다.")
+        s.remap_tries = MAX_REMAP
+        return False
+
+    def _finish_analyze(self, s: AgentSession) -> None:
+        d = s.draft
+        rec = d.reconciliation
         errors = [i for i in d.issues if i.level == IssueLevel.ERROR]
         status = Status.WARNING if errors or rec.matched is None else Status.DONE
         summary = ("총액 대조 일치" if rec.matched else "총액 줄 없음") + (f" · 재분류 {s.remap_tries}회" if s.remap_tries else "")
         self._board(s, Step.ANALYZE, status, summary, [i.message for i in d.issues if i.level != IssueLevel.INFO][:5])
-        self._go(s, Step.MISSING)
+
+    def _q_currency(self, s: AgentSession) -> Question:
+        self._board(s, Step.ANALYZE, Status.WAITING, "통화 확인 대기")
+        self._log(s, Step.ANALYZE, "ask", "청구서에서 통화(원·달러) 표시를 찾지 못해 담당자에게 확인합니다.")
+        return Question(id=self._qid(), step=Step.ANALYZE, title="청구서 금액의 통화를 알려 주세요",
+                        text="머리글이나 금액에 원·달러 표시가 없어 판단하지 못했어요. 잘못 고르면 원가가 크게 틀립니다.",
+                        options=[Option(value="currency:KRW", label="원 (KRW)"),
+                                 Option(value="currency:USD", label="달러 (USD)")])
+
+    def _q_mismatch(self, s: AgentSession) -> Question:
+        rec = s.draft.reconciliation
+        self._board(s, Step.ANALYZE, Status.WAITING, "총액 불일치 · 확인 필요")
+        self._log(s, Step.ANALYZE, "ask", "분류를 다시 검토해도 총액이 맞지 않아 담당자에게 확인합니다.")
+        return Question(
+            id=self._qid(), step=Step.ANALYZE, title="청구 총액과 원가 합계가 맞지 않아요",
+            text=f"원가 합계가 청구서 총액과 {rec.difference:+,.0f} 차이 납니다. 빠진 줄이나 잘못 분류된 줄이 있을 수 있어요. "
+                 "아래 분류표에서 고친 뒤 다시 시작하거나, 차이를 알고 그대로 진행할 수 있어요.",
+            options=[Option(value="proceed", label="차이를 확인했고 그대로 진행"),
+                     Option(value="stop", label="여기서 멈추고 분류표 수정")])
 
     def _answer_analyze(self, s: AgentSession, q: Question, ans: Answer) -> None:
         if (ans.choice or "").startswith("currency:"):
@@ -157,6 +181,7 @@ class CostAgent:
             raise AgentError("선택지에서 골라 주세요.")
         self._log(s, Step.ANALYZE, "answer", "그대로 진행" if ans.choice == "proceed" else "분류표 수정을 위해 중단")
         if ans.choice == "proceed":
+            s.mismatch_ok = True
             self._board(s, Step.ANALYZE, Status.WARNING, "총액 불일치를 알고 진행")
             self._go(s, Step.MISSING)
         else:
@@ -182,18 +207,17 @@ class CostAgent:
     def _step_missing(self, s: AgentSession) -> None:
         groups = self._missing_groups(s)
         if not groups:
-            n = len(s.missing_answers)
-            self._board(s, Step.MISSING, Status.DONE if not n else Status.WARNING,
-                        "빠진 큰 비용 없음" if not n else f"{n}건 담당자 확인 완료",
-                        [f"{k}: {self._missing_text(v)}" for k, v in s.missing_answers.items()])
+            self._finish_missing(s)
             self._go(s, Step.ASSUMPTIONS)
             return
-        name, types = groups[0]
+        s.question = self._q_missing(s, groups[0][0])
+
+    def _q_missing(self, s: AgentSession, name: str) -> Question:
         present = sorted({c.item_type.value for c in s.draft.cost_items if c.status == ItemStatus.USER_INPUT
                           and c.item_type != ItemType.ACQUISITION})
         self._board(s, Step.MISSING, Status.WAITING, f"'{name}' 확인 대기")
         self._log(s, Step.MISSING, "ask", f"청구서에 '{name}' 비용이 없습니다. 큰 비용이 빠지면 원가 전체를 믿을 수 없어 담당자에게 확인합니다.")
-        s.question = Question(
+        return Question(
             id=self._qid(), step=Step.MISSING, title=f"'{name}' 비용이 청구서에 없어요",
             text="다른 계약으로 따로 내는지, 다른 요금에 포함됐는지 알려 주세요. 모르면 '이번엔 제외'를 고르면 결과에 '불완전 원가'로 표시합니다.",
             options=[Option(value="amount", label="별도 계약 금액 입력"),
@@ -208,6 +232,12 @@ class CostAgent:
                 FieldSpec(name="parent", label="포함된 요금", type="select", value=present[0] if present else None,
                           options=[Option(value=p, label=ITEM_KO.get(p, p)) for p in present], show_for=["included"]),
             ])
+
+    def _finish_missing(self, s: AgentSession) -> None:
+        n = len(s.missing_answers)
+        self._board(s, Step.MISSING, Status.DONE if not n else Status.WARNING,
+                    "빠진 큰 비용 없음" if not n else f"{n}건 담당자 확인 완료",
+                    [f"{k}: {self._missing_text(v)}" for k, v in s.missing_answers.items()])
 
     def _answer_missing(self, s: AgentSession, q: Question, ans: Answer) -> None:
         name = q.title.split("'")[1]
@@ -238,6 +268,9 @@ class CostAgent:
         if s.assumptions.get("confirmed"):
             self._go(s, Step.SIMULATE)
             return
+        s.question = self._q_assumptions(s)
+
+    def _q_assumptions(self, s: AgentSession) -> Question:
         try:
             models = self.backend.models()
         except BackendError:
@@ -277,9 +310,9 @@ class CostAgent:
                     f.value = back.get(f.name, lambda x: x)(prev[f.name])
         self._board(s, Step.ASSUMPTIONS, Status.WAITING, "가정값 확인 대기")
         self._log(s, Step.ASSUMPTIONS, "ask", "청구서에 없는 값(GPU 수·취득비)과 가정값을 근거와 함께 제안합니다.")
-        s.question = Question(id=self._qid(), step=Step.ASSUMPTIONS, title="청구서에 없는 값을 확인해 주세요",
-                              text="회색 제안값은 근거가 있는 출발점이에요. 실제 사업 조건에 맞게 고치세요.",
-                              fields=fields, submit_label="이 값으로 계산")
+        return Question(id=self._qid(), step=Step.ASSUMPTIONS, title="청구서에 없는 값을 확인해 주세요",
+                        text="회색 제안값은 근거가 있는 출발점이에요. 실제 사업 조건에 맞게 고치세요.",
+                        fields=fields, submit_label="이 값으로 계산")
 
     def _answer_assumptions(self, s: AgentSession, q: Question, ans: Answer) -> None:
         v = {f.name: ans.values.get(f.name, f.value) for f in q.fields}
@@ -327,6 +360,10 @@ class CostAgent:
         return items
 
     def _step_simulate(self, s: AgentSession) -> None:
+        self._go(s, Step.MARKET if self._do_simulate(s) else Step.ASSUMPTIONS)
+
+    def _do_simulate(self, s: AgentSession) -> bool:
+        """BE 원가 계산. 실패하면 가정값을 미확정으로 돌리고 False."""
         a = s.assumptions
         s.final_items = self._final_items(s)
         inp = SimulationInput(
@@ -343,8 +380,7 @@ class CostAgent:
             self._board(s, Step.SIMULATE, Status.ERROR, "원가 계산 실패", [str(exc), detail] if detail else [str(exc)])
             self._log(s, Step.SIMULATE, "warn", f"원가 계산 실패: {exc} {detail}")
             s.assumptions["confirmed"] = False
-            self._go(s, Step.ASSUMPTIONS)
-            return
+            return False
         r = s.simulation
         missing = [ITEM_KO.get(m, "조달 금리" if m == "FINANCING" else m) for m in r.get("missingItems", [])]
         self._log(s, Step.SIMULATE, "result",
@@ -352,10 +388,26 @@ class CostAgent:
         self._board(s, Step.SIMULATE, Status.WARNING if missing else Status.DONE,
                     f"원가 ${float(r['hourlyCost']):.2f} · 제안가 ${float(r['candidatePrice']):.2f}",
                     [f"BE가 미반영으로 본 항목: {', '.join(missing)}"] if missing else [])
-        self._go(s, Step.MARKET)
+        s.sim_basis = self._sim_basis(s)
+        return True
+
+    @staticmethod
+    def _sim_basis(s: AgentSession) -> str:
+        """원가 계산에 쓴 입력의 지문. 가정값·누락 답이 바뀌면 다시 계산해야 한다."""
+        import json
+        a = {k: v for k, v in s.assumptions.items() if k not in ("sources", "confirmed")}
+        return json.dumps([a, s.missing_answers], sort_keys=True, default=str)
 
     # 5) 시장 비교 --------------------------------------------------------
     def _step_market(self, s: AgentSession) -> None:
+        if self._do_market(s) and not s.margin_adjusted:
+            s.question = self._q_market(s)
+            return
+        self._finish_market(s)
+        self._go(s, Step.TERMS)
+
+    def _do_market(self, s: AgentSession) -> bool:
+        """시장 공개가격과 비교한다. 제안가가 시장 범위를 벗어나면 True."""
         a, r = s.assumptions, s.simulation
         cand = float(r["candidatePrice"])
         self._log(s, Step.MARKET, "tool", f"{a['model_name']} 온디맨드 공개 가격을 조회합니다.")
@@ -365,38 +417,46 @@ class CostAgent:
             samples = []
             self._log(s, Step.MARKET, "warn", f"시장 가격 조회 실패: {exc}")
         s.market = market_view(a["model_name"], samples, cand)
+        s.market_basis = s.sim_basis
         m = s.market
         if not m.count:
-            self._board(s, Step.MARKET, Status.WARNING, "비교할 공개 가격 없음")
-            self._go(s, Step.TERMS)
-            return
+            return False
         self._log(s, Step.MARKET, "result", f"공개가격 {m.count}개(사업자 {m.providers}곳) · {m.position}")
-        out_of_range = cand > m.max or cand < m.min
-        if out_of_range and not s.margin_adjusted:
-            need = margin_for_price(float(r["hourlyCost"]), m.median, a["pricing_method"])
-            self._board(s, Step.MARKET, Status.WAITING, m.position)
-            above = cand > m.max
-            self._log(s, Step.MARKET, "think",
-                      f"제안가가 시장 {'최고가보다 높아' if above else '최저가보다 낮아'} 마진 조정을 제안합니다.")
-            opts = [Option(value="keep", label="그대로 유지", description="근거서에 시장 범위 밖이라고 표시")]
-            if need is not None and 0 < need < 0.95:
-                opts.insert(0, Option(value="median", label=f"시장 중앙값에 맞추기 (마진 {need:.0%})",
-                                      description=f"제안가를 ${m.median:.2f} 근처로 다시 계산"))
-            elif above:
-                # 원가 자체가 시장 중앙값보다 높다: 마진으로는 못 맞춘다 → 가정(취득비·가동률 등)을 다시 본다
-                opts.insert(0, Option(value="assumptions", label="가정값 다시 확인",
-                                      description=f"원가 ${float(r['hourlyCost']):.2f}가 시장 중앙값보다 높아 마진 조정으로는 맞출 수 없어요"))
-            s.question = Question(
-                id=self._qid(), step=Step.MARKET,
-                title=f"제안가가 시장 {'최고가보다 높아요' if above else '최저가보다 낮아요'}",
-                text=f"제안가 ${cand:.2f} · 공개가격 ${m.min:.2f}~${m.max:.2f} (중앙값 ${m.median:.2f}). "
-                     + ("이 가격이면 수주가 어렵거나, 원가 가정을 다시 봐야 할 수 있어요." if above
-                        else "마진을 더 확보할 여지가 있어요."),
-                options=opts)
+        return cand > m.max or cand < m.min
+
+    def _finish_market(self, s: AgentSession) -> None:
+        m = s.market
+        if not m or not m.count:
+            self._board(s, Step.MARKET, Status.WARNING, "비교할 공개 가격 없음")
             return
+        cand = float(s.simulation["candidatePrice"])
+        out_of_range = cand > m.max or cand < m.min
         self._board(s, Step.MARKET, Status.DONE if not out_of_range else Status.WARNING, m.position,
                     [f"최저 ${m.min:.2f} · 중앙 ${m.median:.2f} · 최고 ${m.max:.2f}"])
-        self._go(s, Step.TERMS)
+
+    def _q_market(self, s: AgentSession) -> Question:
+        a, r, m = s.assumptions, s.simulation, s.market
+        cand = float(r["candidatePrice"])
+        need = margin_for_price(float(r["hourlyCost"]), m.median, a["pricing_method"])
+        self._board(s, Step.MARKET, Status.WAITING, m.position)
+        above = cand > m.max
+        self._log(s, Step.MARKET, "think",
+                  f"제안가가 시장 {'최고가보다 높아' if above else '최저가보다 낮아'} 마진 조정을 제안합니다.")
+        opts = [Option(value="keep", label="그대로 유지", description="근거서에 시장 범위 밖이라고 표시")]
+        if need is not None and 0 < need < 0.95:
+            opts.insert(0, Option(value="median", label=f"시장 중앙값에 맞추기 (마진 {need:.0%})",
+                                  description=f"제안가를 ${m.median:.2f} 근처로 다시 계산"))
+        elif above:
+            # 원가 자체가 시장 중앙값보다 높다: 마진으로는 못 맞춘다 → 가정(취득비·가동률 등)을 다시 본다
+            opts.insert(0, Option(value="assumptions", label="가정값 다시 확인",
+                                  description=f"원가 ${float(r['hourlyCost']):.2f}가 시장 중앙값보다 높아 마진 조정으로는 맞출 수 없어요"))
+        return Question(
+            id=self._qid(), step=Step.MARKET,
+            title=f"제안가가 시장 {'최고가보다 높아요' if above else '최저가보다 낮아요'}",
+            text=f"제안가 ${cand:.2f} · 공개가격 ${m.min:.2f}~${m.max:.2f} (중앙값 ${m.median:.2f}). "
+                 + ("이 가격이면 수주가 어렵거나, 원가 가정을 다시 봐야 할 수 있어요." if above
+                    else "마진을 더 확보할 여지가 있어요."),
+            options=opts)
 
     def _answer_market(self, s: AgentSession, q: Question, ans: Answer) -> None:
         s.margin_adjusted = True
@@ -413,6 +473,7 @@ class CostAgent:
             a["target_rate"] = round(need, 4)
             a.setdefault("sources", {})["target_rate"] = f"시장 중앙값에 맞춰 에이전트가 조정 (원래 {old:.0%})"
             self._log(s, Step.MARKET, "answer", f"마진을 {old:.0%} → {need:.0%}로 바꿔 다시 계산합니다.")
+            self._board(s, Step.ASSUMPTIONS, Status.DONE, f"{a['model_name']} {a['gpu_count']}장 · 마진 {need:.0%} (시장 조정)")
             self._go(s, Step.SIMULATE)
         else:
             self._log(s, Step.MARKET, "answer", "제안가를 그대로 유지합니다.")
@@ -425,10 +486,13 @@ class CostAgent:
             self._board(s, Step.TERMS, Status.DONE, "요청 없음")
             self._go(s, Step.REPORT)
             return
+        s.question = self._q_terms(s)
+
+    def _q_terms(self, s: AgentSession) -> Question:
         self._board(s, Step.TERMS, Status.WAITING, "할인율 입력 대기")
         self._log(s, Step.TERMS, "ask", "장기계약 할인율은 입찰 상황마다 달라 담당자에게 받습니다.")
         defaults = {3: 15, 5: 25}
-        s.question = Question(
+        return Question(
             id=self._qid(), step=Step.TERMS, title="장기계약 할인율을 정해 주세요",
             text="단독 입찰이면 낮게, 경쟁 입찰이면 높게 잡는 경우가 많아요. 회색 값은 예시입니다.",
             fields=[FieldSpec(name=f"discount_{y}", label=f"{y}년 계약 할인율 (%)", value=defaults.get(y, 10),
@@ -446,16 +510,28 @@ class CostAgent:
             if not 0 <= d < 1:
                 raise AgentError("할인율은 0~100% 사이여야 합니다.")
             s.terms.append(TermPrice(years=y, discount_rate=d, price=round(cand * (1 - d), 4)))
+        self._log(s, Step.TERMS, "answer", " · ".join(f"{t.years}년 할인 {t.discount_rate:.0%}" for t in s.terms))
+        self._price_terms(s)
+        self._go(s, Step.REPORT)
+
+    def _price_terms(self, s: AgentSession) -> None:
+        """담당자가 정한 할인율로 기간별 가격을 (다시) 계산한다. 제안가가 바뀌면 다시 부른다."""
+        cand = float(s.simulation["candidatePrice"])
+        s.terms = [TermPrice(years=t.years, discount_rate=t.discount_rate, price=round(cand * (1 - t.discount_rate), 4))
+                   for t in s.terms]
         cost = float(s.simulation["hourlyCost"])
         below = [t for t in s.terms if t.price < cost]
         self._log(s, Step.TERMS, "result", " · ".join(f"{t.years}년 ${t.price:.3f}" for t in s.terms))
         self._board(s, Step.TERMS, Status.WARNING if below else Status.DONE,
                     " · ".join(f"{t.years}년 ${t.price:.2f}" for t in s.terms),
                     [f"{t.years}년 가격이 원가(${cost:.2f})보다 낮습니다" for t in below])
-        self._go(s, Step.REPORT)
 
     # 7) 근거서 -----------------------------------------------------------
     def _step_report(self, s: AgentSession) -> None:
+        self._do_report(s)
+        self._go(s, Step.DONE)
+
+    def _do_report(self, s: AgentSession) -> None:
         r, a, m, d = s.simulation, s.assumptions, s.market, s.draft
         lines = [
             f"청구서 '{d.file_name}'을 {({'llm': 'AI', 'rules': '키워드 규칙', 'template': '저장된 양식'}).get(d.mapper, d.mapper)}로 분류했고 총액 대조는 "
@@ -478,7 +554,6 @@ class CostAgent:
         s.report_ready = True
         self._log(s, Step.REPORT, "result", "견적 근거서(엑셀)를 만들었습니다.")
         self._board(s, Step.REPORT, Status.DONE, "엑셀 다운로드 가능")
-        self._go(s, Step.DONE)
 
     # ------------------------------------------------------------------ 공통
     def _board(self, s: AgentSession, step: Step, status: Status, summary: str | None = None,

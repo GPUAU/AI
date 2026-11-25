@@ -43,6 +43,9 @@ spec:
               value: http://backend.u1-3.svc.cluster.local
             - name: TEMPLATE_DIR
               value: /data/templates
+            # 원가 에이전트: graph(LangGraph, LLM이 다음 행동 선택) | workflow(고정 순서)
+            - name: AGENT_ENGINE
+              value: graph
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

@@ -12,7 +12,8 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 
 from .agent.models import AgentSession, Answer, Goal
-from .agent.orchestrator import AgentError, CostAgent
+from .agent.graph import build_agent, checkpointer_from, openai_controller
+from .agent.orchestrator import AgentError
 from .agent.report import build_report
 
 from .be_client import BackendClient, BackendError, build_request
@@ -40,13 +41,22 @@ def build_service(settings: Settings) -> BillService:
     return BillService(mapper, TemplateStore(settings.template_dir))
 
 
+def build_controller(settings: Settings, service: BillService):
+    """다음 행동을 고르는 LLM 판단자. AI 분류를 쓰는 환경에서만 켠다 (금액 없는 관찰만 보낸다)."""
+    if settings.agent_engine != "graph" or not settings.agent_controller or not hasattr(service.mapper, "mask"):
+        return None
+    return openai_controller(settings.openai_api_key or "", settings.controller_model or settings.openai_model,
+                             base_url=settings.openai_base_url)
+
+
 def create_app(settings: Settings | None = None, service: BillService | None = None,
                backend: BackendClient | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     service = service or build_service(settings)
     backend = backend or BackendClient(settings.spring_url)
     app = FastAPI(title="GPU AU Cost Agent", version="0.2.0")
-    agent = CostAgent(service, backend)
+    controller = build_controller(settings, service)
+    agent = build_agent(settings.agent_engine, service, backend, controller, checkpointer_from(settings.checkpoint_db))
 
     def svc() -> BillService:
         return service
@@ -54,7 +64,8 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
     @app.get("/health")
     def health():
         return {"status": "ok", "mapper": service.mapper.name,
-                "llm_masked": getattr(service.mapper, "mask", None)}
+                "llm_masked": getattr(service.mapper, "mask", None),
+                "engine": settings.agent_engine, "controller": "llm" if controller else "policy"}
 
     @app.post("/v1/bills", response_model=BillDraft)
     async def upload(file: UploadFile = File(...), s: BillService = Depends(svc)):
