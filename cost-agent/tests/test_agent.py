@@ -199,3 +199,50 @@ def test_backend_failure_reasks_with_previous_values(tmp_path, doc):
     assert sim.status == Status.ERROR and any("선택한 GPU 모델이 없습니다" in d for d in sim.details)
     vals = {f.name: f.value for f in s.question.fields}
     assert vals["gpu_count"] == 8 and vals["acquisition_amount"] == 1500000 and vals["utilization"] == 70
+
+
+def test_unknown_currency_asks_manager(tmp_path, samples):
+    from tests.conftest import make_samples
+    from app.parsing import extract
+    p = tmp_path / "bill_i.xlsx"
+    make_samples.bill_i(p)
+    backend, _ = fake_backend()
+    agent = CostAgent(BillService(RulesMapper(), TemplateStore(tmp_path / "t")), backend)
+    s = agent.start(extract(p.name, p.read_bytes()), Goal())
+    assert s.step == Step.ANALYZE and s.question.title.startswith("청구서 금액의 통화")
+    s = agent.answer(s.id, Answer(question_id=s.question.id, choice="currency:KRW"))
+    assert s.draft.currency.value == "KRW" and not any(i.code == "NO_CURRENCY" for i in s.draft.issues)
+    assert s.step == Step.ASSUMPTIONS        # 누락 없음 (보안관제·UPS 유지보수 → 운영)
+
+
+def test_rules_recognize_gpu_lease_and_memory(tmp_path):
+    from tests.conftest import make_samples
+    from app.parsing import extract
+    p = tmp_path / "g.csv"
+    make_samples.bill_g(p)
+    d = BillService(RulesMapper(), TemplateStore(tmp_path / "t")).ingest(extract(p.name, p.read_bytes()))
+    kinds = {l.label: l.item_type.value for l in d.lines if l.item_type}
+    assert kinds["GPU 서버 임차료 (H200 8장)"] == "GPU" and kinds["추가 메모리 증설"] == "MEMORY"
+    assert "NETWORK_STORAGE" in [t.value for t in d.missing_items]
+
+
+def test_ai_bundle_is_cross_checked_with_rules(tmp_path):
+    from tests.conftest import make_samples
+    from app.parsing import extract
+    p = tmp_path / "h.xlsx"
+    make_samples.bill_h(p)
+
+    def llm(system, user, schema):   # AI가 묶음에서 전력만 잡은 상황
+        rows = [{"ref": "청구서!3", "role": "COST", "item_type": "RACK_FACILITY", "amount_col": 2, "included_items": ["ELECTRICITY"]},
+                {"ref": "청구서!4", "role": "COST", "item_type": "NETWORK_STORAGE", "amount_col": 2, "included_items": []},
+                {"ref": "청구서!5", "role": "SUBTOTAL", "item_type": None, "amount_col": 2, "included_items": []},
+                {"ref": "청구서!6", "role": "TAX", "item_type": None, "amount_col": 2, "included_items": []},
+                {"ref": "청구서!7", "role": "TOTAL", "item_type": None, "amount_col": 2, "included_items": []}]
+        for r in rows:
+            r.update(period=None, confidence=0.9, reason="t")
+        return json.dumps({"vendor": None, "currency": "KRW", "default_period": "MONTH", "rows": rows})
+    d = BillService(LLMMapper(llm), TemplateStore(tmp_path / "t")).ingest(extract(p.name, p.read_bytes()))
+    bundle = next(l for l in d.lines if l.ref == "청구서!3")
+    assert {"ELECTRICITY", "NETWORK_STORAGE", "OPERATIONS"} <= {t.value for t in bundle.included_items}
+    assert "규칙 교차 확인" in bundle.reason
+    assert "OPERATIONS" not in [t.value for t in d.missing_items]

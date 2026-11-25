@@ -33,7 +33,7 @@ ITEM_KEYWORDS: list[tuple[ItemType, list[str]]] = [
         ["운영", "관리", "기술지원", "유지보수", "보안관제", "관제", "모니터링", "remote hands",
          "smart hands", "support", "maintenance", "management", "monitoring"],
     ),
-    (ItemType.GPU, ["gpu 임차", "gpu 리스", "gpu lease", "gpu rental"]),
+    (ItemType.MEMORY, ["메모리", "memory", "ram 증설"]),
     (ItemType.ACQUISITION, ["구매", "취득", "설치비", "구축비", "setup", "installation", "purchase"]),
 ]
 
@@ -53,7 +53,13 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
 
 
+GPU_LEASE_WORDS = ["임차", "리스", "대여", "lease", "rental", "rent"]
+
+
 def _find_item(text: str) -> ItemType | None:
+    # 'GPU 서버 임차료'처럼 GPU와 임차 표현이 함께 있으면 GPU 임차
+    if re.search(r"(?<![a-z])gpu(?![a-z])", text) and any(w in text for w in GPU_LEASE_WORDS):
+        return ItemType.GPU
     for item, words in ITEM_KEYWORDS:
         if any(_word_in(w, text) for w in words):
             return item

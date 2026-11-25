@@ -116,6 +116,12 @@ pytest
 | `bill_a_domestic_krw.xlsx` | 국내 IDC 기본 양식, 소계·부가세·합계 대조 |
 | `bill_b_colo_usd.xlsx` | 영어 양식, 코로케이션에 전력 포함(묶음) |
 | `bill_c_multisheet_krw.xlsx` | 요약/상세 2개 시트, 낯선 항목명, 할인, 1회성 비용, 운영비 누락 경고 |
+| `bill_d_amount_col_left_krw.xlsx` | 금액 칸이 맨 오른쪽이 아님 (청구금액·수량·단가·비고) |
+| `bill_e_total_mismatch_krw.xlsx` | 총액에 표에 없는 금액 → 재분류 2회 후 담당자 질문 |
+| `bill_f_annual_usd.xlsx` | 영어·달러·연간 계약 (×12 하지 않음) |
+| `bill_g_gpu_lease_krw.csv` | CSV, GPU 임차·메모리, 할인, 네트워크 누락 |
+| `bill_h_bundle_krw.xlsx` | 통합 패키지 한 줄에 상면·전력·회선·관제 포함 (AI + 규칙 교차 확인) |
+| `bill_i_messy_sensitive_krw.xlsx` | 빈 줄·메모 줄, 통화 표시 없음(질문), 고객사명·이메일·전화 (가림 확인) |
 
 실제 사업자 양식·금액이 아니다.
 

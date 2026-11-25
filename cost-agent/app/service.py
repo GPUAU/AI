@@ -64,6 +64,8 @@ class BillService:
             try:
                 mapping = self.mapper.map(doc)
                 used = self.mapper.name
+                if used == "llm":
+                    mapping = self._cross_check(doc, mapping)
             except LLMMappingError as exc:
                 issues.append(Issue(level=IssueLevel.WARNING, code="LLM_FAILED",
                                     message=f"AI 분류에 실패해 키워드 규칙으로 분류했습니다. 결과를 꼭 확인하세요. ({exc})"))
@@ -116,6 +118,21 @@ class BillService:
         self._drafts[draft_id] = draft
         return draft
 
+    def _cross_check(self, doc: ExtractedDocument, mapping: DocumentMapping) -> DocumentMapping:
+        """AI 결과를 키워드 규칙과 교차 확인한다. 같은 항목으로 본 줄에서 규칙이 찾은 '포함 항목'을 더한다
+        (예: '통합 패키지 (상면·전력·회선·관제 포함)'에서 AI가 전력만 잡았을 때 회선·관제를 보탠다)."""
+        rules = {m.ref: m for m in self.fallback.map(doc).rows}
+        rows = []
+        for m in mapping.rows:
+            r = rules.get(m.ref)
+            if m.role == LineRole.COST and r and r.role == LineRole.COST and r.included_items:
+                extra = [t for t in r.included_items if t not in m.included_items and t != m.item_type]
+                if extra:
+                    m = m.model_copy(update={"included_items": [*m.included_items, *extra],
+                                             "reason": m.reason + f" (+규칙 교차 확인: {', '.join(t.value for t in extra)} 포함)"})
+            rows.append(m)
+        return mapping.model_copy(update={"rows": rows})
+
     def remap(self, draft_id: str, feedback: str) -> BillDraft | None:
         """총액이 안 맞을 때 검토 결과를 주고 LLM에 다시 분류시킨다. LLM 매퍼가 아니면 None."""
         if not hasattr(self.mapper, "mask"):
@@ -131,6 +148,15 @@ class BillService:
         mapping = mapping.model_copy(update={"default_period": period})
         self._mappings[draft_id] = mapping
         draft = self._build(draft_id, doc, mapping, self.mapper.name, prev.fingerprint, [])
+        self._drafts[draft_id] = draft
+        return draft
+
+    def set_currency(self, draft_id: str, currency) -> BillDraft:
+        """통화를 판단하지 못한 청구서에 담당자가 정한 통화를 적용한다."""
+        doc, prev = self._docs[draft_id], self._drafts[draft_id]
+        mapping = self._mappings[draft_id].model_copy(update={"currency": currency})
+        self._mappings[draft_id] = mapping
+        draft = self._build(draft_id, doc, mapping, prev.mapper, prev.fingerprint, [])
         self._drafts[draft_id] = draft
         return draft
 
