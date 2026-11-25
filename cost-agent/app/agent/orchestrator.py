@@ -110,6 +110,14 @@ class CostAgent:
             via = {"llm": "AI", "rules": "키워드 규칙", "template": "저장된 양식 템플릿"}.get(d.mapper, d.mapper)
             self._log(s, Step.ANALYZE, "result", f"{via}로 {sum(1 for l in d.lines if l.role == LineRole.COST)}개 원가 줄을 분류했습니다.")
         d = s.draft
+        if d.currency is None:
+            self._board(s, Step.ANALYZE, Status.WAITING, "통화 확인 대기")
+            self._log(s, Step.ANALYZE, "ask", "청구서에서 통화(원·달러) 표시를 찾지 못해 담당자에게 확인합니다.")
+            s.question = Question(id=self._qid(), step=Step.ANALYZE, title="청구서 금액의 통화를 알려 주세요",
+                                  text="머리글이나 금액에 원·달러 표시가 없어 판단하지 못했어요. 잘못 고르면 원가가 크게 틀립니다.",
+                                  options=[Option(value="currency:KRW", label="원 (KRW)"),
+                                           Option(value="currency:USD", label="달러 (USD)")])
+            return
         rec = d.reconciliation
         if rec.matched is False and s.remap_tries < MAX_REMAP:
             s.remap_tries += 1
@@ -140,6 +148,13 @@ class CostAgent:
         self._go(s, Step.MISSING)
 
     def _answer_analyze(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        if (ans.choice or "").startswith("currency:"):
+            cur = Currency(ans.choice.split(":", 1)[1])
+            s.draft = self.bills.set_currency(s.draft.id, cur)
+            self._log(s, Step.ANALYZE, "answer", f"통화: {cur.value}")
+            return
+        if ans.choice not in ("proceed", "stop"):
+            raise AgentError("선택지에서 골라 주세요.")
         self._log(s, Step.ANALYZE, "answer", "그대로 진행" if ans.choice == "proceed" else "분류표 수정을 위해 중단")
         if ans.choice == "proceed":
             self._board(s, Step.ANALYZE, Status.WARNING, "총액 불일치를 알고 진행")
