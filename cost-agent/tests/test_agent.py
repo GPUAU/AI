@@ -8,6 +8,7 @@ from openpyxl import load_workbook
 
 from app.agent.market import margin_for_price, market_view, offer_prices
 from app.agent.models import Answer, Goal, Status, Step
+from app.agent.graph import GraphCostAgent
 from app.agent.orchestrator import AgentError, CostAgent
 from app.be_client import BackendClient
 from app.config import Settings
@@ -58,6 +59,12 @@ def assumptions(**kw):
     return v
 
 
+@pytest.fixture(params=["workflow", "graph"])
+def Agent(request):
+    """같은 시나리오를 워크플로와 LangGraph 에이전트(판단자 없음 = 기본 순서) 모두에서 확인한다."""
+    return CostAgent if request.param == "workflow" else GraphCostAgent
+
+
 def test_market_helpers():
     samples = offer_prices(OFFERS)
     assert len(samples) == 5                      # 상태가 OK가 아닌 값은 제외
@@ -74,9 +81,9 @@ def test_market_helpers():
     assert round(margin_for_price(2.0, 4.0, "COST_MARKUP"), 4) == 1.0
 
 
-def test_full_flow_with_questions_market_loop_and_report(tmp_path, doc):
+def test_full_flow_with_questions_market_loop_and_report(Agent, tmp_path, doc):
     backend, seen = fake_backend(sim_cost=3.0)            # 마진 60%로 제안가 7.5가 시장 최고가(7.0)를 넘는 상황
-    agent = CostAgent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
     s = agent.start(doc("c"), Goal(model_id="29", gpu_count=32))
 
     # 1) 분석 끝 → 2) 운영비 누락 질문
@@ -119,7 +126,7 @@ def test_full_flow_with_questions_market_loop_and_report(tmp_path, doc):
     assert wb.sheetnames == ["요약", "원가 항목", "가정값", "시장 비교", "진행 기록"]
 
 
-def test_remap_loop_fixes_total_with_feedback(tmp_path, doc):
+def test_remap_loop_fixes_total_with_feedback(Agent, tmp_path, doc):
     calls = []
 
     def llm(system, user, schema):
@@ -137,7 +144,7 @@ def test_remap_loop_fixes_total_with_feedback(tmp_path, doc):
         return json.dumps({"vendor": None, "currency": "USD", "default_period": "MONTH", "rows": rows})
 
     backend, _ = fake_backend()
-    agent = CostAgent(BillService(LLMMapper(llm), TemplateStore(tmp_path)), backend)
+    agent = Agent(BillService(LLMMapper(llm), TemplateStore(tmp_path)), backend)
     s = agent.start(doc("b"), Goal())
     assert len(calls) == 2 and "[이전 분류 검토 결과]" in calls[1] and "Invoice!7: TOTAL" in calls[1]
     assert s.remap_tries == 1 and s.draft.reconciliation.matched is True
@@ -145,9 +152,9 @@ def test_remap_loop_fixes_total_with_feedback(tmp_path, doc):
     assert s.step == Step.ASSUMPTIONS                     # B는 큰 비용 누락이 없어 바로 가정값으로
 
 
-def test_unfixable_total_asks_manager(tmp_path, doc):
+def test_unfixable_total_asks_manager(Agent, tmp_path, doc):
     backend, _ = fake_backend()
-    agent = CostAgent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
     d = doc("a")
     d = d.model_copy(update={"rows": [r for r in d.rows if "전력" not in r.label]})   # 줄을 빼서 총액 불일치
     s = agent.start(d, Goal())
@@ -174,9 +181,9 @@ def test_agent_api(tmp_path, samples):
     assert c.post(f"/v1/agent/sessions/{s['id']}/answer", json={"question_id": "x"}).status_code == 422
 
 
-def test_cost_above_market_asks_to_revisit_assumptions(tmp_path, doc):
+def test_cost_above_market_asks_to_revisit_assumptions(Agent, tmp_path, doc):
     backend, seen = fake_backend(sim_cost=6.5)            # 원가가 중앙값(4.0)보다 높음
-    agent = CostAgent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
     s = agent.start(doc("a"), Goal(model_id="29", gpu_count=8))
     s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(gpu_count=8)))
     assert s.step == Step.MARKET and [o.value for o in s.question.options] == ["assumptions", "keep"]
@@ -184,13 +191,13 @@ def test_cost_above_market_asks_to_revisit_assumptions(tmp_path, doc):
     assert s.step == Step.ASSUMPTIONS and {f.name: f.value for f in s.question.fields}["gpu_count"] == 8
 
 
-def test_backend_failure_reasks_with_previous_values(tmp_path, doc):
+def test_backend_failure_reasks_with_previous_values(Agent, tmp_path, doc):
     def down(req):
         if req.url.path == "/api/v1/cost-simulations":
             return httpx.Response(400, json={"isSuccess": False, "message": "요청값을 확인해 주세요.",
                                              "errors": [{"field": "modelId", "reason": "선택한 GPU 모델이 없습니다."}]})
         return httpx.Response(200, json={"isSuccess": True, "result": {"models": [], "items": [], "status": "NONE"}})
-    agent = CostAgent(BillService(RulesMapper(), TemplateStore(tmp_path)),
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)),
                       BackendClient("http://be", transport=httpx.MockTransport(down)))
     s = agent.start(doc("a"), Goal())
     s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(model_id="999", gpu_count=8)))
@@ -201,13 +208,13 @@ def test_backend_failure_reasks_with_previous_values(tmp_path, doc):
     assert vals["gpu_count"] == 8 and vals["acquisition_amount"] == 1500000 and vals["utilization"] == 70
 
 
-def test_unknown_currency_asks_manager(tmp_path, samples):
+def test_unknown_currency_asks_manager(Agent, tmp_path, samples):
     from tests.conftest import make_samples
     from app.parsing import extract
     p = tmp_path / "bill_i.xlsx"
     make_samples.bill_i(p)
     backend, _ = fake_backend()
-    agent = CostAgent(BillService(RulesMapper(), TemplateStore(tmp_path / "t")), backend)
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path / "t")), backend)
     s = agent.start(extract(p.name, p.read_bytes()), Goal())
     assert s.step == Step.ANALYZE and s.question.title.startswith("청구서 금액의 통화")
     s = agent.answer(s.id, Answer(question_id=s.question.id, choice="currency:KRW"))

@@ -54,23 +54,46 @@
 
 **원칙**: 숫자는 코드가 읽고 BE가 계산한다. LLM은 분류와 설명만 맡는다. 같은 입력이면 같은 결과가 나와야 한다.
 
-## 3. 원가 에이전트 (대화형, `/v1/agent`)
+## 3. 원가 에이전트 (LangGraph, `/v1/agent`)
 
-목표 "청구서 한 장 → 근거 있는 제안가와 견적 근거서"를 향해 단계를 진행하고, 사람만 정할 수 있는 것은 질문 카드로 묻는다.
-다음 단계는 코드(상태기계)가 정하고, LLM은 분류·재분류에만 쓴다. 숫자는 BE만 계산한다.
+목표 "청구서 한 장 → 근거 있는 제안가와 견적 근거서"를 향해 **LLM 판단자가 다음 행동(도구)을 고르고**, 결과를 보고 다시 고른다.
+숫자는 도구와 BE가 계산하고, 판단자에게는 금액·식별자 없이 상태와 상대값만 보낸다.
 
-| 단계 | 에이전트가 하는 일 | 묻는 것 |
+```mermaid
+flowchart LR
+  START --> decide[decide<br/>LLM 판단자: 다음 도구 선택]
+  decide -->|tool call| act[act<br/>도구 실행 · 관찰 생성]
+  act -->|관찰 + 현재 상태| decide
+  act -->|ask_user| wait[wait<br/>interrupt → 질문 카드]
+  wait -->|담당자 답변| decide
+  act -->|finish: guard 통과| END
+```
+
+| 도구 | 하는 일 | 전제 조건 (안 맞으면 '실행 불가'와 이유를 돌려줌) |
 | --- | --- | --- |
-| 청구서 분석 | 분류(숫자 가림) → 총액 대조 → 안 맞으면 원인을 주고 재분류(최대 2회) | 그래도 안 맞으면 진행/중단 |
-| 누락 확인 | 빠진 큰 비용 탐지 | 별도 금액 / 다른 요금에 포함 / 제외 |
-| 가정값 | 근거 붙은 제안값 (보고서·BE 환율) | 확인·수정 |
-| 원가 계산 | BE `/cost-simulations` | 실패 시 입력 유지하고 재질문 |
-| 시장 비교 | BE `/market/offers` → 사업자별 대표값으로 최저·중앙·최고 | 범위 밖이면 중앙값 맞춤(마진 재계산) 또는 가정값 재확인 |
-| 기간별 가격 | 3·5년 계약가 | 할인율 |
-| 근거서 | 엑셀 (요약·원가 항목·가정값과 근거·시장 비교·진행 기록) | — |
+| `analyze_bill` | 분류(숫자 가림) · 규칙 교차 확인 · 총액 대조 · 누락 탐지 | 아직 분석 전 |
+| `remap_bill(hypothesis)` | 판단자의 원인 가설을 붙여 재분류 | 총액 불일치, 최대 2회 |
+| `ask_user(kind)` | 질문 카드 (입력칸·선택지는 코드가 만듦): 통화 · 총액 불일치 · 누락 비용 · 가정값 · 시장 이탈 · 할인율 | 종류별 (예: 시장 이탈은 최신 비교에서 범위 밖일 때만) |
+| `simulate_cost` | BE `/cost-simulations` | 가정값 확정 · 누락 처리 완료 · 입력이 바뀜 |
+| `compare_market` | BE `/market/offers` → 사업자별 대표값 | 최신 원가 계산 |
+| `finish` | 근거서 생성 | **guard**: 통화·총액·누락·가정값·최신 원가·최신 시장 비교·시장 이탈 결정·할인율 |
+
+- **판단 기록**: 판단자가 고른 도구와 이유가 진행 기록(`think` · "에이전트 판단 · …")과 `decisions`에 남고, 근거서 '진행 기록' 시트에 들어간다.
+- **대체 정책**: 판단자를 쓸 수 없거나(키 없음 · `MAPPER=rules` · 호출 실패), '실행 불가'가 2번 연속이거나, 같은 선택을 3번 반복하면 기본 순서(워크플로와 같은 판단)가 고른다.
+- **세션**: LangGraph checkpointer. 기본은 메모리이고, `CHECKPOINT_DB=/data/agent.db`이면 SQLite (`pip install '.[sqlite]'`, 재시작 후에도 남기려면 PVC 필요).
+- **전환**: `AGENT_ENGINE=workflow`면 이전 고정 순서 상태기계(`orchestrator.CostAgent`). `AGENT_CONTROLLER=off`면 그래프는 쓰되 판단은 기본 순서. `CONTROLLER_MODEL`로 판단자 모델만 바꿀 수 있다.
+
+**v1(워크플로)과 비교** — `python scripts/eval_agent.py` (2026-11-25, gpt-4o-mini 분류·판단, BE는 가짜, 질문엔 정해진 답)
+
+| 항목 | 결과 |
+| --- | --- |
+| 같은 결론 (질문 순서 · 최종 단계 · 제안가) | **9/9** |
+| 판단 주체 | 전부 LLM (기본 순서로 넘어간 경우 0, 실행 불가 0) |
+| 다르게 판단한 곳 | `bill_e`(표에 없는 비용 45만 원): v1은 재분류 2회 후 질문, v2는 **재분류 1회 후 "여전히 불일치"를 보고 바로 질문** |
+| 시간 | 판단 호출이 6~11회 늘어 세션당 약 +10초 (gpt-4o-mini 기준) |
 
 `POST /v1/agent/sessions`(file, model_id, gpu_count, terms) → `POST /v1/agent/sessions/{id}/answer`(question_id, choice, values) 반복
-→ `GET /v1/agent/sessions/{id}/report.xlsx`. 세션은 메모리에만 둔다.
+→ `GET /v1/agent/sessions/{id}/report.xlsx`. 응답 형식은 v1과 같아 화면(FE)은 바꾸지 않았다.
 
 ## 4. API (단건)
 
@@ -127,7 +150,7 @@ pytest
 
 ## 7. 한계와 다음 단계
 
-- 초안은 메모리에 저장한다 (Pod 재시작 시 사라짐). 템플릿은 `TEMPLATE_DIR` 파일 → 운영 시 PVC 또는 DB로 옮긴다.
+- 초안과 에이전트 세션은 기본적으로 메모리에 저장한다 (Pod 재시작 시 사라짐). 템플릿은 `TEMPLATE_DIR` 파일 → 운영 시 PVC 또는 DB로 옮긴다.
 - 할인 줄은 원가에서 빼지 않는다 (보수적). 계약 할인 반영은 담당자 판단.
 - 상면(RACK_FACILITY)과 공간 임대(RENT) 중 한쪽만 청구되면 다른 쪽을 `INCLUDED_IN_OTHER`로 보낸다 (BE 누락 판정 방지).
 - 금융비용(FINANCING)은 청구서에 없으므로 BE 결과가 `INCOMPLETE`·`FINANCING_NOT_INCLUDED`로 나온다. 금리 입력은 다음 단계.
