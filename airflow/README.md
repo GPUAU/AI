@@ -133,6 +133,12 @@ self-hosted runner(u1-3, 캠퍼스 Mac) → OIDC(gha-u1-3) → 이미지 빌드(
 ### 처음 한 번
 
 1. runner: AI 레포 Settings → Actions → Runners에 캠퍼스 Mac 등록(라벨 `u1-3`, 레포 밖 폴더, `./svc.sh install && ./svc.sh start`).
+   - `svc.sh install`이 만드는 서비스 설정(`~/Library/LaunchAgents/actions.runner.*.plist`)의 `SessionCreate`를 지운다. 있으면 키체인을 못 열어 ECR 로그인이 `-25308`로 실패한다. 다시 install하면 또 들어간다.
+     ```bash
+     cd ~/actions-runner-ai && ./svc.sh stop
+     /usr/libexec/PlistBuddy -c "Delete :SessionCreate" ~/Library/LaunchAgents/actions.runner.GPUAU-AI.u1-3-mac-AI.plist
+     ./svc.sh start
+     ```
 2. 클러스터 Secret(배포 workflow 역할은 Secret을 못 만든다): `export KUBECONFIG=~/.kube/u1-3.yaml && bash k8s/airflow/create-secrets.sh`
    - `airflow-secrets`: 수출입은행·Hyperstack·AWS(가격 조회 전용) 키, Slack 웹훅, JWT·Fernet(자동 생성)
    - `airflow-auth`: UI 비밀번호(admin·team)
