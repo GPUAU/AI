@@ -24,9 +24,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      # runner Mac의 ~/.docker에 레지스트리 로그인 정보를 남기지 않는다(job env에서는 runner 컨텍스트를 못 써서 여기서 설정)
+      # runner Mac의 ~/.docker에 레지스트리 로그인 정보를 남기지 않는다(job env에서는 runner 컨텍스트를 못 써서 여기서 설정).
+      # 설정 폴더를 바꾸면 buildx 플러그인(~/.docker/cli-plugins)을 못 찾으므로 링크해 둔다.
       - name: Docker config in runner temp
-        run: echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          ln -sfn "$HOME/.docker/cli-plugins" "$RUNNER_TEMP/docker/cli-plugins"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+          DOCKER_CONFIG="$RUNNER_TEMP/docker" docker buildx version
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::430986759212:role/gha-u1-3
