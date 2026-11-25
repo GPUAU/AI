@@ -70,6 +70,26 @@ class BackendClient:
     def __init__(self, base_url: str, timeout: float = 15.0, transport: httpx.BaseTransport | None = None):
         self._client = httpx.Client(base_url=base_url, timeout=timeout, transport=transport)
 
+    def get(self, path: str, params: dict | None = None) -> dict:
+        try:
+            resp = self._client.get(path, params=params)
+            body = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise BackendError(f"BE 조회 실패({path}): {type(exc).__name__}") from exc
+        if resp.status_code >= 400 or not body.get("isSuccess"):
+            raise BackendError(body.get("message") or f"BE 조회 실패({path})", body.get("errors"), resp.status_code)
+        return body["result"]
+
+    def models(self) -> list[dict]:
+        return self.get("/api/v1/catalog").get("models", [])
+
+    def offers(self, model_id: str, contract_type: str = "ON_DEMAND") -> list[dict]:
+        return self.get("/api/v1/market/offers", {"modelId": model_id, "contractType": contract_type}).get("items", [])
+
+    def latest_fx(self) -> dict | None:
+        r = self.get("/api/v1/exchange-rates/latest")
+        return r if r.get("status") == "AVAILABLE" and r.get("rate") else None
+
     def simulate(self, request: dict) -> dict:
         try:
             resp = self._client.post("/api/v1/cost-simulations", json=request)
