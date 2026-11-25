@@ -116,6 +116,24 @@ class BillService:
         self._drafts[draft_id] = draft
         return draft
 
+    def remap(self, draft_id: str, feedback: str) -> BillDraft | None:
+        """총액이 안 맞을 때 검토 결과를 주고 LLM에 다시 분류시킨다. LLM 매퍼가 아니면 None."""
+        if not hasattr(self.mapper, "mask"):
+            return None
+        doc, prev = self._docs[draft_id], self._drafts[draft_id]
+        try:
+            mapping = self.mapper.map(doc, feedback=feedback)
+        except LLMMappingError:
+            return None
+        if mapping.currency is None:
+            mapping = mapping.model_copy(update={"currency": doc.currency_hint})
+        period = detect_period(doc) or mapping.default_period or Period.MONTH
+        mapping = mapping.model_copy(update={"default_period": period})
+        self._mappings[draft_id] = mapping
+        draft = self._build(draft_id, doc, mapping, self.mapper.name, prev.fingerprint, [])
+        self._drafts[draft_id] = draft
+        return draft
+
     def get(self, draft_id: str) -> BillDraft:
         return self._drafts[draft_id]
 

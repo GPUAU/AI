@@ -9,7 +9,11 @@ GET  /v1/templates             저장된 양식 템플릿 목록
 
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+
+from .agent.models import AgentSession, Answer, Goal
+from .agent.orchestrator import AgentError, CostAgent
+from .agent.report import build_report
 
 from .be_client import BackendClient, BackendError, build_request
 from .config import Settings
@@ -41,7 +45,8 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
     settings = settings or Settings.from_env()
     service = service or build_service(settings)
     backend = backend or BackendClient(settings.spring_url)
-    app = FastAPI(title="GPU AU Cost Agent", version="0.1.0")
+    app = FastAPI(title="GPU AU Cost Agent", version="0.2.0")
+    agent = CostAgent(service, backend)
 
     def svc() -> BillService:
         return service
@@ -98,6 +103,52 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
                                 {"message": str(exc), "errors": exc.errors}) from exc
         return {"request": request, "result": result,
                 "warnings": [i.model_dump() for i in draft.issues if i.level != IssueLevel.INFO]}
+
+    # ------------------------------------------------------------ 원가 에이전트 (대화형)
+    @app.post("/v1/agent/sessions", response_model=AgentSession)
+    async def agent_start(file: UploadFile = File(...), model_id: str | None = Form(None),
+                          gpu_count: int | None = Form(None), terms: str = Form("3,5")):
+        data = await file.read(settings.max_upload_bytes + 1)
+        if len(data) > settings.max_upload_bytes:
+            raise HTTPException(413, "파일이 너무 큽니다.")
+        try:
+            doc = extract(file.filename or "upload.xlsx", data)
+            years = [int(x) for x in terms.split(",") if x.strip()]
+        except UnsupportedFile as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, "계약 기간은 '3,5'처럼 숫자로 입력하세요.") from exc
+        try:
+            return agent.start(doc, Goal(model_id=model_id or None, gpu_count=gpu_count, terms_years=years))
+        except AgentError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/v1/agent/sessions/{session_id}", response_model=AgentSession)
+    def agent_get(session_id: str):
+        try:
+            return agent.get(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "세션을 찾을 수 없습니다.") from exc
+
+    @app.post("/v1/agent/sessions/{session_id}/answer", response_model=AgentSession)
+    def agent_answer(session_id: str, ans: Answer):
+        try:
+            return agent.answer(session_id, ans)
+        except KeyError as exc:
+            raise HTTPException(404, "세션을 찾을 수 없습니다.") from exc
+        except AgentError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/v1/agent/sessions/{session_id}/report.xlsx")
+    def agent_report(session_id: str):
+        try:
+            s = agent.get(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "세션을 찾을 수 없습니다.") from exc
+        if not s.report_ready:
+            raise HTTPException(409, "아직 근거서가 준비되지 않았습니다.")
+        return Response(build_report(s), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="cost-report-{session_id}.xlsx"'})
 
     @app.get("/v1/templates")
     def templates(s: BillService = Depends(svc)):

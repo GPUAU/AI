@@ -133,8 +133,11 @@ class LLMMapper:
         self.mask = mask
         self.destination = destination
 
-    def map(self, doc: ExtractedDocument, only_refs: set[str] | None = None) -> DocumentMapping:
+    def map(self, doc: ExtractedDocument, only_refs: set[str] | None = None,
+            feedback: str | None = None) -> DocumentMapping:
         prompt = build_user_prompt(doc, only_refs, self.mask)
+        if feedback:
+            prompt += "\n\n[이전 분류 검토 결과]\n" + feedback
         try:
             raw = self._complete(SYSTEM_PROMPT, prompt, RESPONSE_SCHEMA)
         except Exception as exc:  # noqa: BLE001 - 인증·네트워크·한도 오류는 규칙 매퍼로 대체한다
