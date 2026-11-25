@@ -1,0 +1,28 @@
+# https://u1-3.skala-us.com/airflow → airflow-api-server. frontend Ingress(/)와 같은 호스트, 더 긴 경로가 먼저 맞는다.
+# 캠퍼스 IP만 허용(frontend와 같은 대역). 로그인은 Airflow 자체 로그인(팀 Basic Auth는 걸지 않음).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: airflow
+  namespace: u1-3
+  labels:
+    app: airflow
+  annotations:
+    nginx.ingress.kubernetes.io/whitelist-source-range: "110.10.153.80/28,175.114.173.160/28"
+    nginx.ingress.kubernetes.io/allowlist-source-range: "110.10.153.80/28,175.114.173.160/28"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [u1-3.skala-us.com]
+      secretName: team-tls
+  rules:
+    - host: u1-3.skala-us.com
+      http:
+        paths:
+          - path: /airflow
+            pathType: Prefix
+            backend:
+              service:
+                name: airflow-api-server
+                port:
+                  name: http

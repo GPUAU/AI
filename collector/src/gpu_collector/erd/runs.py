@@ -2,6 +2,7 @@
 
 매일 수집의 성공 기록은 수집 기준일 키(daily:{date}:…)를 쓴다. 같은 날 다시 실행하면 이미 적재한 묶음은 건너뛰고
 실패한 묶음만 다시 적재한다. 실패 기록은 실행 번호 키를 써서 다음 실행에서 다시 시도할 수 있게 한다.
+시간 단위 수집(--hourly)은 그날 daily 묶음이 끝난 뒤 시간대 키(hourly:{date}T{HH}:…)로 다시 처리한다(hourly()).
 """
 from datetime import date as date_type, datetime
 from zoneinfo import ZoneInfo
@@ -26,18 +27,30 @@ def collection_date(value, now):
         raise ValueError(f"수집 기준일 형식은 YYYY-MM-DD: {value}") from error
 
 
+def slot(context):
+    """키 앞부분. 매일 수집은 daily:{date}, 시간 단위 수집은 hourly:{date}T{HH}(hourly())."""
+    return context.get("slot") or f"daily:{context['date']}"
+
+
 def target_key(context, target):
     """대상 범위 점검(성공·미발견)의 키."""
-    return f"daily:{context['date']}:{target['target_id']}:target"
+    return f"{slot(context)}:{target['target_id']}:target"
 
 
 def offer_key(context, target, offer_id):
     """오퍼 점검(가격 확인·오퍼 미발견)의 키."""
-    return f"daily:{context['date']}:{target['target_id']}:offer:{offer_id}"
+    return f"{slot(context)}:{target['target_id']}:offer:{offer_id}"
 
 
 def offer_key_prefix(context, target):
-    return f"daily:{context['date']}:{target['target_id']}:offer:"
+    return f"{slot(context)}:{target['target_id']}:offer:"
+
+
+def hourly(context, at):
+    """그날 daily 묶음이 끝난 뒤 시간 단위로 다시 처리할 때의 문맥. 키는 수집 기준일 + KST 시(at).
+
+    intraday=True면 오퍼 미발견 판정을 하지 않는다(짧은 간격에서 빠진 오퍼는 다음 날 daily가 판정)."""
+    return {**context, "slot": f"hourly:{context['date']}T{at.astimezone(KST):%H}", "intraday": True}
 
 
 def failure_key(context, target):
@@ -50,8 +63,9 @@ def group_done(conn, context, targets):
     return bool(targets) and all(db.check_exists(conn, target_key(context, target)) for target in targets)
 
 
-def skipped(outcome):
-    return {**outcome, "status": "skipped", "reason": "이 수집 기준일에 이미 적재함"}
+def skipped(outcome, context=None):
+    hourly_slot = bool(context and context.get("intraday"))
+    return {**outcome, "status": "skipped", "reason": "이 시간대에 이미 적재함" if hourly_slot else "이 수집 기준일에 이미 적재함"}
 
 
 # 실패 기록·실행 상태 -------------------------------------------------------------------

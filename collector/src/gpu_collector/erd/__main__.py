@@ -2,7 +2,7 @@
 
   python -m gpu_collector.erd init                     DDL(빈 DB일 때만) + 기준 정보(sql/seed.sql) 적용
   python -m gpu_collector.erd collect aws [--date 2026-11-20] [--only aws_ec2_pricing_api,aws_savings_plans_api,aws_ec2_spot_api]
-                                          [--trigger manual|scheduled|retry]
+                                          [--trigger manual|scheduled|retry] [--hourly]
   python -m gpu_collector.erd backfill aws --since 2023-07 [--until 2026-11] [--only ...] [--regions ...] [--spot-days 90]
                                           [--keep-files] [--workers 3]
                                                        공식 과거 자료 적재(가격 파일 과거 버전, 스팟 90일)
@@ -13,7 +13,8 @@
   python -m gpu_collector.erd collect verda [--date ...] [--trigger ...]   Verda 공개 API (지역별 온디맨드·스팟, 약정 할인율 가정)
   python -m gpu_collector.erd backfill verda --since 2026-08 [--until 2026-11] [--no-verify]
                                                        Wayback 저장본(집계 출처)으로 Verda 과거 가격 적재
-  python -m gpu_collector.erd collect nebius [--date ...] [--trigger ...]  Nebius 문서 가격표(온디맨드·약정 상태) + 공개 스팟 API
+  python -m gpu_collector.erd collect nebius [--date ...] [--trigger ...] [--only nebius_pricing_docs,nebius_spot_price_api]
+                                          [--hourly]   Nebius 문서 가격표(온디맨드·약정 상태) + 공개 스팟 API
   python -m gpu_collector.erd backfill nebius [--days 29] [--only spot,docs] [--no-verify]
                                                        스팟 30일 이력(공식 API) + 문서 Wayback 저장본(집계)
   python -m gpu_collector.erd collect oracle [--date ...] [--trigger ...]  OCI 공개 정가 API(GPU 1장·시간 온디맨드, 리전 단일가)
@@ -42,6 +43,8 @@
   python -m gpu_collector.erd report [--model B300]    최신 가격과 대상별 마지막 점검 상태
 
 --date: 매일 수집의 수집 기준일(KST, 생략하면 오늘). 같은 기준일에 이미 적재한 묶음은 건너뛴다.
+--hourly: 시간 단위 수집(verda·aws·nebius). 그날 첫 실행은 매일 수집과 같고, 이후 실행은 시간대 키로 다시 처리한다.
+          AWS·Nebius는 스팟 시계열의 새 기록만, Verda는 가격이 바뀐 오퍼만 관측을 추가한다. 다른 출처는 하루 1번.
 
 실행 안전장치
   - 같은 사업자의 collect·backfill·specs는 동시에 하나만 실행한다(DB advisory lock). 이미 실행 중이면 종료 코드 75.
@@ -87,6 +90,8 @@ DB_OPTIONS = "-c statement_timeout=600000 -c lock_timeout=30000"
 COLLECTORS = {"aws": aws, "azure": azure, "verda": verda, "nebius": nebius, "oracle": oracle, "scaleway": scaleway,
               "hyperstack": hyperstack, "fx": fx}
 NO_BACKFILL = set()           # 과거 이력 적재가 없는 수집기
+ONLY_PROVIDERS = {"aws", "nebius"}               # collect --only(출처 고르기)를 받는 수집기
+HOURLY_PROVIDERS = {"aws", "nebius", "verda"}    # collect --hourly(시간 단위)를 받는 수집기
 
 
 class Terminated(Exception):
@@ -117,8 +122,9 @@ def parse(argv):
     c = sub.add_parser("collect")
     c.add_argument("provider", choices=sorted(COLLECTORS))
     c.add_argument("--date", type=date_arg, help="수집 기준일 YYYY-MM-DD(KST, 생략하면 오늘)")
-    c.add_argument("--only", help="쉼표로 구분한 data_source.source_name (aws만)")
+    c.add_argument("--only", help="쉼표로 구분한 data_source.source_name (aws·nebius)")
     c.add_argument("--trigger", default="manual", choices=["manual", "scheduled", "retry"])
+    c.add_argument("--hourly", action="store_true", help="시간 단위 수집(verda·aws·nebius)")
     b = sub.add_parser("backfill")
     b.add_argument("provider", choices=sorted(set(COLLECTORS) - NO_BACKFILL))
     b.add_argument("--since", help="YYYY-MM부터 (nebius 외 필수). fx는 YYYY-MM-DD")
@@ -147,6 +153,10 @@ def parse(argv):
     args = parser.parse_args(argv)
     if args.command == "backfill" and args.provider != "nebius" and not args.since:
         parser.error("--since가 필요하다")
+    if args.command == "collect" and args.only and args.provider not in ONLY_PROVIDERS:
+        parser.error(f"--only는 {', '.join(sorted(ONLY_PROVIDERS))}만 받는다")
+    if args.command == "collect" and args.hourly and args.provider not in HOURLY_PROVIDERS:
+        parser.error(f"--hourly는 {', '.join(sorted(HOURLY_PROVIDERS))}만 받는다")
     return args
 
 
@@ -214,8 +224,12 @@ def run(conn, args, abandoned):
         summary = (oracle if args.provider == "oracle" else aws).attach_specs(conn)
     elif args.command == "collect":
         kwargs = {"trigger_type": args.trigger, "date": args.date}
+        if args.provider in ONLY_PROVIDERS:
+            kwargs["only"] = set(args.only.split(",")) if args.only else None
+        if args.provider in HOURLY_PROVIDERS:
+            kwargs["hourly"] = args.hourly
         if args.provider == "aws":
-            kwargs.update(only=set(args.only.split(",")) if args.only else None, cache_dir=cache_dir())
+            kwargs["cache_dir"] = cache_dir()
         summary = COLLECTORS[args.provider].collect(conn, **kwargs)
     else:
         summary = backfill(conn, args)

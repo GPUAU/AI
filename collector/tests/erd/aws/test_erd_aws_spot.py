@@ -96,3 +96,31 @@ class SpotSeriesTests(HistoryDb):
         self.backfill(only={"aws_ec2_spot_price_history"},
                       spot_rows=[("use1-az2", "60", at["t"]), ("use1-az2", "58", at["t"] - timedelta(days=2))])
         self.assertEqual([p[2] for p in self.spot_points()], [Decimal(58), Decimal(60)])
+
+    def test_hourly_rerun_adds_new_records_only(self):
+        at = {}
+
+        def first(start, end):
+            at["t"] = end - timedelta(hours=1)
+            return [row("use1-az2", "60", at["t"])]
+
+        self.daily(first)
+        self.clock[0] += timedelta(hours=1)
+
+        def hourly(region, instances, start, end, max_pages=None):
+            self.spot_calls.append((start, end))
+            return [row("use1-az2", "60", at["t"]), row("use1-az2", "64", end - timedelta(minutes=10))]
+
+        summary = aws.collect(self.conn, only=ONLY_SPOT, cache_dir=self.temp.name, now=self.now,
+                              spot_history=hourly, hourly=True)
+        (group,) = summary["groups"]
+        self.assertEqual(group["status"], "success")
+        self.assertTrue(group["slot"].startswith("hourly:"))
+        self.assertEqual([p[2] for p in self.spot_points()], [Decimal(60), Decimal(64)])
+        missing = self.q("SELECT count(*) FROM collection_check WHERE run_id = %s AND processing_status = 'not_found' "
+                         "AND check_scope = 'offer'",
+                         summary["run_id"])[0][0]
+        self.assertEqual(missing, 0)
+        again = aws.collect(self.conn, only=ONLY_SPOT, cache_dir=self.temp.name, now=self.now,
+                            spot_history=lambda *a, **k: self.fail("같은 시간대에 다시 호출하면 안 됨"), hourly=True)
+        self.assertEqual([g["status"] for g in again["groups"]], ["skipped"])
