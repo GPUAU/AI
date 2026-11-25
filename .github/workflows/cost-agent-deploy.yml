@@ -1,0 +1,57 @@
+# cost-agent 배포: OIDC(gha-u1-3) → ECR(teams/u1-3/app:cost-agent-<sha>) push → 매니페스트 적용 → rollout 확인.
+# BE·FE·Airflow와 같은 ECR 리포지토리에 태그 접두사(cost-agent-)로 둔다. 레포 Secret이 필요 없다.
+# runner: AI 레포 self-hosted(u1-3 라벨, 캠퍼스 Mac). EKS API가 캠퍼스 IP만 받아 캠퍼스에서 돌아야 한다.
+# Secret(cost-agent-openai)은 이 역할로 만들 수 없어 개인 kubeconfig로 먼저 만든다(cost-agent/README.md).
+name: cost-agent-deploy
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cost-agent/**"
+      - ".github/workflows/cost-agent-deploy.yml"
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: cost-agent-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: [self-hosted, u1-3]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::430986759212:role/gha-u1-3
+          aws-region: ap-northeast-2
+      # 기본 ~/.docker(키체인)에 로그인하고 job이 끝나면 action이 로그아웃한다.
+      # runner 서비스 plist에 SessionCreate가 있으면 키체인을 못 열어 실패한다(-25308) → airflow/README.md
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build & push (linux/amd64)
+        run: |
+          set -o pipefail
+          IMAGE=${{ steps.ecr.outputs.registry }}/teams/u1-3/app:cost-agent-${{ github.sha }}
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          # ECR 태그는 덮어쓸 수 없다(IMMUTABLE). 같은 커밋을 다시 배포하면 빌드·push를 건너뛴다
+          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "이미 있는 이미지: $IMAGE (push 생략)"
+            exit 0
+          fi
+          # 확인이 실패한 이유는 따지지 않고 빌드한다. push가 '이미 있는 태그'로 막히면 그대로 진행하고,
+          # 그 밖의 오류는 실패로 끝낸다
+          if ! docker buildx build --platform linux/amd64 -t "$IMAGE" --push cost-agent 2>&1 | tee "$RUNNER_TEMP/build.log"; then
+            if grep -qiE "already exists|immutable" "$RUNNER_TEMP/build.log"; then
+              echo "::notice::이미 있는 태그라 push 생략: $IMAGE"
+            else
+              exit 1
+            fi
+          fi
+      - name: Deploy
+        run: |
+          aws eks update-kubeconfig --name skala-us --region ap-northeast-2 --kubeconfig "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          sed "s|IMAGE_PLACEHOLDER|$IMAGE|g" cost-agent/k8s/cost-agent.yaml | kubectl apply -f -
+          kubectl -n u1-3 rollout status deployment/cost-agent --timeout=10m
