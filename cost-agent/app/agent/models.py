@@ -129,3 +129,9 @@ class AgentSession(BaseModel):
     terms: list[TermPrice] = Field(default_factory=list)
     summary: list[str] = Field(default_factory=list)
     report_ready: bool = False
+    # 에이전트(그래프) 판단에 쓰는 상태
+    engine: str = "workflow"  # workflow | graph
+    mismatch_ok: bool = False  # 총액 불일치를 담당자가 알고 진행
+    sim_basis: str | None = None  # 마지막 원가 계산의 입력 지문
+    market_basis: str | None = None  # 마지막 시장 비교가 기준으로 삼은 원가 계산
+    decisions: list[dict] = Field(default_factory=list)  # 판단자 선택 기록 {tool, reason, by}
