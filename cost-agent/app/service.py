@@ -201,7 +201,7 @@ class BillService:
                                         message=f"'{row.label}' 줄이 분류되지 않았습니다."))
                 continue
             raw = row.numbers.get(m.amount_col) if m.amount_col is not None else None  # 숫자는 코드가 읽는다
-            amount = raw * it.multiplier if raw is not None else None
+            amount = raw * it.multiplier * it.line_scale.get(row.ref, 1.0) if raw is not None else None
             source = "user" if m.reason == "담당자 수정" else used
             lines.append(MappedLine(
                 ref=row.ref, label=row.label, role=m.role,

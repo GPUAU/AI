@@ -140,7 +140,7 @@ class CostAgent:
         feedback = self._remap_feedback(d) + (f"\n[에이전트 가설] {hypothesis}" if hypothesis else "")
         redone = self.bills.remap(d.id, feedback)
         if redone is not None:
-            s.draft = redone
+            self._set_draft(s, redone)
             self._log(s, Step.ANALYZE, "result",
                       "재분류 결과 총액이 일치합니다." if redone.reconciliation.matched else "재분류 후에도 총액이 맞지 않습니다.")
             return True
@@ -170,7 +170,9 @@ class CostAgent:
 
     @staticmethod
     def _impact_text(impact: float | None) -> str:
-        if impact is None or 0.995 <= impact <= 1.005:
+        if impact is None:
+            return "연간 원가에 주는 영향을 계산하지 못했어요 — 꼭 확인해 주세요"
+        if 0.995 <= impact <= 1.005:
             return "연간 원가에는 영향이 없어요"
         return f"놓치면 연간 원가가 {impact:.3g}배로 잡혀요"
 
@@ -188,6 +190,15 @@ class CostAgent:
         return Question(id=self._qid(), step=Step.ANALYZE, title="청구서를 이렇게 읽었어요. 맞는지 확인해 주세요",
                         text="회색 값은 에이전트가 제안한 해석이에요. 아니면 '적용 안 함'으로 바꾸세요.",
                         fields=fields, submit_label="이대로 계속")
+
+    @staticmethod
+    def _set_draft(s: AgentSession, d) -> None:
+        """초안을 바꾼다. 새 해석이나 기준선 경고가 생겼으면 해석 확인을 다시 받는다."""
+        def keys(x):
+            return ({i.code for i in x.interpretations} | {b.code for b in x.bench}) if x else set()
+        if keys(d) - keys(s.draft):
+            s.interpret_ok = False
+        s.draft = d
 
     def _answer_interpret(self, s: AgentSession, q: Question, ans: Answer) -> None:
         v = {f.name: ans.values.get(f.name, f.value) for f in q.fields}
@@ -219,7 +230,7 @@ class CostAgent:
             return
         if (ans.choice or "").startswith("currency:"):
             cur = Currency(ans.choice.split(":", 1)[1])
-            s.draft = self.bills.set_currency(s.draft.id, cur)
+            self._set_draft(s, self.bills.set_currency(s.draft.id, cur))
             self._log(s, Step.ANALYZE, "answer", f"통화: {cur.value}")
             return
         if ans.choice not in ("proceed", "stop"):

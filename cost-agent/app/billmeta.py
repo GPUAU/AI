@@ -20,6 +20,10 @@ _UNIT = [
     (re.compile(r"단위\s*[:：]?\s*천\s*원|\(\s*천\s*원\s*\)|in thousands", re.I), 1_000.0, "천원"),
     (re.compile(r"단위\s*[:：]?\s*백만\s*원|\(\s*백만\s*원\s*\)|in millions", re.I), 1_000_000.0, "백만원"),
 ]
+# '단위: 원'이 명시되면 이후 주석의 '(천원)'이 금액 전체 단위를 바꾸지 못한다
+_UNIT_WON = re.compile(r"단위\s*[:：]?\s*원(?![가-힣])")
+# 계약기간·약정기간 같은 범위는 청구 기간이 아니다
+_NOT_BILLING = re.compile(r"계약\s*기간|약정|contract\s*(?:term|period)|\bterm\b", re.I)
 _DATE = r"(20\d{2})[-./](\d{1,2})[-./](\d{1,2})"
 _RANGE = re.compile(_DATE + r"\s*[~–\-]\s*" + _DATE)
 _START = re.compile(r"(?:개시일|개통일|start date)\D{0,10}" + _DATE, re.I)
@@ -68,10 +72,13 @@ def read_meta(doc: ExtractedDocument) -> BillMeta:
     m = BillMeta()
     rows = _head_rows(doc)
     bill_month: tuple[int, int] | None = None
+    unit_locked = False
 
     for r in rows:
         t = _text(r)
-        if m.unit_ref is None:
+        if m.unit_ref is None and not unit_locked and _UNIT_WON.search(t):
+            unit_locked = True
+        if m.unit_ref is None and not unit_locked:
             for pat, mult, label in _UNIT:
                 if pat.search(t):
                     m.unit_multiplier, m.unit_label, m.unit_ref = mult, label, r.ref
@@ -95,10 +102,14 @@ def read_meta(doc: ExtractedDocument) -> BillMeta:
     # 청구 기간
     for r in rows:
         t = _text(r)
+        if _NOT_BILLING.search(t):
+            continue
         if rg := _RANGE.search(t):
             a = date(int(rg.group(1)), int(rg.group(2)), int(rg.group(3)))
             b = date(int(rg.group(4)), int(rg.group(5)), int(rg.group(6)))
             n = _full_months(a, b)
+            if n and bill_month and n > 1:
+                continue  # 'n월분'이 명시된 청구서에서 여러 달 범위는 청구 기간이 아니다
             if n:
                 m.billing_months, m.months_text, m.months_ref = float(n), rg.group(0), r.ref
                 bill_month = bill_month or (a.year, a.month)
@@ -109,8 +120,10 @@ def read_meta(doc: ExtractedDocument) -> BillMeta:
                 m.prorate_ref = r.ref
                 m.billing_months = 1.0
                 break
-    if m.billing_months is None:
+    if m.billing_months is None and bill_month is None:
         for r in rows:
+            if r.numbers:  # 항목 줄('3분기 정산 회선')의 표현은 청구 기간이 아니다
+                continue
             t = _text(r)
             low = t.lower()
             if _QUARTER.search(t):

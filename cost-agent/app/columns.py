@@ -26,7 +26,7 @@ class ColRole(str, Enum):
 
 # 위에서 먼저 맞는 역할을 쓴다 ('합계금액'은 '금액'보다 '합계'가 먼저)
 ROLE_WORDS: list[tuple[ColRole, list[str]]] = [
-    (ColRole.NRC, ["nrc", "one-time", "setup", "1회"]),
+    (ColRole.NRC, ["nrc", "one-time", "setup", "1회성", "일회성"]),  # '1회선'의 '1회'는 1회성이 아니다
     (ColRole.MRC, ["mrc", "monthly recurring"]),
     (ColRole.BASE, ["월 정액", "월정액"]),
     (ColRole.BILLED, ["당월 청구", "일할 청구"]),
@@ -47,7 +47,12 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+VAT_INCLUDED = re.compile(r"(vat|부가세)\s*(포함|incl)|incl\.?\s*vat", re.I)
+
+
 def _role_of(text: str) -> ColRole | None:
+    if VAT_INCLUDED.search(text):  # '금액(VAT 포함)'은 괄호를 지우기 전에 본다
+        return ColRole.GROSS
     t = _clean(text)
     if not t:
         return None
@@ -61,16 +66,28 @@ def _hits(row: SheetRow) -> int:
     return sum(1 for c in row.cells if _role_of(c))
 
 
+def _label_row(row: SheetRow) -> bool:
+    """머리글 조각처럼 짧은 칸만 있는 줄인가 (안내문 '※ 아래 금액은 부가세 별도입니다'는 아님)."""
+    cells = [c for c in row.cells if c]
+    return all(len(c) <= 16 and not c.startswith(("※", "*")) for c in cells)
+
+
 def _header(rows: list[SheetRow]) -> dict[int, str]:
-    """시트의 머리글: 숫자 없고 역할 단어가 2개 이상인 첫 줄 + 바로 위·아래의 머리글 조각(병합 머리글)."""
+    """시트의 머리글: 숫자 없고 역할 단어가 있는 줄 중 아래에 숫자 줄이 가장 많이 이어지는 줄
+    (+ 바로 위·아래의 머리글 조각 = 병합 머리글). 표 위의 요약 블록('공급가액 | 부가세 | 합계')을 머리글로 잡지 않는다."""
     by_no = {r.row: r for r in rows}
-    for r in rows:
-        if r.numbers or _hits(r) < 2:
-            continue
+    cands = [r for r in rows if not r.numbers and _hits(r) >= 1 and _label_row(r)]
+    best, best_n = None, -1
+    for k, c in enumerate(cands):
+        end = cands[k + 1].row if k + 1 < len(cands) else 10 ** 9
+        n = sum(1 for r in rows if c.row < r.row < end and r.numbers)
+        if n > best_n:
+            best, best_n = c, n
+    for r in [best] if best else []:
         parts = [r]
         for n in (r.row - 1, r.row + 1):
             adj = by_no.get(n)
-            if adj and not adj.numbers and _hits(adj) >= 1:
+            if adj and not adj.numbers and _hits(adj) >= 1 and _label_row(adj):
                 parts.append(adj)
         parts.sort(key=lambda x: x.row)
         width = max(len(p.cells) for p in parts)
@@ -104,6 +121,7 @@ def _ratio_roles(rows: list[SheetRow], roles: dict[int, ColRole]) -> None:
                 ok = sum(1 for x, y in pairs if abs(y - x * factor) <= abs(x * factor) * RATIO_TOL)
                 if ok / len(pairs) >= RATIO_SHARE:
                     roles[b] = role
+                    roles.setdefault(a, ColRole.SUPPLY)  # 기준 열이 공급가액
                     break
 
 

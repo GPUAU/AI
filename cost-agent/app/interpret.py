@@ -29,6 +29,10 @@ NON_COST_WORDS = ["미납", "이월", "입금", "납부 완료", "previous balan
 SUMMARY_SHEET_WORDS = ["요약", "summary", "총괄"]
 WRONG_AMOUNT_COLS = {ColRole.VAT, ColRole.GROSS, ColRole.QTY, ColRole.RATE, ColRole.BASE}
 _AMOUNT_ROLES = (LineRole.COST, LineRole.DISCOUNT)
+_SCALED_ROLES = (LineRole.COST, LineRole.DISCOUNT, LineRole.TOTAL, LineRole.SUBTOTAL)
+MIN_MOVE_RATIO = 0.02  # 바꿀 칸의 값이 원래 칸의 2% 미만이면 (수량 칸 등) 옮기지 않는다
+VAT_RATE = 0.1
+USER_FIXED = "담당자 수정"
 
 
 @dataclass
@@ -38,6 +42,7 @@ class Interpreted:
     months: float | None = None
     base: dict[str, float] = field(default_factory=dict)  # ref → 월 정액 (배수 적용 전)
     prorate: tuple[int, int] | None = None  # (사용 일수, 그 달 일수)
+    line_scale: dict[str, float] = field(default_factory=dict)  # ref → 줄 배수 (VAT 포함 열 ÷ 1.1)
     found: list[Interpretation] = field(default_factory=list)
 
 
@@ -50,6 +55,7 @@ def interpret(doc: ExtractedDocument, mapping: DocumentMapping, meta: BillMeta,
     rows = {r.ref: r for r in doc.rows}
     heads = header_text(doc)
     maps = {m.ref: m for m in mapping.rows}
+    user = {ref for ref, m in maps.items() if m.reason == USER_FIXED}  # 담당자가 고친 줄은 해석이 덮지 않는다
     found: dict[InterpCode, Interpretation] = {}
 
     def note(code: InterpCode, message: str, refs: list[str]) -> bool:
@@ -57,19 +63,27 @@ def interpret(doc: ExtractedDocument, mapping: DocumentMapping, meta: BillMeta,
         return code.value not in off
 
     # 원가가 아닌 줄 (미납·이월·입금) — 다른 해석보다 먼저
-    non_cost = [ref for ref, m in maps.items() if m.role != LineRole.IGNORE and ref in rows
+    non_cost = [ref for ref, m in maps.items() if m.role != LineRole.IGNORE and ref in rows and ref not in user
                 and any(w in rows[ref].label.lower() for w in NON_COST_WORDS)]
     if non_cost and note(InterpCode.NON_COST_ROWS, f"원가가 아닌 줄 {len(non_cost)}개(전월 미납·이월·입금)는 원가에서 뺐어요",
                          non_cost):
         for ref in non_cost:
             maps[ref] = _ignore(maps[ref], "원가 아님 — 미납·이월·입금")
 
-    # 요약 시트: 다른 시트에 원가 줄이 있을 때만 중복으로 본다
-    cost_sheets = {ref.split("!")[0] for ref, m in maps.items() if m.role == LineRole.COST}
+    # 요약 시트: 다른 시트의 원가 합이 이 시트의 원가 합과 같을 때만 중복으로 본다 (다른 곳에 없는 비용은 지우지 않음)
+    def cost_sum(sheet: str) -> float:
+        return sum(rows[ref].numbers.get(m.amount_col, 0) for ref, m in maps.items()
+                   if ref.split("!")[0] == sheet and m.role == LineRole.COST and m.amount_col is not None and ref in rows)
+
     for sheet in doc.sheets:
-        if not any(w in sheet.lower() for w in SUMMARY_SHEET_WORDS) or not (cost_sheets - {sheet}):
+        if not any(w in sheet.lower() for w in SUMMARY_SHEET_WORDS):
             continue
-        dup = [ref for ref, m in maps.items() if ref.split("!")[0] == sheet and m.role in _AMOUNT_ROLES]
+        mine = cost_sum(sheet)
+        others = sum(cost_sum(o) for o in doc.sheets if o != sheet)  # 앞에서 지운 시트는 이미 0
+        if not mine or abs(mine - others) > max(1.0, abs(mine) * 0.001):
+            continue
+        dup = [ref for ref, m in maps.items() if ref.split("!")[0] == sheet and m.role in _AMOUNT_ROLES
+               and ref not in user]
         if dup and note(InterpCode.SUMMARY_SHEET, f"'{sheet}' 시트는 상세 시트를 요약한 것이라 원가에서 뺐어요", dup):
             for ref in dup:
                 maps[ref] = _ignore(maps[ref], "요약 시트 — 상세 시트와 중복")
@@ -78,12 +92,13 @@ def interpret(doc: ExtractedDocument, mapping: DocumentMapping, meta: BillMeta,
     moved: list[tuple[str, int, int]] = []
     for ref, m in maps.items():
         row = rows.get(ref)
-        if row is None or m.role not in _AMOUNT_ROLES or m.amount_col is None:
+        if row is None or m.role not in _AMOUNT_ROLES or m.amount_col is None or ref in user:
             continue
         sheet_roles = roles.get(row.sheet, {})
         if sheet_roles.get(m.amount_col) in WRONG_AMOUNT_COLS:
             col = preferred_col(sheet_roles, row)
-            if col is not None and col != m.amount_col:
+            old = abs(row.numbers.get(m.amount_col, 0))
+            if col is not None and col != m.amount_col and abs(row.numbers[col]) >= old * MIN_MOVE_RATIO:
                 moved.append((ref, m.amount_col, col))
     if moved:
         ref0, old, new = moved[0]
@@ -95,14 +110,33 @@ def interpret(doc: ExtractedDocument, mapping: DocumentMapping, meta: BillMeta,
             for ref, _, col in moved:
                 maps[ref] = maps[ref].model_copy(update={"amount_col": col})
 
+    # 공급가액 열이 없는 시트에서 'VAT 포함' 열을 금액으로 쓰면 ÷ 1.1 (총액·소계 줄도 같은 열이면 같이)
+    vat_in: list[str] = []
+    for ref, m in maps.items():
+        row = rows.get(ref)
+        if row is None or m.role not in _SCALED_ROLES or m.amount_col is None or ref in user:
+            continue
+        sheet_roles = roles.get(row.sheet, {})
+        if (sheet_roles.get(m.amount_col) == ColRole.GROSS
+                and not any(r in (ColRole.SUPPLY, ColRole.BILLED, ColRole.MRC) for r in sheet_roles.values())):
+            vat_in.append(ref)
+    line_scale: dict[str, float] = {}
+    if vat_in and not moved:
+        sheet0 = vat_in[0].split("!")[0]
+        col0 = maps[vat_in[0]].amount_col
+        if note(InterpCode.GROSS_COLUMN,
+                f"'{heads.get(sheet0, {}).get(col0, '')}' 열은 부가세 포함이라 ÷ {1 + VAT_RATE:g}로 공급가액을 썼어요", vat_in):
+            line_scale = {ref: 1 / (1 + VAT_RATE) for ref in vat_in}
+
     # 1회성(NRC) 열에 금액이 있는 원가 줄 → 1회성
     nrc = [ref for ref, m in maps.items() if m.role == LineRole.COST and m.amount_col is not None and ref in rows
+           and ref not in user
            and roles.get(rows[ref].sheet, {}).get(m.amount_col) == ColRole.NRC and m.period != Period.ONE_TIME]
     if nrc and note(InterpCode.NRC_ONE_TIME, f"1회성(NRC) 열의 {len(nrc)}줄은 초기 투자(취득비)로 옮겼어요", nrc):
         for ref in nrc:
             maps[ref] = maps[ref].model_copy(update={"period": Period.ONE_TIME})
 
-    out = Interpreted(mapping=mapping.model_copy(update={"rows": list(maps.values())}))
+    out = Interpreted(mapping=mapping.model_copy(update={"rows": list(maps.values())}), line_scale=line_scale)
 
     if meta.unit_multiplier != 1 and note(
             InterpCode.UNIT_SCALE,
