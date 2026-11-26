@@ -40,8 +40,8 @@ def reconcile(lines: list[MappedLine], currency: Currency | None) -> tuple[Recon
     tax = sum(l.amount or 0 for l in lines if l.role == LineRole.TAX) or None
     totals = [l for l in lines if l.role == LineRole.TOTAL and l.amount is not None]
     subtotals = [l for l in lines if l.role == LineRole.SUBTOTAL and l.amount is not None]
-    # 가장 큰 총액 줄을 문서 총액으로 본다 (요약 시트와 상세 시트에 같은 총액이 있을 수 있음)
-    total = max((l.amount for l in totals), default=None)
+    # 총액 줄이 여럿일 수 있다 (요약·상세 시트, '당월 청구금액'과 '총 납부할 금액'). 큰 값부터 모두 대조한다.
+    total_values = sorted({l.amount for l in totals}, reverse=True)
 
     candidates: list[tuple[str, float]] = []
     net = cost_sum + discount
@@ -53,7 +53,7 @@ def reconcile(lines: list[MappedLine], currency: Currency | None) -> tuple[Recon
         if discount:
             candidates.append(("원가 항목 합계 − 할인 + 부가세", net + tax))
 
-    targets = [("청구 총액", total)] if total is not None else []
+    targets = [("청구 총액", t) for t in total_values]
     targets += [("소계·공급가액", s.amount) for s in subtotals]
     if not targets:
         rec = Reconciliation(cost_sum=cost_sum, tax=tax, matched=None, basis="총액 줄 없음")

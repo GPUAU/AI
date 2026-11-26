@@ -40,7 +40,8 @@ ITEM_KEYWORDS: list[tuple[ItemType, list[str]]] = [
 ROLE_KEYWORDS: list[tuple[LineRole, list[str]]] = [
     (LineRole.TAX, ["부가세", "부가가치세", "세액", "vat", "tax"]),
     (LineRole.SUBTOTAL, ["소계", "공급가액", "subtotal", "sub-total", "sub total"]),
-    (LineRole.TOTAL, ["합계", "총액", "총 청구", "청구금액", "청구 금액", "total", "amount due", "grand total"]),
+    (LineRole.TOTAL, ["합계", "총액", "총 청구", "청구금액", "청구 금액", "납부", "total", "amount due", "balance due",
+                      "grand total"]),
     (LineRole.DISCOUNT, ["할인", "감면", "discount", "credit", "rebate"]),
 ]
 
@@ -54,12 +55,22 @@ def _norm(text: str) -> str:
 
 
 GPU_LEASE_WORDS = ["임차", "리스", "대여", "lease", "rental", "rent"]
+MAINTENANCE_WORDS = ["유지보수", "maintenance"]
+# 공간 표현이 있고 kWh가 없으면 '전력'이 들어 있어도 전기 사용료가 아니다 ('전력용량 기반 상면 이용료', 'Space & Power Capacity')
+SPACE_WORDS = ["상면", "랙", "rack", "cabinet", "space", "suite", "cage", "colocation", "colo"]
+DATE_LABEL = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _find_item(text: str) -> ItemType | None:
     # 'GPU 서버 임차료'처럼 GPU와 임차 표현이 함께 있으면 GPU 임차
     if re.search(r"(?<![a-z])gpu(?![a-z])", text) and any(w in text for w in GPU_LEASE_WORDS):
         return ItemType.GPU
+    if any(w in text for w in MAINTENANCE_WORDS):
+        return ItemType.OPERATIONS
+    if "kwh" not in text and any(_word_in(w, text) for w in SPACE_WORDS):
+        for item, words in ITEM_KEYWORDS:
+            if item in (ItemType.RACK_FACILITY, ItemType.RENT) and any(_word_in(w, text) for w in words):
+                return item
     for item, words in ITEM_KEYWORDS:
         if any(_word_in(w, text) for w in words):
             return item
@@ -130,6 +141,8 @@ def map_row(row: SheetRow, preferred_col: int | None) -> RowMapping:
     col = pick_amount_col(row, preferred_col)
     if col is None:
         return RowMapping(ref=row.ref, role=LineRole.IGNORE, confidence=0.9, reason="금액 칸이 없는 줄")
+    if DATE_LABEL.match(label):
+        return RowMapping(ref=row.ref, role=LineRole.IGNORE, confidence=0.9, reason="날짜 줄 — 사용량 표")
     for role, words in ROLE_KEYWORDS:
         if any(_word_in(w, label) for w in words):
             return RowMapping(ref=row.ref, role=role, amount_col=col, confidence=0.8, reason=f"'{role.value}' 표현")
