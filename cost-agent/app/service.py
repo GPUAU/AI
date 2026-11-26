@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Protocol
 
+from .benchmarks import bill_checks
 from .billmeta import BillMeta, read_meta
 from .columns import ColRole, column_roles
 from .interpret import Interpreted, interpret
@@ -248,4 +249,5 @@ class BillService:
             unit_multiplier=it.multiplier,
             billing_months=it.months or (12.0 if mapping.default_period == Period.YEAR else 1.0),
             contract=meta.contract, interpretations=it.found,
+            bench=bill_checks(items, mapping.currency, meta.contract),
         )
