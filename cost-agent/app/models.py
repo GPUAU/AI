@@ -77,6 +77,14 @@ class ExtractedDocument(BaseModel):
     truncated: bool = False
 
 
+class ContractInfo(BaseModel):
+    """청구서 머리글의 계약 정보 (업계 기준선 검사·사내 비용 제안에 쓴다)."""
+
+    power_kw: float | None = None
+    racks: int | None = None
+    gpus: int | None = None
+
+
 # ---------------------------------------------------------------- 매핑 결과
 
 
