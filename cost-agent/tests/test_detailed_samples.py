@@ -13,7 +13,6 @@ _spec.loader.exec_module(_score_mod)
 score = _score_mod.score
 
 
-@pytest.mark.xfail(reason="1순위 구현 중 — Task 9에서 표시를 지운다", strict=False)
 @pytest.mark.parametrize("name", list(BUILDERS))
 def test_detailed_sample_annual_cost_within_1pct(name, detailed, service):
     path, key = detailed[name]
@@ -23,7 +22,6 @@ def test_detailed_sample_annual_cost_within_1pct(name, detailed, service):
     assert r["acq"][0] == pytest.approx(r["acq"][1], rel=0.01, abs=1)
 
 
-@pytest.mark.xfail(reason="1순위 구현 중", strict=False)
 def test_turning_off_interpretations_reproduces_todays_error(detailed, service):
     ratios = {n: score(*detailed[n], service, off_all=True)["run_ratio"] for n in detailed}
     assert ratios["bill_r5_quarterly_no_currency.xlsx"] == pytest.approx(3.0, rel=0.01)

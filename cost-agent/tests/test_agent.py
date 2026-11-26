@@ -123,7 +123,7 @@ def test_full_flow_with_questions_market_loop_and_report(Agent, tmp_path, doc):
 
     from app.agent.report import build_report
     wb = load_workbook(io.BytesIO(build_report(s)))
-    assert wb.sheetnames == ["요약", "원가 항목", "가정값", "시장 비교", "진행 기록"]
+    assert wb.sheetnames == ["요약", "원가 항목", "가정값", "청구서 해석", "시장 비교", "진행 기록"]
 
 
 def test_remap_loop_fixes_total_with_feedback(Agent, tmp_path, doc):
@@ -380,3 +380,31 @@ def test_inhouse_in_other_currency_keeps_existing_operations(Agent, tmp_path):
     items = {i["itemType"]: i for i in seen[-1]["items"]}
     assert items["OPERATIONS"]["amount"] == 12_000_000 and items["OPERATIONS"]["currency"] == "KRW"
     assert items["OTHER"]["amount"] == 5_000 and items["OTHER"]["currency"] == "USD"
+
+
+def test_report_has_bill_interpretation_sheet(Agent, tmp_path, detailed_doc):
+    from app.agent.report import build_report
+    agent, s = start(Agent, tmp_path, detailed_doc("bill_r2_multisheet_thousand_krw.xlsx"))
+    for _ in range(12):
+        if s.question is None:
+            break
+        s = agent.answer(s.id, suggested(s.question))
+    assert s.step == Step.DONE
+    ws = load_workbook(io.BytesIO(build_report(s)))["청구서 해석"]
+    rows = [[c.value for c in r] for r in ws.iter_rows(min_row=2)]
+    unit = next(r for r in rows if r[1] and "천원" in r[1])
+    assert unit[0] == "해석" and unit[2] == "적용" and unit[3] == "0.001배"
+    gpu = load_workbook(io.BytesIO(build_report(s)))["가정값"]
+    assert any(r[0].value == "사내 인건비·판관비 (연간)" for r in gpu.iter_rows(min_row=2))
+
+
+def test_report_without_interpretations_says_so(Agent, tmp_path, doc):
+    from app.agent.report import build_report
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend()[0])
+    s = agent.start(doc("a"), Goal(model_id="29", gpu_count=32))
+    for _ in range(12):
+        if s.question is None:
+            break
+        s = agent.answer(s.id, suggested(s.question))
+    ws = load_workbook(io.BytesIO(build_report(s)))["청구서 해석"]
+    assert ws.cell(2, 1).value == "해석 변경 없음"
