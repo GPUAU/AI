@@ -102,3 +102,26 @@ def test_graph_shape():
     g = G(BillService(RulesMapper(), TemplateStore("/tmp/unused-templates")), fake_backend()[0])
     m = g.mermaid()
     assert "decide" in m and "act" in m and "wait" in m
+
+
+def test_simulate_refused_before_interpret(tmp_path, detailed_doc):
+    calls = []
+
+    def eager(messages, tools):
+        calls.append(messages)
+        name = "analyze_bill" if len(calls) == 1 else "simulate_cost"
+        return {"name": name, "args": {"reason": "바로 계산한다"}, "id": f"c{len(calls)}"}
+    agent, _ = agent_with(tmp_path, eager)
+    s = agent.start(detailed_doc("bill_r2_multisheet_thousand_krw.xlsx"), Goal(model_id="29", gpu_count=256))
+    assert any(e.kind == "warn" and "청구서 해석" in e.message for e in s.events)
+    assert s.question is not None and s.question.title.startswith("청구서를 이렇게 읽었어요")
+
+
+def test_controller_sees_codes_not_messages(tmp_path, detailed_doc):
+    calls = []
+    agent, _ = agent_with(tmp_path, hinted(calls, premature_finish=False))
+    s = agent.start(detailed_doc("bill_r2_multisheet_thousand_krw.xlsx"), Goal(model_id="29", gpu_count=256))
+    assert s.question.title.startswith("청구서를 이렇게 읽었어요")
+    sent = json.dumps(calls, ensure_ascii=False)
+    assert "UNIT_SCALE" in sent
+    assert "천원" not in sent and "1,000배" not in sent and "놓치면" not in sent

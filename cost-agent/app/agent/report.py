@@ -72,10 +72,27 @@ def build_report(s: AgentSession) -> bytes:
     _header(ws, 1, ["가정", "값", "근거"])
     for k, label in [("gpu_count", "GPU 수"), ("acquisition_amount", "서버·GPU 취득비"), ("acquisition_currency", "취득비 통화"),
                      ("depreciation_years", "감가상각 연수"), ("utilization", "유료 가동률"), ("fx_krw_per_usd", "환율 (원/달러)"),
-                     ("pricing_method", "마진 방식"), ("target_rate", "목표 마진")]:
+                     ("pricing_method", "마진 방식"), ("target_rate", "목표 마진"),
+                     ("inhouse_annual", "사내 인건비·판관비 (연간)")]:
         ws.append([label, a.get(k), a.get("sources", {}).get(k, "담당자 입력")])
     ws.column_dimensions["A"].width = 18
     ws.column_dimensions["C"].width = 60
+
+    ws = wb.create_sheet("청구서 해석")
+    _header(ws, 1, ["구분", "내용", "적용", "해제 시 연간 원가", "근거"])
+    d = s.draft
+    interps = d.interpretations if d else []
+    bench = (d.bench if d else []) + list(s.checks)
+    for i in interps:
+        ws.append(["해석", i.message, "적용" if i.applied else "해제",
+                   f"{i.impact:.3g}배" if i.impact is not None else "-", ", ".join(i.refs)])
+    for b in bench:
+        ws.append(["기준선 검사", b.message, "-", f"{b.low:,.2f}~{b.high:,.2f}", b.source])
+    if not interps and not bench:
+        ws.append(["해석 변경 없음", "청구서를 기본 규칙대로 읽었습니다 (단위·금액 열·청구 기간 변경 없음).", "", "", ""])
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 90
+    ws.column_dimensions["E"].width = 30
 
     if s.market:
         ws = wb.create_sheet("시장 비교")

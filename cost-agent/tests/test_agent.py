@@ -123,7 +123,7 @@ def test_full_flow_with_questions_market_loop_and_report(Agent, tmp_path, doc):
 
     from app.agent.report import build_report
     wb = load_workbook(io.BytesIO(build_report(s)))
-    assert wb.sheetnames == ["요약", "원가 항목", "가정값", "시장 비교", "진행 기록"]
+    assert wb.sheetnames == ["요약", "원가 항목", "가정값", "청구서 해석", "시장 비교", "진행 기록"]
 
 
 def test_remap_loop_fixes_total_with_feedback(Agent, tmp_path, doc):
@@ -253,3 +253,158 @@ def test_ai_bundle_is_cross_checked_with_rules(tmp_path):
     assert {"ELECTRICITY", "NETWORK_STORAGE", "OPERATIONS"} <= {t.value for t in bundle.included_items}
     assert "규칙 교차 확인" in bundle.reason
     assert "OPERATIONS" not in [t.value for t in d.missing_items]
+
+
+# ---------------------------------------------------------------- 청구서 해석 확인 카드 (설계 §4A-7)
+from tests.conftest import BUILDERS, doc_from_rows  # noqa: E402
+
+
+def start(Agent, tmp_path, d, gpu_count=256):
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend()[0])
+    return agent, agent.start(d, Goal(model_id="29", gpu_count=gpu_count))
+
+
+def board(s, step):
+    return next(b for b in s.board if b.key == step)
+
+
+def suggested(q):
+    """제안대로 답한다 (선택지가 있으면 첫 번째, 입력칸은 제안값)."""
+    if q.step == Step.ASSUMPTIONS:
+        return Answer(question_id=q.id, values=assumptions(gpu_count=256))
+    if q.step == Step.ANALYZE and q.options and q.options[0].value.startswith("currency"):
+        return Answer(question_id=q.id, choice="currency:KRW")
+    if q.step == Step.MISSING:
+        return Answer(question_id=q.id, choice="included",
+                      values={"parent": next((f.value for f in q.fields if f.name == "parent"), None) or "RACK_FACILITY"})
+    return Answer(question_id=q.id, choice=q.options[0].value if q.options else None, values={})
+
+
+def test_interpret_card_then_flow_continues(Agent, tmp_path, detailed_doc):
+    agent, s = start(Agent, tmp_path, detailed_doc("bill_r2_multisheet_thousand_krw.xlsx"))
+    assert s.step == Step.ANALYZE and s.question.title.startswith("청구서를 이렇게 읽었어요")
+    f = {x.name: x for x in s.question.fields}
+    assert f["interp:UNIT_SCALE"].value == "on" and "0.001배" in f["interp:UNIT_SCALE"].hint
+    assert [o.value for o in f["interp:UNIT_SCALE"].options] == ["on", "off"]
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={}))
+    assert s.interpret_ok and (s.question is None or s.question.step != Step.ANALYZE)
+
+
+def test_turning_off_interpretation_changes_draft(Agent, tmp_path, detailed_doc):
+    agent, s = start(Agent, tmp_path, detailed_doc("bill_r2_multisheet_thousand_krw.xlsx"))
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={"interp:UNIT_SCALE": "off"}))
+    assert s.draft.unit_multiplier == 1 and s.interpret_ok
+
+
+def test_bench_stop_ends_session(Agent, tmp_path):
+    bad = doc_from_rows([["청구월", "2026년 10월분", "계약전력", "1,000kW"], ["항목", "금액(원)"],
+                         ["상면 사용료", 1000], ["전력 사용료", 150_000_000], ["회선료", 1_000_000],
+                         ["운영관리비", 1_000_000], ["합계", 152_001_000]])
+    agent, s = start(Agent, tmp_path, bad)  # 상면 kW당 월 1원 → RENT_PER_KW
+    assert "bench:RENT_PER_KW" in {f.name for f in s.question.fields}
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={"bench:RENT_PER_KW": "stop"}))
+    assert s.step == Step.DONE and board(s, Step.ANALYZE).status == Status.ERROR
+
+
+@pytest.mark.parametrize("name", list(BUILDERS))
+def test_analyze_cards_at_most_three(Agent, tmp_path, detailed_doc, name):
+    agent, s = start(Agent, tmp_path, detailed_doc(name))
+    analyze_cards = 0
+    for _ in range(12):
+        if s.question is None:
+            break
+        analyze_cards += s.question.step == Step.ANALYZE
+        s = agent.answer(s.id, suggested(s.question))
+    assert 1 <= analyze_cards <= 3
+    assert s.interpret_ok
+
+
+# ---------------------------------------------------------------- 사내 인건비·판관비 + 계산 후 기준선 (설계 §4A-5·6)
+def run_to(agent, s, step):
+    for _ in range(12):
+        if s.question is None or s.question.step == step:
+            return s
+        s = agent.answer(s.id, suggested(s.question))
+    return s
+
+
+def r1_with_backend(Agent, tmp_path, detailed_doc, sim_cost=2.0):
+    backend, seen = fake_backend(sim_cost=sim_cost)
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    return agent, agent.start(detailed_doc("bill_r1_kr_metered_krw.xlsx"), Goal(model_id="29", gpu_count=504)), seen
+
+
+def test_inhouse_field_suggested_from_contract(Agent, tmp_path, detailed_doc):
+    agent, s, _ = r1_with_backend(Agent, tmp_path, detailed_doc)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    f = {x.name: x for x in s.question.fields}["inhouse_annual"]
+    assert f.value == 1_337_000_000 and f.required is False and "표 18" in f.hint
+
+
+def test_inhouse_amount_added_to_operations(Agent, tmp_path, detailed_doc):
+    agent, s, seen = r1_with_backend(Agent, tmp_path, detailed_doc)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    bill_ops = next(c.amount for c in s.draft.cost_items if c.item_type.value == "OPERATIONS")
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(gpu_count=504, inhouse_annual=1e9)))
+    ops = next(i for i in seen[-1]["items"] if i["itemType"] == "OPERATIONS")
+    assert ops["amount"] == pytest.approx(bill_ops + 1e9)
+
+
+def test_negative_inhouse_is_rejected(Agent, tmp_path, detailed_doc):
+    agent, s, _ = r1_with_backend(Agent, tmp_path, detailed_doc)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    with pytest.raises(AgentError):
+        agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(gpu_count=504, inhouse_annual=-1)))
+
+
+def test_gpu_check_warns_without_blocking(Agent, tmp_path, detailed_doc):
+    agent, s, seen = r1_with_backend(Agent, tmp_path, detailed_doc, sim_cost=0.5)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(gpu_count=64)))
+    assert {c.code for c in s.checks} == {"KW_PER_GPU", "COST_PER_GPU_HOUR"}
+    assert seen  # 막지 않고 원가 계산까지 진행
+    assert any(e.kind == "warn" and "계약전력 ÷ GPU 수" in e.message for e in s.events)
+
+
+def test_inhouse_in_other_currency_keeps_existing_operations(Agent, tmp_path):
+    usd = doc_from_rows([["Invoice period", "Oct 2026", "Currency", "USD"], ["Description", "Amount (USD)"],
+                         ["Private Cage Colocation", 18_000], ["Metered Power", 6_000], ["IP Transit 10Gbps", 2_000],
+                         ["Total Amount Due", 26_000]])
+    backend, seen = fake_backend()
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    s = agent.start(usd, Goal(model_id="29", gpu_count=8))
+    assert s.step == Step.MISSING                       # 운영비 없음 → 원화로 별도 계약 금액 입력
+    s = agent.answer(s.id, Answer(question_id=s.question.id, choice="amount",
+                                  values={"amount": 1_000_000, "currency": "KRW", "period": "MONTH"}))
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(gpu_count=8, inhouse_annual=5_000)))
+    items = {i["itemType"]: i for i in seen[-1]["items"]}
+    assert items["OPERATIONS"]["amount"] == 12_000_000 and items["OPERATIONS"]["currency"] == "KRW"
+    assert items["OTHER"]["amount"] == 5_000 and items["OTHER"]["currency"] == "USD"
+
+
+def test_report_has_bill_interpretation_sheet(Agent, tmp_path, detailed_doc):
+    from app.agent.report import build_report
+    agent, s = start(Agent, tmp_path, detailed_doc("bill_r2_multisheet_thousand_krw.xlsx"))
+    for _ in range(12):
+        if s.question is None:
+            break
+        s = agent.answer(s.id, suggested(s.question))
+    assert s.step == Step.DONE
+    ws = load_workbook(io.BytesIO(build_report(s)))["청구서 해석"]
+    rows = [[c.value for c in r] for r in ws.iter_rows(min_row=2)]
+    unit = next(r for r in rows if r[1] and "천원" in r[1])
+    assert unit[0] == "해석" and unit[2] == "적용" and unit[3] == "0.001배"
+    gpu = load_workbook(io.BytesIO(build_report(s)))["가정값"]
+    assert any(r[0].value == "사내 인건비·판관비 (연간)" for r in gpu.iter_rows(min_row=2))
+
+
+def test_report_without_interpretations_says_so(Agent, tmp_path, doc):
+    from app.agent.report import build_report
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend()[0])
+    s = agent.start(doc("a"), Goal(model_id="29", gpu_count=32))
+    for _ in range(12):
+        if s.question is None:
+            break
+        s = agent.answer(s.id, suggested(s.question))
+    ws = load_workbook(io.BytesIO(build_report(s)))["청구서 해석"]
+    assert ws.cell(2, 1).value == "해석 변경 없음"
