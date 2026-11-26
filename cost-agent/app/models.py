@@ -159,6 +159,27 @@ class Reconciliation(BaseModel):
     basis: str = ""
 
 
+class Interpretation(BaseModel):
+    """에이전트가 청구서를 읽으며 기본 해석을 바꾼 것 하나. 담당자가 해석 확인 카드에서 해제할 수 있다."""
+
+    code: str  # interpret.InterpCode 값
+    message: str
+    applied: bool = True
+    impact: float | None = None  # 이 해석만 끈 연간 운영원가 ÷ 지금 연간 운영원가
+    refs: list[str] = Field(default_factory=list)
+
+
+class BenchFinding(BaseModel):
+    """업계 기준선과 크게 다른 값 (benchmarks)."""
+
+    code: str  # RENT_PER_KW | POWER_PER_KW | KW_PER_GPU | COST_PER_GPU_HOUR
+    message: str
+    value: float
+    low: float
+    high: float
+    source: str
+
+
 class BillDraft(BaseModel):
     id: str
     file_name: str
@@ -173,6 +194,11 @@ class BillDraft(BaseModel):
     issues: list[Issue]
     needs_review: bool
     missing_items: list[ItemType] = Field(default_factory=list)  # 청구서에 없는 큰 비용 (화면에서 빨간 표시)
+    unit_multiplier: float = 1.0  # 금액 단위 배수 (천원 → 1,000)
+    billing_months: float = 1.0  # 이 청구서가 몇 개월치인가
+    contract: ContractInfo = Field(default_factory=ContractInfo)
+    interpretations: list[Interpretation] = Field(default_factory=list)
+    bench: list[BenchFinding] = Field(default_factory=list)
     llm: "LLMDisclosure | None" = None
 
 
