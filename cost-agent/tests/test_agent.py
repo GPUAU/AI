@@ -317,3 +317,66 @@ def test_analyze_cards_at_most_three(Agent, tmp_path, detailed_doc, name):
         s = agent.answer(s.id, suggested(s.question))
     assert 1 <= analyze_cards <= 3
     assert s.interpret_ok
+
+
+# ---------------------------------------------------------------- 사내 인건비·판관비 + 계산 후 기준선 (설계 §4A-5·6)
+def run_to(agent, s, step):
+    for _ in range(12):
+        if s.question is None or s.question.step == step:
+            return s
+        s = agent.answer(s.id, suggested(s.question))
+    return s
+
+
+def r1_with_backend(Agent, tmp_path, detailed_doc, sim_cost=2.0):
+    backend, seen = fake_backend(sim_cost=sim_cost)
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    return agent, agent.start(detailed_doc("bill_r1_kr_metered_krw.xlsx"), Goal(model_id="29", gpu_count=504)), seen
+
+
+def test_inhouse_field_suggested_from_contract(Agent, tmp_path, detailed_doc):
+    agent, s, _ = r1_with_backend(Agent, tmp_path, detailed_doc)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    f = {x.name: x for x in s.question.fields}["inhouse_annual"]
+    assert f.value == 1_337_000_000 and f.required is False and "표 18" in f.hint
+
+
+def test_inhouse_amount_added_to_operations(Agent, tmp_path, detailed_doc):
+    agent, s, seen = r1_with_backend(Agent, tmp_path, detailed_doc)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    bill_ops = next(c.amount for c in s.draft.cost_items if c.item_type.value == "OPERATIONS")
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(gpu_count=504, inhouse_annual=1e9)))
+    ops = next(i for i in seen[-1]["items"] if i["itemType"] == "OPERATIONS")
+    assert ops["amount"] == pytest.approx(bill_ops + 1e9)
+
+
+def test_negative_inhouse_is_rejected(Agent, tmp_path, detailed_doc):
+    agent, s, _ = r1_with_backend(Agent, tmp_path, detailed_doc)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    with pytest.raises(AgentError):
+        agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(gpu_count=504, inhouse_annual=-1)))
+
+
+def test_gpu_check_warns_without_blocking(Agent, tmp_path, detailed_doc):
+    agent, s, seen = r1_with_backend(Agent, tmp_path, detailed_doc, sim_cost=0.5)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(gpu_count=64)))
+    assert {c.code for c in s.checks} == {"KW_PER_GPU", "COST_PER_GPU_HOUR"}
+    assert seen  # 막지 않고 원가 계산까지 진행
+    assert any(e.kind == "warn" and "계약전력 ÷ GPU 수" in e.message for e in s.events)
+
+
+def test_inhouse_in_other_currency_keeps_existing_operations(Agent, tmp_path):
+    usd = doc_from_rows([["Invoice period", "Oct 2026", "Currency", "USD"], ["Description", "Amount (USD)"],
+                         ["Private Cage Colocation", 18_000], ["Metered Power", 6_000], ["IP Transit 10Gbps", 2_000],
+                         ["Total Amount Due", 26_000]])
+    backend, seen = fake_backend()
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    s = agent.start(usd, Goal(model_id="29", gpu_count=8))
+    assert s.step == Step.MISSING                       # 운영비 없음 → 원화로 별도 계약 금액 입력
+    s = agent.answer(s.id, Answer(question_id=s.question.id, choice="amount",
+                                  values={"amount": 1_000_000, "currency": "KRW", "period": "MONTH"}))
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(gpu_count=8, inhouse_annual=5_000)))
+    items = {i["itemType"]: i for i in seen[-1]["items"]}
+    assert items["OPERATIONS"]["amount"] == 12_000_000 and items["OPERATIONS"]["currency"] == "KRW"
+    assert items["OTHER"]["amount"] == 5_000 and items["OTHER"]["currency"] == "USD"

@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..models import BillDraft, CostItemDraft
+from ..models import BenchFinding, BillDraft, CostItemDraft
 
 
 class Step(str, Enum):
@@ -133,6 +133,7 @@ class AgentSession(BaseModel):
     engine: str = "workflow"  # workflow | graph
     mismatch_ok: bool = False  # 총액 불일치를 담당자가 알고 진행
     interpret_ok: bool = False  # 청구서 해석 확인 카드에 담당자가 답함
+    checks: list[BenchFinding] = Field(default_factory=list)  # 가정값·원가 계산 뒤의 업계 기준선 경고 (막지 않음)
     sim_basis: str | None = None  # 마지막 원가 계산의 입력 지문
     market_basis: str | None = None  # 마지막 시장 비교가 기준으로 삼은 원가 계산
     decisions: list[dict] = Field(default_factory=list)  # 판단자 선택 기록 {tool, reason, by}
