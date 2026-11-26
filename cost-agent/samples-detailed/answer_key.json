@@ -1,0 +1,814 @@
+{
+  "bill_r1_kr_metered_krw.xlsx": {
+    "title": "국내 대형 IDC · 1MW 고밀도 구역 월 청구서",
+    "layout": "머리글 블록(계약전력·랙·장비) + 세로 표. 줄마다 공급가액·부가세·합계 세 금액 열",
+    "currency": "KRW",
+    "period": "MONTH",
+    "unit_multiplier": 1,
+    "annualize": "× 12",
+    "contract": {
+      "power_kw": 1000,
+      "racks": 25,
+      "gpus": 504
+    },
+    "lines": [
+      {
+        "sheet": "청구서",
+        "label": "고밀도 랙 상면료 (40kW급)",
+        "role": "COST",
+        "item_type": "RACK_FACILITY",
+        "period": "MONTH",
+        "amount": 105000000,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "전력용량 기반 상면 이용료",
+        "role": "COST",
+        "item_type": "RACK_FACILITY",
+        "period": "MONTH",
+        "amount": 245000000,
+        "note": "kW당 받는 공간·용량 요금. 이름에 '전력'이 있지만 전기 사용료가 아님"
+      },
+      {
+        "sheet": "청구서",
+        "label": "전력량 요금 (IT 부하 계량)",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "MONTH",
+        "amount": 108921600,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "공용설비 전력 (냉방·UPS 손실)",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "MONTH",
+        "amount": 32676480,
+        "note": "PUE 할증분. 빼면 전기료를 23% 낮게 봄"
+      },
+      {
+        "sheet": "청구서",
+        "label": "기후환경·연료비 조정액",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "MONTH",
+        "amount": 6963840,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "인터넷 전용회선 100Gbps",
+        "role": "COST",
+        "item_type": "NETWORK_STORAGE",
+        "period": "MONTH",
+        "amount": 19000000,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "크로스커넥트 (광, SMF)",
+        "role": "COST",
+        "item_type": "NETWORK_STORAGE",
+        "period": "MONTH",
+        "amount": 3600000,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "공인 IP 블록 (/26)",
+        "role": "COST",
+        "item_type": "NETWORK_STORAGE",
+        "period": "MONTH",
+        "amount": 400000,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "24x7 관제·원격지원 (월 40시간 포함)",
+        "role": "COST",
+        "item_type": "OPERATIONS",
+        "period": "MONTH",
+        "amount": 12000000,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "원격지원 초과 사용",
+        "role": "COST",
+        "item_type": "OPERATIONS",
+        "period": "MONTH",
+        "amount": 1080000,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "출입·물리보안 서비스",
+        "role": "COST",
+        "item_type": "OPERATIONS",
+        "period": "MONTH",
+        "amount": 2500000,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "공급가액 합계",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 537141920,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "부가세 합계",
+        "role": "TAX",
+        "item_type": null,
+        "period": null,
+        "amount": 53714192,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "당월 청구금액",
+        "role": "TOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 590856112,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "전월 미납액",
+        "role": "IGNORE",
+        "item_type": null,
+        "period": null,
+        "amount": 0,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "총 납부하실 금액",
+        "role": "TOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 590856112,
+        "note": ""
+      }
+    ],
+    "expected_annual": {
+      "RACK_FACILITY": 4200000000,
+      "ELECTRICITY": 1782743040,
+      "NETWORK_STORAGE": 276000000,
+      "OPERATIONS": 186960000
+    },
+    "expected_total_check": {
+      "cost_sum": 537141920,
+      "matches": "공급가액 합계"
+    },
+    "traps": [
+      "금액 열이 3개(공급가액·부가세·합계). 합계 열을 고르면 원가가 10% 높게 잡힘",
+      "수량 열에 큰 숫자(744,000kWh)가 있어 금액 열로 착각하기 쉬움",
+      "'전력용량 기반 상면 이용료'는 이름에 '전력'이 있지만 상면 요금. 전기료로 분류해도 총액은 맞음 → 총액 대조로는 못 잡는 오분류",
+      "총액 줄이 2개(당월 청구금액, 총 납부하실 금액). 전월 미납액이 생기면 둘이 달라짐",
+      "계약전력 1,000kW ÷ GPU 504장 ≈ 2kW/GPU → 담당자가 입력하는 GPU 수와 교차 확인 가능"
+    ]
+  },
+  "bill_r2_multisheet_thousand_krw.xlsx": {
+    "title": "요약·상세·전력사용량 3시트 · 천원 단위",
+    "layout": "요약 시트(항목군 합계) + 상세 시트(대분류별 소계) + 일별 사용량 시트(31줄 숫자)",
+    "currency": "KRW",
+    "period": "MONTH",
+    "unit_multiplier": 1000,
+    "annualize": "정기 × 12, 일회성은 취득비로",
+    "contract": {
+      "power_kw": 512,
+      "racks": 13,
+      "gpus": null
+    },
+    "lines": [
+      {
+        "sheet": "상세내역",
+        "label": "전용구역 임대료 (케이지 210㎡)",
+        "role": "COST",
+        "item_type": "RENT",
+        "period": "MONTH",
+        "amount": 120000,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "랙·시설 이용료 (40kW급 13랙)",
+        "role": "COST",
+        "item_type": "RACK_FACILITY",
+        "period": "MONTH",
+        "amount": 59200,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "공간 소계",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 179200,
+        "note": "그룹 소계. 원가 줄로 세면 그 그룹이 두 번 더해짐"
+      },
+      {
+        "sheet": "상세내역",
+        "label": "전력 기본요금",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "MONTH",
+        "amount": 4260,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "전력 사용요금",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "MONTH",
+        "amount": 70686,
+        "note": "IT + 공용설비 합산"
+      },
+      {
+        "sheet": "상세내역",
+        "label": "기후환경요금",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "MONTH",
+        "amount": 3476,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "전력 소계",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 78422,
+        "note": "그룹 소계. 원가 줄로 세면 그 그룹이 두 번 더해짐"
+      },
+      {
+        "sheet": "상세내역",
+        "label": "IX 접속료 (100G × 2포트)",
+        "role": "COST",
+        "item_type": "NETWORK_STORAGE",
+        "period": "MONTH",
+        "amount": 16000,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "백업 스토리지 (500TB)",
+        "role": "COST",
+        "item_type": "NETWORK_STORAGE",
+        "period": "MONTH",
+        "amount": 7500,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "네트워크 소계",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 23500,
+        "note": "그룹 소계. 원가 줄로 세면 그 그룹이 두 번 더해짐"
+      },
+      {
+        "sheet": "상세내역",
+        "label": "시설 유지보수 (UPS·항온항습)",
+        "role": "COST",
+        "item_type": "OPERATIONS",
+        "period": "MONTH",
+        "amount": 6800,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "보안관제",
+        "role": "COST",
+        "item_type": "OPERATIONS",
+        "period": "MONTH",
+        "amount": 2200,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "운영 소계",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 9000,
+        "note": "그룹 소계. 원가 줄로 세면 그 그룹이 두 번 더해짐"
+      },
+      {
+        "sheet": "상세내역",
+        "label": "고밀도 랙 전환 공사 (1회)",
+        "role": "COST",
+        "item_type": "ACQUISITION",
+        "period": "ONE_TIME",
+        "amount": 45000,
+        "note": "1회성. ×12 하면 연 5.4억이 운영비로 잘못 잡힘"
+      },
+      {
+        "sheet": "상세내역",
+        "label": "일회성 소계",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 45000,
+        "note": "그룹 소계. 원가 줄로 세면 그 그룹이 두 번 더해짐"
+      },
+      {
+        "sheet": "상세내역",
+        "label": "장기계약 할인 (정기요금의 3%)",
+        "role": "DISCOUNT",
+        "item_type": null,
+        "period": null,
+        "amount": -8704,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "공급가액",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 326418,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "부가세",
+        "role": "TAX",
+        "item_type": null,
+        "period": null,
+        "amount": 32642,
+        "note": ""
+      },
+      {
+        "sheet": "상세내역",
+        "label": "청구금액",
+        "role": "TOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 359060,
+        "note": ""
+      },
+      {
+        "sheet": "요약",
+        "label": "공간",
+        "role": "IGNORE",
+        "item_type": null,
+        "period": null,
+        "amount": 179200,
+        "note": "요약 시트의 항목군 합계. 상세와 같이 세면 원가가 두 배"
+      },
+      {
+        "sheet": "요약",
+        "label": "전력",
+        "role": "IGNORE",
+        "item_type": null,
+        "period": null,
+        "amount": 78422,
+        "note": "요약 시트의 항목군 합계. 상세와 같이 세면 원가가 두 배"
+      },
+      {
+        "sheet": "요약",
+        "label": "네트워크",
+        "role": "IGNORE",
+        "item_type": null,
+        "period": null,
+        "amount": 23500,
+        "note": "요약 시트의 항목군 합계. 상세와 같이 세면 원가가 두 배"
+      },
+      {
+        "sheet": "요약",
+        "label": "운영",
+        "role": "IGNORE",
+        "item_type": null,
+        "period": null,
+        "amount": 9000,
+        "note": "요약 시트의 항목군 합계. 상세와 같이 세면 원가가 두 배"
+      },
+      {
+        "sheet": "요약",
+        "label": "일회성",
+        "role": "IGNORE",
+        "item_type": null,
+        "period": null,
+        "amount": 45000,
+        "note": "요약 시트의 항목군 합계. 상세와 같이 세면 원가가 두 배"
+      }
+    ],
+    "expected_annual": {
+      "RENT": 1440000000,
+      "RACK_FACILITY": 710400000,
+      "ELECTRICITY": 941064000,
+      "NETWORK_STORAGE": 282000000,
+      "OPERATIONS": 108000000,
+      "ACQUISITION": 45000000
+    },
+    "expected_total_check": {
+      "cost_sum": 335122,
+      "matches": "원가 합계 − 할인 = 공급가액"
+    },
+    "traps": [
+      "금액 단위가 천원. 머리글의 '(단위: 천원)'을 놓치면 원가가 1/1000로 잡힘 — 총액 대조는 그대로 맞아서 못 잡음",
+      "대분류마다 소계 줄이 있음. 소계를 원가로 세면 해당 그룹이 두 번 들어감",
+      "요약 시트의 항목군 합계와 상세 시트가 같은 금액을 반복. 둘 다 세면 두 배",
+      "전력사용량 시트의 31줄은 kWh 숫자. 금액으로 읽으면 안 됨",
+      "고밀도 랙 전환 공사는 1회성 → 취득비(초기 투자)로, ×12 금지",
+      "할인은 정기요금 3% 약정 할인 → 계약 기간 내내 적용되는 할인이라 원가에서 빼는 게 맞을 수 있음 (담당자 판단)"
+    ]
+  },
+  "bill_r3_colo_mrc_nrc_usd.xlsx": {
+    "title": "해외 코로케이션 영문 인보이스 · MRC/NRC",
+    "layout": "머리글 블록 + 표. 금액 열이 MRC(월 정기)와 NRC(1회성) 두 개",
+    "currency": "USD",
+    "period": "MONTH",
+    "unit_multiplier": 1,
+    "annualize": "MRC × 12, NRC는 취득비로",
+    "contract": {
+      "power_kw": 800,
+      "racks": 20,
+      "gpus": null
+    },
+    "lines": [
+      {
+        "sheet": "Invoice",
+        "label": "Private Suite – Space & Power Capacity (per committed kW)",
+        "role": "COST",
+        "item_type": "RENT",
+        "period": "MONTH",
+        "amount": 108000.0,
+        "note": "",
+        "included_items": [
+          "RACK_FACILITY"
+        ]
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Metered Utility Power (PUE 1.35 applied)",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "MONTH",
+        "amount": 48886.19,
+        "note": "",
+        "included_items": []
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Cross Connect – Single-mode Fiber",
+        "role": "COST",
+        "item_type": "NETWORK_STORAGE",
+        "period": "MONTH",
+        "amount": 4800.0,
+        "note": "",
+        "included_items": []
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Cross Connect Installation",
+        "role": "COST",
+        "item_type": "ACQUISITION",
+        "period": "ONE_TIME",
+        "amount": 8000.0,
+        "note": "1회성 설치비. MRC 열이 비어 있음",
+        "included_items": []
+      },
+      {
+        "sheet": "Invoice",
+        "label": "IP Transit 100G port (40G commit)",
+        "role": "COST",
+        "item_type": "NETWORK_STORAGE",
+        "period": "MONTH",
+        "amount": 9500.0,
+        "note": "",
+        "included_items": []
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Remote Hands – beyond 10h block",
+        "role": "COST",
+        "item_type": "OPERATIONS",
+        "period": "MONTH",
+        "amount": 3850.0,
+        "note": "",
+        "included_items": []
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Managed Monitoring & Ticketing",
+        "role": "COST",
+        "item_type": "OPERATIONS",
+        "period": "MONTH",
+        "amount": 2500.0,
+        "note": "",
+        "included_items": []
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Cage Build-out (liquid-cooling manifold)",
+        "role": "COST",
+        "item_type": "ACQUISITION",
+        "period": "ONE_TIME",
+        "amount": 65000.0,
+        "note": "1회성 공사비",
+        "included_items": []
+      },
+      {
+        "sheet": "Invoice",
+        "label": "SLA Credit – Oct 3 power event (one-time)",
+        "role": "DISCOUNT",
+        "item_type": null,
+        "period": null,
+        "amount": -2000.0,
+        "note": "일회성 보상 크레딧. 원가에서 빼면 안 됨"
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Subtotal – Monthly Recurring",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 175536.19,
+        "note": ""
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Subtotal – Non-Recurring",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 73000.0,
+        "note": ""
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Sales Tax (exempt)",
+        "role": "TAX",
+        "item_type": null,
+        "period": null,
+        "amount": 0.0,
+        "note": ""
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Total Current Charges",
+        "role": "TOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 248536.19,
+        "note": ""
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Previous Balance",
+        "role": "IGNORE",
+        "item_type": null,
+        "period": null,
+        "amount": 184212.4,
+        "note": "이월 잔액·입금 줄은 원가가 아님"
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Payment Received – Thank you",
+        "role": "IGNORE",
+        "item_type": null,
+        "period": null,
+        "amount": -184212.4,
+        "note": "이월 잔액·입금 줄은 원가가 아님"
+      },
+      {
+        "sheet": "Invoice",
+        "label": "Balance Due",
+        "role": "TOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 248536.19,
+        "note": ""
+      }
+    ],
+    "expected_annual": {
+      "RENT": 1296000.0,
+      "ELECTRICITY": 586634.28,
+      "NETWORK_STORAGE": 171600.0,
+      "ACQUISITION": 73000.0,
+      "OPERATIONS": 76200.0
+    },
+    "expected_total_check": {
+      "cost_sum": 250536.19,
+      "matches": "원가 합계 − 크레딧 = Total Current Charges"
+    },
+    "traps": [
+      "금액 열이 MRC·NRC 두 개. 열 이름이 아니라 열 위치로 기간(월/1회)을 판단해야 함",
+      "Space & Power Capacity는 kW당 공간·용량 요금 (랙·시설 포함), 전기 사용료는 Metered Utility Power에 따로 있음",
+      "SLA 크레딧은 일회성 보상. 원가에서 빼면 연간 원가가 $24,000 낮게 잡힘",
+      "Previous Balance / Payment Received 줄은 원가가 아님. 더하면 총액 대조가 틀어짐",
+      "Unit Rate 열(0.078 등)과 Qty 열(464,000kWh 등)에 숫자가 많아 금액 열 판단이 어려움"
+    ]
+  },
+  "bill_r4_prorated_first_month_krw.xlsx": {
+    "title": "신규 입주 첫 달 · 일할 계산 · 회선 별도 계약",
+    "layout": "월 정액 열과 당월(일할) 청구액 열이 따로 있음. 전력은 월 정액 없이 검침액만",
+    "currency": "KRW",
+    "period": "MONTH",
+    "unit_multiplier": 1,
+    "annualize": "정액 항목은 '월 정액 × 12', 전력은 17일 사용액 ÷ 17 × 365, 설치비는 취득비로",
+    "contract": {
+      "power_kw": 320,
+      "racks": 8,
+      "gpus": null
+    },
+    "missing_expected": [
+      "NETWORK_STORAGE"
+    ],
+    "lines": [
+      {
+        "sheet": "청구서",
+        "label": "랙 상면료 (40kW급 8랙)",
+        "role": "COST",
+        "item_type": "RACK_FACILITY",
+        "period": "MONTH",
+        "amount": 26322581,
+        "note": "일할 계산",
+        "annual_amount": 576000000
+      },
+      {
+        "sheet": "청구서",
+        "label": "전력 사용료 (검침)",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "MONTH",
+        "amount": 23549760,
+        "note": "127,296kWh × 185원 (PUE 1.3 포함)",
+        "annual_amount": 505627200
+      },
+      {
+        "sheet": "청구서",
+        "label": "운영관리비 (관제·유지보수)",
+        "role": "COST",
+        "item_type": "OPERATIONS",
+        "period": "MONTH",
+        "amount": 2193548,
+        "note": "일할 계산",
+        "annual_amount": 48000000
+      },
+      {
+        "sheet": "청구서",
+        "label": "입주 설치비 (1회)",
+        "role": "COST",
+        "item_type": "ACQUISITION",
+        "period": "ONE_TIME",
+        "amount": 3000000,
+        "note": "랙 설치·전원 인입, 1회 청구",
+        "annual_amount": 3000000
+      },
+      {
+        "sheet": "청구서",
+        "label": "공급가액",
+        "role": "SUBTOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 55065889,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "부가세",
+        "role": "TAX",
+        "item_type": null,
+        "period": null,
+        "amount": 5506589,
+        "note": ""
+      },
+      {
+        "sheet": "청구서",
+        "label": "청구금액",
+        "role": "TOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 60572478,
+        "note": ""
+      }
+    ],
+    "expected_annual": {
+      "RACK_FACILITY": 576000000,
+      "ELECTRICITY": 505627200,
+      "OPERATIONS": 48000000,
+      "ACQUISITION": 3000000
+    },
+    "expected_total_check": {
+      "cost_sum": 55065889,
+      "matches": "공급가액"
+    },
+    "traps": [
+      "17일치 일할 금액을 × 12 하면 연간 원가가 약 45% 낮게 잡힘. 월 정액 열을 써야 함",
+      "금액 열이 2개(월 정액, 당월 청구액). 총액 대조는 당월 청구액으로만 맞음",
+      "네트워크가 청구서에 없음 → '별도 계약' 질문이 떠야 함. 비고에 이유가 적혀 있음",
+      "입주 설치비는 1회성 → 취득비"
+    ]
+  },
+  "bill_r5_quarterly_no_currency.xlsx": {
+    "title": "분기 청구 · 통화 표시 없음 · 병합 머리글",
+    "layout": "2줄 병합 머리글(금액 → 공급가액/부가세/합계), 월별 전력 줄이 따로",
+    "currency": "KRW",
+    "period": "QUARTER",
+    "unit_multiplier": 1,
+    "annualize": "× 4",
+    "contract": {
+      "power_kw": 400,
+      "racks": 10,
+      "gpus": null
+    },
+    "missing_expected": [
+      "OPERATIONS"
+    ],
+    "lines": [
+      {
+        "sheet": "3분기",
+        "label": "상면 이용료 (10랙)",
+        "role": "COST",
+        "item_type": "RACK_FACILITY",
+        "period": "QUARTER",
+        "amount": 420000000,
+        "note": ""
+      },
+      {
+        "sheet": "3분기",
+        "label": "전력 기본요금",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "QUARTER",
+        "amount": 9984000,
+        "note": ""
+      },
+      {
+        "sheet": "3분기",
+        "label": "전력 사용요금 7월",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "QUARTER",
+        "amount": 58805760,
+        "note": ""
+      },
+      {
+        "sheet": "3분기",
+        "label": "전력 사용요금 8월",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "QUARTER",
+        "amount": 60353280,
+        "note": ""
+      },
+      {
+        "sheet": "3분기",
+        "label": "전력 사용요금 9월",
+        "role": "COST",
+        "item_type": "ELECTRICITY",
+        "period": "QUARTER",
+        "amount": 53913600,
+        "note": ""
+      },
+      {
+        "sheet": "3분기",
+        "label": "회선 이용료 (10G × 2)",
+        "role": "COST",
+        "item_type": "NETWORK_STORAGE",
+        "period": "QUARTER",
+        "amount": 15000000,
+        "note": ""
+      },
+      {
+        "sheet": "3분기",
+        "label": "합계",
+        "role": "TOTAL",
+        "item_type": null,
+        "period": null,
+        "amount": 618056640,
+        "note": "한 줄에 공급가액·부가세·합계가 같이 있음"
+      }
+    ],
+    "expected_annual": {
+      "RACK_FACILITY": 1680000000,
+      "ELECTRICITY": 732226560,
+      "NETWORK_STORAGE": 60000000
+    },
+    "expected_total_check": {
+      "cost_sum": 618056640,
+      "matches": "합계(공급가액 열)"
+    },
+    "traps": [
+      "분기 청구. 지금 코드에는 분기(QUARTER) 기간이 없어 월로 보면 × 12 → 원가가 3배",
+      "통화 기호가 전혀 없음 → 통화 질문이 떠야 함",
+      "병합 머리글 2줄. '금액' 아래 공급가액·부가세·합계 중 공급가액 열을 골라야 함",
+      "전력이 월별 3줄 + 기본요금 1줄로 쪼개져 있음 → 한 항목으로 합쳐야 함. 하계 요금으로 7~8월이 높아 한 달만 보고 × 12 하면 틀림",
+      "운영비 없음(자체 인력) → '이번엔 제외'가 아니라 사내 인건비를 따로 넣어야 하는지 묻는 게 맞음"
+    ]
+  }
+}
