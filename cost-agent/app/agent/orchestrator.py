@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 from ..be_client import BackendClient, BackendError, build_request
+from ..benchmarks import cost_check, gpu_checks, inhouse_suggestion
 from ..models import (
     BillDraft,
     CostItemDraft,
@@ -108,6 +109,9 @@ class CostAgent:
         if d.currency is None:
             s.question = self._q_currency(s)
             return
+        if self._needs_interpret(s):
+            s.question = self._q_interpret(s)
+            return
         rec = d.reconciliation
         if rec.matched is False and s.remap_tries < MAX_REMAP:
             self._do_remap(s)
@@ -136,7 +140,7 @@ class CostAgent:
         feedback = self._remap_feedback(d) + (f"\n[에이전트 가설] {hypothesis}" if hypothesis else "")
         redone = self.bills.remap(d.id, feedback)
         if redone is not None:
-            s.draft = redone
+            self._set_draft(s, redone)
             self._log(s, Step.ANALYZE, "result",
                       "재분류 결과 총액이 일치합니다." if redone.reconciliation.matched else "재분류 후에도 총액이 맞지 않습니다.")
             return True
@@ -160,6 +164,55 @@ class CostAgent:
                         options=[Option(value="currency:KRW", label="원 (KRW)"),
                                  Option(value="currency:USD", label="달러 (USD)")])
 
+    def _needs_interpret(self, s: AgentSession) -> bool:
+        d = s.draft
+        return d is not None and not s.interpret_ok and bool(d.interpretations or d.bench)
+
+    @staticmethod
+    def _impact_text(impact: float | None) -> str:
+        if impact is None:
+            return "연간 원가에 주는 영향을 계산하지 못했어요 — 꼭 확인해 주세요"
+        if 0.995 <= impact <= 1.005:
+            return "연간 원가에는 영향이 없어요"
+        return f"놓치면 연간 원가가 {impact:.3g}배로 잡혀요"
+
+    def _q_interpret(self, s: AgentSession) -> Question:
+        d = s.draft
+        self._board(s, Step.ANALYZE, Status.WAITING, "청구서 해석 확인 대기")
+        self._log(s, Step.ANALYZE, "ask",
+                  f"청구서를 읽으며 바꾼 해석 {len(d.interpretations)}개와 업계 기준과 다른 값 {len(d.bench)}개를 담당자에게 확인합니다.")
+        fields = [FieldSpec(name=f"interp:{i.code}", label=i.message, type="select", value="on",
+                            options=[Option(value="on", label="적용"), Option(value="off", label="적용 안 함")],
+                            hint=self._impact_text(i.impact)) for i in d.interpretations]
+        fields += [FieldSpec(name=f"bench:{b.code}", label=b.message, type="select", value="ok",
+                             options=[Option(value="ok", label="확인했음"), Option(value="stop", label="청구서 다시 보기")],
+                             hint=b.source) for b in d.bench]
+        return Question(id=self._qid(), step=Step.ANALYZE, title="청구서를 이렇게 읽었어요. 맞는지 확인해 주세요",
+                        text="회색 값은 에이전트가 제안한 해석이에요. 아니면 '적용 안 함'으로 바꾸세요.",
+                        fields=fields, submit_label="이대로 계속")
+
+    @staticmethod
+    def _set_draft(s: AgentSession, d) -> None:
+        """초안을 바꾼다. 새 해석이나 기준선 경고가 생겼으면 해석 확인을 다시 받는다."""
+        def keys(x):
+            return ({i.code for i in x.interpretations} | {b.code for b in x.bench}) if x else set()
+        if keys(d) - keys(s.draft):
+            s.interpret_ok = False
+        s.draft = d
+
+    def _answer_interpret(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        v = {f.name: ans.values.get(f.name, f.value) for f in q.fields}
+        off = {k.split(":", 1)[1] for k, val in v.items() if k.startswith("interp:") and val == "off"}
+        stop = [k for k, val in v.items() if k.startswith("bench:") and val == "stop"]
+        s.draft = self.bills.set_interpretations(s.draft.id, off)
+        n_on = sum(1 for k in v if k.startswith("interp:")) - len(off)
+        self._log(s, Step.ANALYZE, "answer", f"해석 {n_on}개 적용 · {len(off)}개 해제" + (" · 청구서 다시 보기" if stop else ""))
+        if stop:
+            self._board(s, Step.ANALYZE, Status.ERROR, "담당자가 청구서 다시 보기를 골라 중단")
+            s.step = Step.DONE
+            return
+        s.interpret_ok = True
+
     def _q_mismatch(self, s: AgentSession) -> Question:
         rec = s.draft.reconciliation
         self._board(s, Step.ANALYZE, Status.WAITING, "총액 불일치 · 확인 필요")
@@ -172,9 +225,12 @@ class CostAgent:
                      Option(value="stop", label="여기서 멈추고 분류표 수정")])
 
     def _answer_analyze(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        if q.fields and q.fields[0].name.startswith(("interp:", "bench:")):
+            self._answer_interpret(s, q, ans)
+            return
         if (ans.choice or "").startswith("currency:"):
             cur = Currency(ans.choice.split(":", 1)[1])
-            s.draft = self.bills.set_currency(s.draft.id, cur)
+            self._set_draft(s, self.bills.set_currency(s.draft.id, cur))
             self._log(s, Step.ANALYZE, "answer", f"통화: {cur.value}")
             return
         if ans.choice not in ("proceed", "stop"):
@@ -299,6 +355,7 @@ class CostAgent:
             FieldSpec(name="pricing_method", label="마진 방식", type="select", value="REVENUE_MARGIN",
                       options=[Option(value="REVENUE_MARGIN", label="매출 기준 이익률"), Option(value="COST_MARKUP", label="원가 가산율")]),
             FieldSpec(name="target_rate", label="목표 마진 (%)", value=20, hint="제안값 20%: 같은 보고서의 목표 마진 예시"),
+            self._inhouse_field(s),
         ]
         if needs_fx:
             fields.append(FieldSpec(name="fx_krw_per_usd", label="환율 (원/달러)", value=fx_value, hint=fx_hint))
@@ -314,6 +371,21 @@ class CostAgent:
                         text="회색 제안값은 근거가 있는 출발점이에요. 실제 사업 조건에 맞게 고치세요.",
                         fields=fields, submit_label="이 값으로 계산")
 
+    @staticmethod
+    def _inhouse_field(s: AgentSession) -> FieldSpec:
+        d = s.draft
+        value = inhouse_suggestion(d.cost_items, d.currency, d.contract)
+        hint = ("예시값: 현대차증권 표 18 기타 운영비(18억원/MW/년) − 청구서 네트워크·운영 · 이미 청구서 운영비에 들어 있으면 0"
+                if value is not None else
+                "청구서에 없는 운영 인력·영업·관리 비용 · 참고: 현대차증권 표 18 기타 운영비 18억원/MW/년")
+        return FieldSpec(name="inhouse_annual", label="사내 인건비·판관비 (연간)", required=False, value=value, hint=hint)
+
+    def _set_checks(self, s: AgentSession, step: Step, codes: set[str], found: list) -> None:
+        """기준선 경고를 바꿔 넣고 기록한다. 흐름은 막지 않는다."""
+        s.checks = [c for c in s.checks if c.code not in codes] + found
+        for c in found:
+            self._log(s, step, "warn", c.message)
+
     def _answer_assumptions(self, s: AgentSession, q: Question, ans: Answer) -> None:
         v = {f.name: ans.values.get(f.name, f.value) for f in q.fields}
         try:
@@ -328,6 +400,13 @@ class CostAgent:
             raise AgentError("필수 값을 모두 숫자로 입력하세요.") from exc
         if not a["model_id"] or a["model_id"] == "None" or a["gpu_count"] <= 0 or not 0 < a["utilization"] <= 1:
             raise AgentError("GPU 모델, GPU 수(1 이상), 가동률(0~100%)을 확인하세요.")
+        raw = v.get("inhouse_annual")
+        try:
+            a["inhouse_annual"] = 0.0 if raw in (None, "") else float(raw)
+        except (TypeError, ValueError) as exc:
+            raise AgentError("사내 인건비·판관비는 0 이상의 숫자로 입력하세요.") from exc
+        if a["inhouse_annual"] < 0:
+            raise AgentError("사내 인건비·판관비는 0 이상의 숫자로 입력하세요.")
         names = {o.value: o.label for o in q.fields[0].options}
         a["model_name"] = names.get(a["model_id"], a["model_id"])
         a["sources"] = {f.name: (f.hint if str(ans.values.get(f.name, f.value)) == str(f.value) and f.hint else "담당자 입력")
@@ -337,7 +416,10 @@ class CostAgent:
         self._log(s, Step.ASSUMPTIONS, "answer",
                   f"{a['model_name']} {a['gpu_count']}장 · 취득비 {a['acquisition_amount']:,.0f} {a['acquisition_currency']} · "
                   f"가동률 {a['utilization']:.0%} · 목표 마진 {a['target_rate']:.0%}")
-        self._board(s, Step.ASSUMPTIONS, Status.DONE, f"{a['model_name']} {a['gpu_count']}장 · 마진 {a['target_rate']:.0%}")
+        self._set_checks(s, Step.ASSUMPTIONS, {"KW_PER_GPU"}, gpu_checks(s.draft.contract, a["gpu_count"]))
+        warn = [c.message for c in s.checks if c.code == "KW_PER_GPU"]
+        self._board(s, Step.ASSUMPTIONS, Status.WARNING if warn else Status.DONE,
+                    f"{a['model_name']} {a['gpu_count']}장 · 마진 {a['target_rate']:.0%}", warn)
 
     # 4) 원가 계산 --------------------------------------------------------
     def _final_items(self, s: AgentSession) -> list[CostItemDraft]:
@@ -357,6 +439,23 @@ class CostAgent:
             else:
                 items.append(CostItemDraft(item_type=t, status=ItemStatus.NOT_INCLUDED))
             have.add(t)
+        inhouse = float((s.assumptions or {}).get("inhouse_annual") or 0)
+        if inhouse > 0:  # 청구서 밖 사내 인건비·판관비는 운영비에 더한다 (BE는 같은 항목을 한 번만 받는다)
+            cur = s.draft.currency or Currency.KRW
+            ops = next((c for c in items if c.item_type == ItemType.OPERATIONS), None)
+            other = next((c for c in items if c.item_type == ItemType.OTHER), None)
+            if ops and ops.status == ItemStatus.USER_INPUT and ops.currency == cur:
+                ops.amount = round((ops.amount or 0) + inhouse, 2)
+            elif ops is None or ops.status != ItemStatus.USER_INPUT:
+                items = [c for c in items if c.item_type != ItemType.OPERATIONS]
+                items.append(CostItemDraft(item_type=ItemType.OPERATIONS, status=ItemStatus.USER_INPUT,
+                                           amount=round(inhouse, 2), currency=cur, period=Period.YEAR))
+            elif other and other.status == ItemStatus.USER_INPUT and other.currency == cur:
+                other.amount = round((other.amount or 0) + inhouse, 2)  # 운영비가 다른 통화면 기타로
+            else:
+                items = [c for c in items if c.item_type != ItemType.OTHER]
+                items.append(CostItemDraft(item_type=ItemType.OTHER, status=ItemStatus.USER_INPUT,
+                                           amount=round(inhouse, 2), currency=cur, period=Period.YEAR))
         return items
 
     def _step_simulate(self, s: AgentSession) -> None:
@@ -382,6 +481,7 @@ class CostAgent:
             s.assumptions["confirmed"] = False
             return False
         r = s.simulation
+        self._set_checks(s, Step.SIMULATE, {"COST_PER_GPU_HOUR"}, cost_check(float(r["hourlyCost"])))
         missing = [ITEM_KO.get(m, "조달 금리" if m == "FINANCING" else m) for m in r.get("missingItems", [])]
         self._log(s, Step.SIMULATE, "result",
                   f"원가 ${float(r['hourlyCost']):.3f} · 제안가 ${float(r['candidatePrice']):.3f} /GPU·시간")

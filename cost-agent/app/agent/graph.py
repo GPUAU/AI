@@ -34,11 +34,11 @@ FINAL = (Status.DONE, Status.WARNING, Status.ERROR)
 
 TOOL_STEP = {"analyze_bill": Step.ANALYZE, "remap_bill": Step.ANALYZE, "simulate_cost": Step.SIMULATE,
              "compare_market": Step.MARKET, "finish": Step.REPORT}
-ASK_STEP = {"currency": Step.ANALYZE, "mismatch": Step.ANALYZE, "missing": Step.MISSING,
+ASK_STEP = {"currency": Step.ANALYZE, "interpret": Step.ANALYZE, "mismatch": Step.ANALYZE, "missing": Step.MISSING,
             "assumptions": Step.ASSUMPTIONS, "market": Step.MARKET, "terms": Step.TERMS}
 TOOL_KO = {"analyze_bill": "청구서 분석", "remap_bill": "재분류", "simulate_cost": "원가 계산",
            "compare_market": "시장 비교", "finish": "마무리", "ask_user": "담당자 확인"}
-ASK_KO = {"currency": "통화", "mismatch": "총액 불일치", "missing": "누락 비용", "assumptions": "가정값",
+ASK_KO = {"currency": "통화", "interpret": "청구서 해석", "mismatch": "총액 불일치", "missing": "누락 비용", "assumptions": "가정값",
           "market": "시장 이탈", "terms": "할인율"}
 
 SYSTEM_PROMPT = """너는 GPU 클라우드 사업자의 원가 분석 에이전트다.
@@ -69,7 +69,7 @@ TOOLS = [
         {"hypothesis": {"type": "string", "description": "총액이 안 맞는 이유에 대한 가설 (숫자 없이)"}}),
     _fn("ask_user", "담당자에게 질문 카드를 띄우고 답을 기다린다. 입력칸과 선택지는 시스템이 만든다.",
         {"kind": {"type": "string", "enum": list(ASK_STEP),
-                  "description": "currency=통화, mismatch=총액 불일치 진행 여부, missing=빠진 큰 비용, assumptions=청구서 밖 가정값, "
+                  "description": "currency=통화, interpret=청구서 해석(단위·금액 열·청구 기간) 확인, mismatch=총액 불일치 진행 여부, missing=빠진 큰 비용, assumptions=청구서 밖 가정값, "
                                  "market=시장 범위 이탈 대응, terms=장기계약 할인율"}}),
     _fn("simulate_cost", "확정된 원가 항목과 가정값으로 원가 서버에서 GPU·시간당 원가와 제안가를 계산한다."),
     _fn("compare_market", "같은 GPU의 시장 공개가격(사업자별 대표값)과 제안가를 비교한다."),
@@ -246,6 +246,8 @@ class GraphCostAgent(CostAgent):
             return "analyze_bill", {}
         if s.draft.currency is None:
             return "ask_user", {"kind": "currency"}
+        if self._needs_interpret(s):
+            return "ask_user", {"kind": "interpret"}
         if s.draft.reconciliation.matched is False and not s.mismatch_ok:
             if s.remap_tries < MAX_REMAP:
                 return "remap_bill", {"hypothesis": ""}
@@ -271,6 +273,8 @@ class GraphCostAgent(CostAgent):
             return ["청구서 분석 전"]
         if s.draft.currency is None:
             out.append("통화 미확인 → ask_user(currency)")
+        elif self._needs_interpret(s):
+            out.append("청구서 해석 미확인 → ask_user(interpret)")
         if s.draft.reconciliation.matched is False and not s.mismatch_ok:
             out.append("총액 불일치 미해결 → remap_bill 또는 ask_user(mismatch)")
         if self._missing_groups(s):
@@ -318,6 +322,10 @@ class GraphCostAgent(CostAgent):
             if d.currency is not None:
                 raise _Refused("통화는 이미 확인됐다")
             q = self._q_currency(s)
+        elif kind == "interpret":
+            if d.currency is None or not self._needs_interpret(s):
+                raise _Refused("통화를 먼저 확인한다 (확인할 청구서 해석이 없으면 묻지 않는다)")
+            q = self._q_interpret(s)
         elif kind == "mismatch":
             if d.reconciliation.matched is not False or s.mismatch_ok:
                 raise _Refused("총액 불일치가 없거나 이미 담당자가 진행을 정했다")
@@ -328,8 +336,8 @@ class GraphCostAgent(CostAgent):
                 raise _Refused("처리할 누락 비용이 없다")
             q = self._q_missing(s, groups[0][0])
         elif kind == "assumptions":
-            if d.currency is None or self._missing_groups(s):
-                raise _Refused("통화 확인과 누락 비용 처리를 먼저 끝낸다")
+            if d.currency is None or self._needs_interpret(s) or self._missing_groups(s):
+                raise _Refused("통화·청구서 해석 확인과 누락 비용 처리를 먼저 끝낸다")
             q = self._q_assumptions(s)
         elif kind == "market":
             if not self._market_current(s) or not self._market_out(s):
@@ -346,6 +354,8 @@ class GraphCostAgent(CostAgent):
         return "질문을 띄웠다"
 
     def _tool_simulate_cost(self, s: AgentSession) -> str:
+        if self._needs_interpret(s):
+            raise _Refused("청구서 해석을 먼저 확인한다 → ask_user(interpret)")
         if not s.assumptions.get("confirmed"):
             raise _Refused("가정값이 확정되지 않았다 → ask_user(assumptions)")
         if self._missing_groups(s):
@@ -414,7 +424,8 @@ class GraphCostAgent(CostAgent):
         if d is None or s.step == Step.DONE and s.board[0].status == Status.ERROR:
             return
         board = {b.key: b for b in s.board}
-        analysis_ok = d.currency is not None and (d.reconciliation.matched is not False or s.mismatch_ok)
+        analysis_ok = (d.currency is not None and not self._needs_interpret(s)
+                       and (d.reconciliation.matched is not False or s.mismatch_ok))
         if analysis_ok and board[Step.ANALYZE].status not in FINAL:
             self._finish_analyze(s)
         if analysis_ok and not self._missing_groups(s) and board[Step.MISSING].status not in FINAL:
@@ -445,7 +456,9 @@ class GraphCostAgent(CostAgent):
         return (f"분류 방식 {d.mapper}: 원가 줄 {n_cost}개(신뢰도 낮음 {low}개), 원가 아닌 줄: "
                 f"{', '.join(f'{k} {v}' for k, v in roles.items()) or '없음'}. 원가 항목: {', '.join(types) or '없음'}. "
                 f"통화: {d.currency.value if d.currency else '미확인'}. 청구 기간: {d.period.value if d.period else '미확인'}. "
-                f"총액 대조: {total}.{tries} 빠진 큰 비용: {', '.join(missing) or '없음'}.")
+                f"총액 대조: {total}.{tries} 빠진 큰 비용: {', '.join(missing) or '없음'}. "
+                f"해석 제안: {', '.join(i.code for i in d.interpretations) or '없음'} ({len(d.interpretations)}개, "
+                f"{'담당자 확인됨' if s.interpret_ok else '미확인'}). 기준선 경고 {len(d.bench)}개.")
 
     def _status(self, s: AgentSession) -> str:
         unmet = self._unmet(s)
@@ -456,6 +469,12 @@ class GraphCostAgent(CostAgent):
         if q.step == Step.ANALYZE:
             if (ans.choice or "").startswith("currency:"):
                 return f"통화 {ans.choice.split(':', 1)[1]}"
+            if q.fields and q.fields[0].name.startswith(("interp:", "bench:")):
+                off = [f.name.split(":", 1)[1] for f in q.fields
+                       if f.name.startswith("interp:") and ans.values.get(f.name, f.value) == "off"]
+                stop = any(ans.values.get(f.name, f.value) == "stop" for f in q.fields if f.name.startswith("bench:"))
+                return ("청구서 해석 확인: " + (f"해제 {', '.join(off)}" if off else "제안대로 적용")
+                        + (" · 담당자가 청구서 다시 보기를 골라 중단" if stop else ""))
             return "총액 차이를 알고 그대로 진행" if ans.choice == "proceed" else "중단 (분류표 수정)"
         if q.step == Step.MISSING:
             name = q.title.split("'")[1]

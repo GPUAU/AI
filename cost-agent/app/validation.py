@@ -40,8 +40,8 @@ def reconcile(lines: list[MappedLine], currency: Currency | None) -> tuple[Recon
     tax = sum(l.amount or 0 for l in lines if l.role == LineRole.TAX) or None
     totals = [l for l in lines if l.role == LineRole.TOTAL and l.amount is not None]
     subtotals = [l for l in lines if l.role == LineRole.SUBTOTAL and l.amount is not None]
-    # 가장 큰 총액 줄을 문서 총액으로 본다 (요약 시트와 상세 시트에 같은 총액이 있을 수 있음)
-    total = max((l.amount for l in totals), default=None)
+    # 총액 줄이 여럿일 수 있다 (요약·상세 시트, '당월 청구금액'과 '총 납부할 금액'). 큰 값부터 모두 대조한다.
+    total_values = sorted({l.amount for l in totals}, reverse=True)
 
     candidates: list[tuple[str, float]] = []
     net = cost_sum + discount
@@ -53,7 +53,7 @@ def reconcile(lines: list[MappedLine], currency: Currency | None) -> tuple[Recon
         if discount:
             candidates.append(("원가 항목 합계 − 할인 + 부가세", net + tax))
 
-    targets = [("청구 총액", total)] if total is not None else []
+    targets = [("청구 총액", t) for t in total_values]
     targets += [("소계·공급가액", s.amount) for s in subtotals]
     if not targets:
         rec = Reconciliation(cost_sum=cost_sum, tax=tax, matched=None, basis="총액 줄 없음")
@@ -115,15 +115,19 @@ def check_coverage(lines: list[MappedLine]) -> list[Issue]:
     return issues
 
 
-def aggregate(lines: list[MappedLine], currency: Currency | None, default_period: Period | None
-              ) -> tuple[list[CostItemDraft], list[Issue]]:
+def aggregate(lines: list[MappedLine], currency: Currency | None, default_period: Period | None,
+              months: float | None = None, base: dict[str, float] | None = None,
+              prorate: tuple[int, int] | None = None) -> tuple[list[CostItemDraft], list[Issue]]:
     """BE 규칙: 같은 항목은 한 번만, 기간은 YEAR(운영비) 또는 ONE_TIME(취득비)만 가능.
 
     - 같은 항목의 여러 줄은 합친다.
     - 월 청구는 ×12 해서 연간으로 바꾼다.
     - 1회성 비용은 취득비(ACQUISITION)에 합친다.
     - 다른 줄에 묶인 항목은 INCLUDED_IN_OTHER로 표시한다 (금액 없음).
+    - 해석(interpret)이 준 값으로 연간화한다: 월 정액(base) × 12 → 일할(prorate) ÷ 일수 × 365 → × 12 ÷ 청구 개월 수.
     """
+    m = months or (12.0 if default_period == Period.YEAR else 1.0)
+    base = base or {}
     issues: list[Issue] = []
     yearly: dict[ItemType, float] = defaultdict(float)
     refs: dict[ItemType, list[str]] = defaultdict(list)
@@ -140,16 +144,23 @@ def aggregate(lines: list[MappedLine], currency: Currency | None, default_period
                 issues.append(Issue(level=IssueLevel.INFO, code="ONE_TIME_TO_ACQUISITION", ref=l.ref,
                                     message=f"'{l.label}'은 1회성 비용이라 초기 투자(취득비)에 합쳤습니다."))
             item = ItemType.ACQUISITION
-        elif period == Period.MONTH:
-            amount *= 12
+        elif l.ref in base:
+            amount = base[l.ref] * 12
+        elif prorate:
+            amount = amount / prorate[0] * 365
+        elif period != Period.YEAR:
+            amount = amount * 12 / m
             converted_month = True
         yearly[item] += amount
         refs[item].append(l.ref)
         for inc in l.included_items:
             included.setdefault(inc, l.item_type)
-    if converted_month:
+    if converted_month and m == 1:
         issues.append(Issue(level=IssueLevel.INFO, code="MONTH_TO_YEAR",
                             message="월 청구 금액을 12배 해서 연간 운영비로 바꿨습니다. (한 달 청구서 기준 추정)"))
+    elif converted_month and m != 12:
+        issues.append(Issue(level=IssueLevel.INFO, code="MONTH_TO_YEAR",
+                            message=f"청구 기간 {m:g}개월 금액을 연간으로 바꿨습니다 (×{12 / m:g})."))
     if any(l.role == LineRole.DISCOUNT for l in lines):
         issues.append(Issue(level=IssueLevel.INFO, code="DISCOUNT_EXCLUDED",
                             message="할인 줄은 원가에서 빼지 않았습니다. 일시 할인이면 그대로, 계약 할인이면 담당자가 반영하세요."))

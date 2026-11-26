@@ -33,7 +33,7 @@ SYSTEM_PROMPT = f"""너는 데이터센터(IDC) 청구서를 원가 항목으로
 금액 칸은 머리글(금액·청구액·Amount 등)과 위치로 판단한다.
 
 각 줄마다 판단해서 JSON으로만 답한다.
-1. role: COST(원가 항목) / SUBTOTAL(소계·공급가액) / TOTAL(청구 총액) / TAX(부가세) / DISCOUNT(할인) / IGNORE(제목·머리글·메모·숫자 없는 줄)
+1. role: COST(원가 항목) / SUBTOTAL(소계·공급가액) / TOTAL(청구 총액) / TAX(부가세) / DISCOUNT(할인) / IGNORE(제목·머리글·메모·숫자 없는 줄). 전월 미납·이월·입금 줄은 IGNORE, '총 납부할 금액'은 TOTAL.
 2. COST이면 item_type을 고른다:
 {ITEM_GUIDE}
 3. amount_col: 그 줄의 '청구 금액'이 들어 있는 칸 번호. 단가·수량·kW·kWh 칸이 아니라 최종 금액 칸을 고른다. 금액이 없으면 null.
