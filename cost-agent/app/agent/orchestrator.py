@@ -108,6 +108,9 @@ class CostAgent:
         if d.currency is None:
             s.question = self._q_currency(s)
             return
+        if self._needs_interpret(s):
+            s.question = self._q_interpret(s)
+            return
         rec = d.reconciliation
         if rec.matched is False and s.remap_tries < MAX_REMAP:
             self._do_remap(s)
@@ -160,6 +163,44 @@ class CostAgent:
                         options=[Option(value="currency:KRW", label="원 (KRW)"),
                                  Option(value="currency:USD", label="달러 (USD)")])
 
+    def _needs_interpret(self, s: AgentSession) -> bool:
+        d = s.draft
+        return d is not None and not s.interpret_ok and bool(d.interpretations or d.bench)
+
+    @staticmethod
+    def _impact_text(impact: float | None) -> str:
+        if impact is None or 0.995 <= impact <= 1.005:
+            return "연간 원가에는 영향이 없어요"
+        return f"놓치면 연간 원가가 {impact:.3g}배로 잡혀요"
+
+    def _q_interpret(self, s: AgentSession) -> Question:
+        d = s.draft
+        self._board(s, Step.ANALYZE, Status.WAITING, "청구서 해석 확인 대기")
+        self._log(s, Step.ANALYZE, "ask",
+                  f"청구서를 읽으며 바꾼 해석 {len(d.interpretations)}개와 업계 기준과 다른 값 {len(d.bench)}개를 담당자에게 확인합니다.")
+        fields = [FieldSpec(name=f"interp:{i.code}", label=i.message, type="select", value="on",
+                            options=[Option(value="on", label="적용"), Option(value="off", label="적용 안 함")],
+                            hint=self._impact_text(i.impact)) for i in d.interpretations]
+        fields += [FieldSpec(name=f"bench:{b.code}", label=b.message, type="select", value="ok",
+                             options=[Option(value="ok", label="확인했음"), Option(value="stop", label="청구서 다시 보기")],
+                             hint=b.source) for b in d.bench]
+        return Question(id=self._qid(), step=Step.ANALYZE, title="청구서를 이렇게 읽었어요. 맞는지 확인해 주세요",
+                        text="회색 값은 에이전트가 제안한 해석이에요. 아니면 '적용 안 함'으로 바꾸세요.",
+                        fields=fields, submit_label="이대로 계속")
+
+    def _answer_interpret(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        v = {f.name: ans.values.get(f.name, f.value) for f in q.fields}
+        off = {k.split(":", 1)[1] for k, val in v.items() if k.startswith("interp:") and val == "off"}
+        stop = [k for k, val in v.items() if k.startswith("bench:") and val == "stop"]
+        s.draft = self.bills.set_interpretations(s.draft.id, off)
+        n_on = sum(1 for k in v if k.startswith("interp:")) - len(off)
+        self._log(s, Step.ANALYZE, "answer", f"해석 {n_on}개 적용 · {len(off)}개 해제" + (" · 청구서 다시 보기" if stop else ""))
+        if stop:
+            self._board(s, Step.ANALYZE, Status.ERROR, "담당자가 청구서 다시 보기를 골라 중단")
+            s.step = Step.DONE
+            return
+        s.interpret_ok = True
+
     def _q_mismatch(self, s: AgentSession) -> Question:
         rec = s.draft.reconciliation
         self._board(s, Step.ANALYZE, Status.WAITING, "총액 불일치 · 확인 필요")
@@ -172,6 +213,9 @@ class CostAgent:
                      Option(value="stop", label="여기서 멈추고 분류표 수정")])
 
     def _answer_analyze(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        if q.fields and q.fields[0].name.startswith(("interp:", "bench:")):
+            self._answer_interpret(s, q, ans)
+            return
         if (ans.choice or "").startswith("currency:"):
             cur = Currency(ans.choice.split(":", 1)[1])
             s.draft = self.bills.set_currency(s.draft.id, cur)

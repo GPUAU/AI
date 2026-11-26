@@ -253,3 +253,67 @@ def test_ai_bundle_is_cross_checked_with_rules(tmp_path):
     assert {"ELECTRICITY", "NETWORK_STORAGE", "OPERATIONS"} <= {t.value for t in bundle.included_items}
     assert "규칙 교차 확인" in bundle.reason
     assert "OPERATIONS" not in [t.value for t in d.missing_items]
+
+
+# ---------------------------------------------------------------- 청구서 해석 확인 카드 (설계 §4A-7)
+from tests.conftest import BUILDERS, doc_from_rows  # noqa: E402
+
+
+def start(Agent, tmp_path, d, gpu_count=256):
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend()[0])
+    return agent, agent.start(d, Goal(model_id="29", gpu_count=gpu_count))
+
+
+def board(s, step):
+    return next(b for b in s.board if b.key == step)
+
+
+def suggested(q):
+    """제안대로 답한다 (선택지가 있으면 첫 번째, 입력칸은 제안값)."""
+    if q.step == Step.ASSUMPTIONS:
+        return Answer(question_id=q.id, values=assumptions(gpu_count=256))
+    if q.step == Step.ANALYZE and q.options and q.options[0].value.startswith("currency"):
+        return Answer(question_id=q.id, choice="currency:KRW")
+    if q.step == Step.MISSING:
+        return Answer(question_id=q.id, choice="included",
+                      values={"parent": next((f.value for f in q.fields if f.name == "parent"), None) or "RACK_FACILITY"})
+    return Answer(question_id=q.id, choice=q.options[0].value if q.options else None, values={})
+
+
+def test_interpret_card_then_flow_continues(Agent, tmp_path, detailed_doc):
+    agent, s = start(Agent, tmp_path, detailed_doc("bill_r2_multisheet_thousand_krw.xlsx"))
+    assert s.step == Step.ANALYZE and s.question.title.startswith("청구서를 이렇게 읽었어요")
+    f = {x.name: x for x in s.question.fields}
+    assert f["interp:UNIT_SCALE"].value == "on" and "0.001배" in f["interp:UNIT_SCALE"].hint
+    assert [o.value for o in f["interp:UNIT_SCALE"].options] == ["on", "off"]
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={}))
+    assert s.interpret_ok and (s.question is None or s.question.step != Step.ANALYZE)
+
+
+def test_turning_off_interpretation_changes_draft(Agent, tmp_path, detailed_doc):
+    agent, s = start(Agent, tmp_path, detailed_doc("bill_r2_multisheet_thousand_krw.xlsx"))
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={"interp:UNIT_SCALE": "off"}))
+    assert s.draft.unit_multiplier == 1 and s.interpret_ok
+
+
+def test_bench_stop_ends_session(Agent, tmp_path):
+    bad = doc_from_rows([["청구월", "2026년 10월분", "계약전력", "1,000kW"], ["항목", "금액(원)"],
+                         ["상면 사용료", 1000], ["전력 사용료", 150_000_000], ["회선료", 1_000_000],
+                         ["운영관리비", 1_000_000], ["합계", 152_001_000]])
+    agent, s = start(Agent, tmp_path, bad)  # 상면 kW당 월 1원 → RENT_PER_KW
+    assert "bench:RENT_PER_KW" in {f.name for f in s.question.fields}
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={"bench:RENT_PER_KW": "stop"}))
+    assert s.step == Step.DONE and board(s, Step.ANALYZE).status == Status.ERROR
+
+
+@pytest.mark.parametrize("name", list(BUILDERS))
+def test_analyze_cards_at_most_three(Agent, tmp_path, detailed_doc, name):
+    agent, s = start(Agent, tmp_path, detailed_doc(name))
+    analyze_cards = 0
+    for _ in range(12):
+        if s.question is None:
+            break
+        analyze_cards += s.question.step == Step.ANALYZE
+        s = agent.answer(s.id, suggested(s.question))
+    assert 1 <= analyze_cards <= 3
+    assert s.interpret_ok
