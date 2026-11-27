@@ -50,6 +50,9 @@ def test_llm_controller_drives_tools_and_guard_blocks_early_finish(tmp_path, doc
     s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions()))
     assert s.step == Step.TERMS                             # 시장 범위 안 → 질문 없이 기간별 가격
     s = agent.answer(s.id, Answer(question_id=s.question.id, values={}))
+    assert s.question.step == Step.REVIEW                   # 승인 검토 발견 사항
+    s = agent.answer(s.id, Answer(question_id=s.question.id,
+                                  values={f.name: "확인" for f in s.question.fields if f.name.startswith("reason:")}))
     assert s.step == Step.DONE and s.report_ready
     assert all(d["by"] == "llm" for d in s.decisions)
     assert [d["tool"] for d in s.decisions][:2] == ["analyze_bill", "finish"]
@@ -125,3 +128,21 @@ def test_controller_sees_codes_not_messages(tmp_path, detailed_doc):
     sent = json.dumps(calls, ensure_ascii=False)
     assert "UNIT_SCALE" in sent
     assert "천원" not in sent and "1,000배" not in sent and "놓치면" not in sent
+
+
+def test_finish_refused_until_review(tmp_path, detailed_doc):
+    from tests.test_agent import real_backend, suggested
+    calls = []
+    backend, _ = real_backend()
+    agent = GraphCostAgent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend,
+                           controller=hinted(calls, premature_finish=False))
+    s = agent.start(detailed_doc("bill_r1_kr_metered_krw.xlsx"), Goal(model_id="29", gpu_count=504))
+    for _ in range(12):
+        if s.question is None or s.question.step == Step.REVIEW:
+            break
+        q = s.question
+        s = agent.answer(s.id, Answer(question_id=q.id, values=assumptions(gpu_count=504)) if q.step == Step.ASSUMPTIONS
+                         else suggested(q))
+    assert s.question is not None and s.question.step == Step.REVIEW
+    sent = json.dumps(calls, ensure_ascii=False)
+    assert "NO_FINANCING" in sent and "손익분기" not in sent and "이자)이 원가에" not in sent

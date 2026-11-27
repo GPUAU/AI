@@ -18,13 +18,15 @@ class Step(str, Enum):
     SIMULATE = "SIMULATE"  # BE 원가 계산
     MARKET = "MARKET"  # 시장 가격 비교 (+ 범위를 벗어나면 마진 조정 후 재계산)
     TERMS = "TERMS"  # 3·5년 계약 가격
+    REVIEW = "REVIEW"  # 승인 검토 (분해·손익분기·민감도·판정)
     REPORT = "REPORT"  # 견적 근거서
     DONE = "DONE"
 
 
 STEP_TITLES = {
     Step.ANALYZE: "청구서 분석", Step.MISSING: "누락 확인", Step.ASSUMPTIONS: "가정값 확인",
-    Step.SIMULATE: "원가 계산", Step.MARKET: "시장 비교", Step.TERMS: "기간별 가격", Step.REPORT: "견적 근거서",
+    Step.SIMULATE: "원가 계산", Step.MARKET: "시장 비교", Step.TERMS: "기간별 가격",
+    Step.REVIEW: "승인 검토", Step.REPORT: "견적 근거서",
 }
 
 
@@ -167,7 +169,8 @@ class AgentSession(BaseModel):
     mismatch_ok: bool = False  # 총액 불일치를 담당자가 알고 진행
     interpret_ok: bool = False  # 청구서 해석 확인 카드에 담당자가 답함
     checks: list[BenchFinding] = Field(default_factory=list)
-    approval: Approval | None = None  # 승인 검토 결과  # 가정값·원가 계산 뒤의 업계 기준선 경고 (막지 않음)
+    approval: Approval | None = None  # 승인 검토 결과
+    review_basis: str | None = None  # 마지막 승인 검토가 기준으로 삼은 입력 지문  # 가정값·원가 계산 뒤의 업계 기준선 경고 (막지 않음)
     sim_basis: str | None = None  # 마지막 원가 계산의 입력 지문
     market_basis: str | None = None  # 마지막 시장 비교가 기준으로 삼은 원가 계산
     decisions: list[dict] = Field(default_factory=list)  # 판단자 선택 기록 {tool, reason, by}

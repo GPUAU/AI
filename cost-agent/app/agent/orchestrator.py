@@ -523,16 +523,20 @@ class CostAgent:
     def _step_simulate(self, s: AgentSession) -> None:
         self._go(s, Step.MARKET if self._do_simulate(s) else Step.ASSUMPTIONS)
 
-    def _do_simulate(self, s: AgentSession) -> bool:
-        """BE 원가 계산. 실패하면 가정값을 미확정으로 돌리고 False."""
+    @staticmethod
+    def _sim_input(s: AgentSession) -> SimulationInput:
         a = s.assumptions
-        s.final_items = self._final_items(s)
-        inp = SimulationInput(
+        return SimulationInput(
             model_id=a["model_id"], gpu_count=a["gpu_count"], acquisition_amount=a["acquisition_amount"],
             acquisition_currency=Currency(a["acquisition_currency"]), depreciation_years=a["depreciation_years"],
             utilization=a["utilization"], pricing_method=a["pricing_method"], target_rate=a["target_rate"],
             fx_krw_per_usd=a.get("fx_krw_per_usd"),
             interest_rate_type=a.get("interest_rate_type", "NOT_APPLIED"), annual_interest_rate=a.get("annual_interest_rate"))
+
+    def _do_simulate(self, s: AgentSession) -> bool:
+        """BE 원가 계산. 실패하면 가정값을 미확정으로 돌리고 False."""
+        s.final_items = self._final_items(s)
+        inp = self._sim_input(s)
         self._log(s, Step.SIMULATE, "tool", "BE 원가 계산 API를 호출합니다 (계산식은 BE 한 곳에만 있음).")
         try:
             s.request = build_request(s.final_items, inp)
@@ -647,7 +651,7 @@ class CostAgent:
     def _step_terms(self, s: AgentSession) -> None:
         if not s.goal.terms_years:
             self._board(s, Step.TERMS, Status.DONE, "요청 없음")
-            self._go(s, Step.REPORT)
+            self._go(s, Step.REVIEW)
             return
         s.question = self._q_terms(s)
 
@@ -675,7 +679,7 @@ class CostAgent:
             s.terms.append(TermPrice(years=y, discount_rate=d, price=round(cand * (1 - d), 4)))
         self._log(s, Step.TERMS, "answer", " · ".join(f"{t.years}년 할인 {t.discount_rate:.0%}" for t in s.terms))
         self._price_terms(s)
-        self._go(s, Step.REPORT)
+        self._go(s, Step.REVIEW)
 
     def _price_terms(self, s: AgentSession) -> None:
         """담당자가 정한 할인율로 기간별 가격을 (다시) 계산한다. 제안가가 바뀌면 다시 부른다."""
@@ -689,7 +693,108 @@ class CostAgent:
                     " · ".join(f"{t.years}년 ${t.price:.2f}" for t in s.terms),
                     [f"{t.years}년 가격이 원가(${cost:.2f})보다 낮습니다" for t in below])
 
-    # 7) 근거서 -----------------------------------------------------------
+    # 7) 승인 검토 --------------------------------------------------------
+    @staticmethod
+    def _review_basis(s: AgentSession) -> str:
+        import json
+        return json.dumps([s.sim_basis, s.market_basis, [(t.years, t.price) for t in s.terms], s.missing_answers],
+                          sort_keys=True, default=str)
+
+    def _review_current(self, s: AgentSession) -> bool:
+        return s.approval is not None and s.review_basis == self._review_basis(s)
+
+    @staticmethod
+    def _pending_findings(s: AgentSession) -> list:
+        return [f for f in (s.approval.findings if s.approval else []) if not f.reason]
+
+    def _step_review(self, s: AgentSession) -> None:
+        if not self._review_current(s):
+            self._do_review(s)
+        if self._pending_findings(s):
+            s.question = self._q_review(s)
+            return
+        self._go(s, Step.REPORT)
+
+    def _do_review(self, s: AgentSession) -> None:
+        from .approval import benchmark_shares, breakdown, breakeven, findings, sensitivity, verdict
+        from .models import Approval
+        r, a = s.simulation, s.assumptions
+        cost, cand = float(r["hourlyCost"]), float(r["candidatePrice"])
+        self._board(s, Step.REVIEW, Status.RUNNING)
+        self._log(s, Step.REVIEW, "tool", "원가를 항목별로 나누고, 손익분기·민감도(가정을 하나씩 바꿔 원가 서버 재계산)·업계 구성비를 봅니다.")
+        rows, ok, interest = breakdown(s.request or {}, r, a.get("fx_krw_per_usd"))
+        for row in rows:
+            row.refs = sorted({ref for it in s.final_items if it.item_type.value in row.item_types for ref in it.source_refs})
+        prices = {"candidate": cand, **{f"{t.years}y": t.price for t in s.terms}}
+        has_krw = any(c.currency == Currency.KRW for c in s.final_items if c.status == ItemStatus.USER_INPUT)
+        sens = sensitivity(self._sim_input(s), s.final_items, self.backend.simulate, a.get("grades", {}), has_krw, cand)
+        ap = Approval(breakdown=rows, breakdown_ok=ok, interest_applied=interest,
+                      breakeven=breakeven(float(a["utilization"]), cost, prices), sensitivity=sens,
+                      benchmark=benchmark_shares(rows))
+        before = {f.code: f.reason for f in (s.approval.findings if s.approval else [])}
+        ap.findings = findings(s, ap)
+        for f in ap.findings:  # 같은 발견 사항이면 담당자가 적은 사유를 유지한다
+            f.reason = before.get(f.code, "")
+        ap.verdict, ap.reasons = verdict(ap.findings)
+        s.approval, s.review_basis = ap, self._review_basis(s)
+        codes = ", ".join(f.code for f in ap.findings) or "없음"
+        self._log(s, Step.REVIEW, "result", f"판정 {ap.verdict} · 발견 사항 {len(ap.findings)}개 ({codes})")
+        self._board(s, Step.REVIEW, Status.DONE if ap.verdict == "승인 권고" else Status.WARNING,
+                    f"판정: {ap.verdict}", [f.message for f in ap.findings][:6])
+
+    FIX_ORDER = ["MISSING", "ASSUMPTIONS", "MARKET", "TERMS"]
+
+    def _q_review(self, s: AgentSession) -> Question:
+        fields: list[FieldSpec] = []
+        for f in s.approval.findings:
+            opts = [Option(value="proceed", label="사유를 적고 진행")]
+            if f.fix_step in self.FIX_ORDER:
+                opts.insert(0, Option(value="fix", label="고치기"))
+            fields += [
+                FieldSpec(name=f"finding:{f.code}", label=f"[{f.level}] {f.message}", type="select", value="proceed",
+                          options=opts, hint=f"고치면 '{STEP_TITLES.get(Step(f.fix_step), '')}' 단계로 돌아가요"
+                          if f.fix_step in self.FIX_ORDER else "이 단계에서 고칠 수 없어 사유를 남겨요"),
+                FieldSpec(name=f"reason:{f.code}", label="진행 사유", type="text", required=False, value=f.reason or None,
+                          show_for=["proceed"]),
+            ]
+        self._board(s, Step.REVIEW, Status.WAITING, f"판정: {s.approval.verdict} · 확인 대기")
+        self._log(s, Step.REVIEW, "ask", f"승인 전에 담당자가 확인할 발견 사항 {len(s.approval.findings)}개를 보여줍니다.")
+        return Question(id=self._qid(), step=Step.REVIEW, title=f"승인 전에 확인할 점이 {len(s.approval.findings)}개 있어요",
+                        text=f"판정: {s.approval.verdict}. 항목마다 고치거나, 사유를 적고 진행하세요. 재검토 사유는 사유를 적어도 판정이 바뀌지 않아요.",
+                        fields=fields, submit_label="확인")
+
+    def _answer_review(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        v = {f.name: ans.values.get(f.name, f.value) for f in q.fields}
+        by_code = {f.code: f for f in s.approval.findings}
+        fixes, reasons = [], {}
+        for code, f in by_code.items():
+            choice = v.get(f"finding:{code}", "proceed")
+            if choice == "fix" and f.fix_step in self.FIX_ORDER:
+                fixes.append(f)
+            else:
+                text = str(v.get(f"reason:{code}") or "").strip()
+                if not text:
+                    raise AgentError("진행하려면 사유를 적어 주세요.")
+                reasons[code] = text
+        for code, text in reasons.items():
+            by_code[code].reason = text
+        self._log(s, Step.REVIEW, "answer", f"고치기 {len(fixes)}개 · 사유 진행 {len(reasons)}개")
+        if not fixes:
+            return
+        steps = {f.fix_step for f in fixes}
+        if "MISSING" in steps:
+            for g in [g for g, rec in s.missing_answers.items() if rec.get("choice") == "exclude"]:
+                del s.missing_answers[g]
+        if "ASSUMPTIONS" in steps:
+            s.assumptions["confirmed"] = False
+        if "MARKET" in steps:
+            s.margin_adjusted = False
+        if "TERMS" in steps:
+            s.terms = []
+        first = next(st for st in self.FIX_ORDER if st in steps)
+        self._go(s, Step(first))
+
+    # 8) 근거서 -----------------------------------------------------------
     def _step_report(self, s: AgentSession) -> None:
         self._do_report(s)
         self._go(s, Step.DONE)

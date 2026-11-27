@@ -71,6 +71,8 @@ def auto_answer(q) -> Answer:
     if q.step == Step.ASSUMPTIONS:
         return Answer(question_id=q.id, values={"model_id": "29", "gpu_count": 32, "acquisition_amount": 1500000,
                                                 "acquisition_currency": "USD", "fx_krw_per_usd": 1400})
+    if q.step == Step.REVIEW:
+        return Answer(question_id=q.id, values={f.name: "평가 진행" for f in q.fields if f.name.startswith("reason:")})
     if q.step == Step.MARKET:
         return Answer(question_id=q.id, choice=q.options[0].value)
     return Answer(question_id=q.id, values={})

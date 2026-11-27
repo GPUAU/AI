@@ -33,13 +33,13 @@ MAX_FAILS = 2  # 연속으로 '실행 불가'가 나오면 기본 순서로 넘�
 FINAL = (Status.DONE, Status.WARNING, Status.ERROR)
 
 TOOL_STEP = {"analyze_bill": Step.ANALYZE, "remap_bill": Step.ANALYZE, "simulate_cost": Step.SIMULATE,
-             "compare_market": Step.MARKET, "finish": Step.REPORT}
+             "compare_market": Step.MARKET, "review_price": Step.REVIEW, "finish": Step.REPORT}
 ASK_STEP = {"currency": Step.ANALYZE, "interpret": Step.ANALYZE, "mismatch": Step.ANALYZE, "missing": Step.MISSING,
-            "assumptions": Step.ASSUMPTIONS, "market": Step.MARKET, "terms": Step.TERMS}
+            "assumptions": Step.ASSUMPTIONS, "market": Step.MARKET, "terms": Step.TERMS, "review": Step.REVIEW}
 TOOL_KO = {"analyze_bill": "청구서 분석", "remap_bill": "재분류", "simulate_cost": "원가 계산",
-           "compare_market": "시장 비교", "finish": "마무리", "ask_user": "담당자 확인"}
+           "compare_market": "시장 비교", "review_price": "승인 검토", "finish": "마무리", "ask_user": "담당자 확인"}
 ASK_KO = {"currency": "통화", "interpret": "청구서 해석", "mismatch": "총액 불일치", "missing": "누락 비용", "assumptions": "가정값",
-          "market": "시장 이탈", "terms": "할인율"}
+          "market": "시장 이탈", "terms": "할인율", "review": "승인 검토"}
 
 SYSTEM_PROMPT = """너는 GPU 클라우드 사업자의 원가 분석 에이전트다.
 목표: IDC 청구서 한 장으로 GPU·시간당 원가와 제안가를 계산하고, 시장 공개가격과 비교하고, 장기계약 가격과 견적 근거서를 만든다.
@@ -70,9 +70,10 @@ TOOLS = [
     _fn("ask_user", "담당자에게 질문 카드를 띄우고 답을 기다린다. 입력칸과 선택지는 시스템이 만든다.",
         {"kind": {"type": "string", "enum": list(ASK_STEP),
                   "description": "currency=통화, interpret=청구서 해석(단위·금액 열·청구 기간) 확인, mismatch=총액 불일치 진행 여부, missing=빠진 큰 비용, assumptions=청구서 밖 가정값, "
-                                 "market=시장 범위 이탈 대응, terms=장기계약 할인율"}}),
+                                 "market=시장 범위 이탈 대응, terms=장기계약 할인율, review=승인 검토 발견 사항 처리"}}),
     _fn("simulate_cost", "확정된 원가 항목과 가정값으로 원가 서버에서 GPU·시간당 원가와 제안가를 계산한다."),
     _fn("compare_market", "같은 GPU의 시장 공개가격(사업자별 대표값)과 제안가를 비교한다."),
+    _fn("review_price", "원가 분해·손익분기·민감도·업계 구성비로 승인 검토를 하고 발견 사항과 판정(승인 권고/조건부/재검토)을 낸다."),
     _fn("finish", "모든 조건이 끝났을 때 견적 근거서를 만들고 마친다. 조건이 모자라면 이유를 돌려준다."),
 ]
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
@@ -264,6 +265,10 @@ class GraphCostAgent(CostAgent):
             return "ask_user", {"kind": "market"}
         if s.goal.terms_years and not s.terms:
             return "ask_user", {"kind": "terms"}
+        if not self._review_current(s):
+            return "review_price", {}
+        if self._pending_findings(s):
+            return "ask_user", {"kind": "review"}
         return "finish", {}
 
     def _unmet(self, s: AgentSession) -> list[str]:
@@ -289,6 +294,10 @@ class GraphCostAgent(CostAgent):
             out.append("제안가가 시장 범위 밖인데 담당자 결정 없음 → ask_user(market)")
         if s.goal.terms_years and not s.terms:
             out.append("장기계약 할인율 미정 → ask_user(terms)")
+        elif s.simulation is not None and not self._review_current(s):
+            out.append("승인 검토가 최신 입력을 반영하지 않음 → review_price")
+        elif self._pending_findings(s):
+            out.append(f"발견 사항 미처리 {len(self._pending_findings(s))}개 → ask_user(review)")
         return out
 
     # ------------------------------------------------------------------ 도구
@@ -343,6 +352,10 @@ class GraphCostAgent(CostAgent):
             if not self._market_current(s) or not self._market_out(s):
                 raise _Refused("최신 시장 비교에서 제안가가 범위를 벗어났을 때만 묻는다")
             q = self._q_market(s)
+        elif kind == "review":
+            if not self._review_current(s) or not self._pending_findings(s):
+                raise _Refused("최신 승인 검토에 처리할 발견 사항이 있을 때만 묻는다 → review_price")
+            q = self._q_review(s)
         elif kind == "terms":
             if not s.goal.terms_years or s.simulation is None:
                 raise _Refused("원가 계산을 먼저 끝낸다 (장기계약 요청이 없으면 묻지 않는다)")
@@ -385,6 +398,16 @@ class GraphCostAgent(CostAgent):
         return (f"제안가가 시장 범위 밖: {m.position}. "
                 + ("마진 조정으로 시장 중앙값에 맞출 수 있다." if need_ok else "원가가 시장 중앙값보다 높아 마진 조정만으로는 맞출 수 없다.")
                 + (" 담당자가 이미 대응을 정했다." if s.margin_adjusted else " 담당자 결정이 필요하다."))
+
+    def _tool_review_price(self, s: AgentSession) -> str:
+        if not self._sim_current(s) or not self._market_current(s):
+            raise _Refused("최신 원가 계산과 시장 비교를 먼저 끝낸다")
+        if s.goal.terms_years and not s.terms:
+            raise _Refused("장기계약 할인율을 먼저 정한다 → ask_user(terms)")
+        self._do_review(s)
+        ap = s.approval
+        return (f"판정 {ap.verdict} · 발견 사항 {', '.join(f.code for f in ap.findings) or '없음'} "
+                f"({len(ap.findings)}개, 미처리 {len(self._pending_findings(s))}개)")
 
     def _tool_finish(self, s: AgentSession) -> str:
         unmet = self._unmet(s)
@@ -458,7 +481,9 @@ class GraphCostAgent(CostAgent):
                 f"통화: {d.currency.value if d.currency else '미확인'}. 청구 기간: {d.period.value if d.period else '미확인'}. "
                 f"총액 대조: {total}.{tries} 빠진 큰 비용: {', '.join(missing) or '없음'}. "
                 f"해석 제안: {', '.join(i.code for i in d.interpretations) or '없음'} ({len(d.interpretations)}개, "
-                f"{'담당자 확인됨' if s.interpret_ok else '미확인'}). 기준선 경고 {len(d.bench)}개.")
+                f"{'담당자 확인됨' if s.interpret_ok else '미확인'}). 기준선 경고 {len(d.bench)}개."
+                + (f" 승인 검토: 판정 {s.approval.verdict} · 발견 {', '.join(f.code for f in s.approval.findings) or '없음'} "
+                   f"(미처리 {len(self._pending_findings(s))}개)." if s.approval else ""))
 
     def _status(self, s: AgentSession) -> str:
         unmet = self._unmet(s)
@@ -494,6 +519,10 @@ class GraphCostAgent(CostAgent):
                     "keep": "제안가 유지 (시장 범위 밖으로 표시)"}.get(ans.choice or "keep", "제안가 유지")
         if q.step == Step.TERMS:
             return "장기계약 할인율 확정, 기간별 가격 계산됨"
+        if q.step == Step.REVIEW:
+            fixes = [f.name.split(":", 1)[1] for f in q.fields
+                     if f.name.startswith("finding:") and ans.values.get(f.name, f.value) == "fix"]
+            return ("승인 검토: 고치기 " + ", ".join(fixes)) if fixes else "승인 검토: 모든 발견 사항에 사유를 적고 진행"
         return ""
 
     @staticmethod
