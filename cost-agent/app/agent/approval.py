@@ -127,3 +127,75 @@ def sensitivity(base_input, items, simulate, grades: dict[str, str], has_krw: bo
             continue
         out.append({"key": key, "label": label, "price_delta": delta, "grade": grades.get(grade_key, "")})
     return sorted(out, key=lambda x: abs(x["price_delta"]), reverse=True)
+
+
+# ---------------------------------------------------------------- 발견 사항과 판정 (설계 §4 ⑦ 규칙 표)
+BREAKEVEN_MARGIN = 0.10  # 가정 가동률과 손익분기 가동률의 최소 여유 (10%p)
+MIX_BAND = (0.5, 2.0)
+MIN_PROVIDERS = 3
+
+
+def findings(s, ap) -> list:
+    """세션과 검토 계산으로 발견 사항을 만든다. 문구는 화면·보고서용 (판단자 LLM에는 code만 보낸다)."""
+    from .models import Finding
+
+    out: list[Finding] = []
+
+    def add(code: str, level: str, message: str, fix: str | None) -> None:
+        out.append(Finding(code=code, level=level, message=message, fix_step=fix))
+
+    r = s.simulation or {}
+    cost = float(r.get("hourlyCost") or 0)
+    cand = float(r.get("candidatePrice") or 0)
+    util = float((s.assumptions or {}).get("utilization") or 0)
+    prices = {"제안가": cand, **{f"{t.years}년가": t.price for t in s.terms}}
+    m = s.market
+
+    excluded = [g for g, rec in s.missing_answers.items() if rec.get("choice") == "exclude"]
+    if excluded:
+        add("MISSING_EXCLUDED", "재검토", f"{', '.join(excluded)} 비용을 빼고 계산했어요 (불완전 원가)", "MISSING")
+    below = [k for k, p in prices.items() if p < cost]
+    if below:
+        add("PRICE_BELOW_COST", "재검토", f"{', '.join(below)}이 원가 ${cost:.2f}보다 낮아요 — 팔수록 손실", "TERMS")
+    if m and m.count and m.median is not None and cost >= m.median:
+        add("COST_ABOVE_MARKET", "재검토",
+            f"원가 ${cost:.2f}가 시장 중앙값 ${m.median:.2f} 이상이에요 — 마진 조정으로는 맞출 수 없어요", "ASSUMPTIONS")
+    if not ap.breakdown_ok:
+        add("BREAKDOWN_MISMATCH", "재검토", "원가 항목 합계가 원가 서버 결과와 맞지 않아요", "ASSUMPTIONS")
+    thin = [k for k, p in prices.items() if p >= cost and util - util * cost / p < BREAKEVEN_MARGIN]
+    if thin:
+        k = thin[0]
+        add("THIN_BREAKEVEN", "조건부",
+            f"{k} 기준 가동률이 {util * cost / prices[k]:.0%} 아래로 떨어지면 손실이에요 (가정 {util:.0%})", "TERMS")
+    if m and m.count and m.min is not None and m.max is not None and (cand < m.min or cand > m.max):
+        add("MARKET_OUT_KEPT", "조건부", f"제안가 ${cand:.2f}가 시장 범위 ${m.min:.2f}~${m.max:.2f} 밖이에요", "MARKET")
+    if not ap.interest_applied:
+        add("NO_FINANCING", "조건부", "금융비용(이자)이 원가에 반영되지 않았어요", "ASSUMPTIONS")
+    top = [x for x in ap.sensitivity[:2] if x.get("grade") == "예시값"]
+    if top:
+        add("EXAMPLE_IN_TOP2", "조건부", f"결론을 크게 바꾸는 '{top[0]['label'] if 'label' in top[0] else top[0]['key']}'의 가정이 아직 예시값이에요",
+            "ASSUMPTIONS")
+    if not m or not m.count:
+        add("THIN_MARKET", "조건부", "비교할 시장 공개가격이 없어 시장 위치를 확인하지 못했어요", None)
+    elif m.providers < MIN_PROVIDERS:
+        add("THIN_MARKET", "조건부", f"시장 공개가격이 사업자 {m.providers}곳뿐이에요", None)
+    odd = [b for b in ap.benchmark if not MIX_BAND[0] <= b["ratio"] <= MIX_BAND[1]]
+    if odd:
+        b = odd[0]
+        add("ODD_MIX", "조건부", f"원가 중 {b['group']} 비중 {b['share']:.0%}가 업계 기준 {b['ref_share']:.0%}와 크게 달라요",
+            "ASSUMPTIONS")
+    bench = list(getattr(s.draft, "bench", []) if s.draft else []) + list(s.checks)
+    if bench:
+        add("BENCH_WARN", "조건부", f"업계 기준선과 크게 다른 값이 {len(bench)}개 있어요", "ANALYZE")
+    return out
+
+
+def verdict(fs: list) -> tuple[str, list[str]]:
+    """재검토가 하나라도 있으면 재검토(사유를 적어도), 조건부만 있으면 조건부, 없으면 승인 권고."""
+    if any(f.level == "재검토" for f in fs):
+        level = "재검토"
+    elif fs:
+        level = "조건부"
+    else:
+        level = "승인 권고"
+    return level, [f.message for f in fs]

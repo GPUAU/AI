@@ -118,3 +118,80 @@ def test_sensitivity_skips_failed_calls():
     def boom(req):
         raise RuntimeError("BE down")
     assert sensitivity(BASE, ITEMS, boom, {}, has_krw=True, base_price=3.0) == []
+
+
+# ---------------------------------------------------------------- 발견 사항과 판정
+from app.agent.approval import findings, verdict  # noqa: E402
+from app.agent.models import AgentSession, Approval, Goal, MarketView, TermPrice  # noqa: E402
+
+
+def session(cost=2.0, price=2.5, terms=(), market=(6, 2.0, 2.9, 4.0), util=0.7, missing=None):
+    s = AgentSession(id="t", goal=Goal(), board=[])
+    s.simulation = {"hourlyCost": str(cost), "candidatePrice": str(price)}
+    s.assumptions = {"utilization": util, "grades": {}}
+    s.terms = [TermPrice(years=y, discount_rate=d, price=price * (1 - d)) for y, d in terms]
+    if market:
+        n, lo, med, hi = market
+        s.market = MarketView(model_name="H100", count=n * 2, providers=n, min=lo, median=med, max=hi, candidate=price)
+    s.missing_answers = missing or {}
+    return s
+
+
+def clean_approval(**kw):
+    rows = [BreakdownRow(group=g, annual_usd=v, hourly_usd=0, share=0) for g, v in
+            [("감가상각", 36), ("공간", 34), ("전력", 16), ("운영", 14)]]
+    ap = Approval(breakdown=rows, breakdown_ok=True, interest_applied=True,
+                  sensitivity=[{"key": "utilization_down", "grade": "리포트 가정", "price_delta": 0.4}],
+                  benchmark=benchmark_shares(rows))
+    return ap.model_copy(update=kw)
+
+
+def codes(s, ap):
+    return {f.code for f in findings(s, ap)}
+
+
+def test_clean_session_is_approval():
+    s, ap = session(), clean_approval()
+    assert codes(s, ap) == set() and verdict(findings(s, ap))[0] == "승인 권고"
+
+
+def test_term_below_cost_is_review():  # Review Focus 5
+    s = session(terms=[(3, 0.15), (5, 0.25)])  # 5년가 1.875 < 원가 2.0
+    fs = findings(s, clean_approval())
+    assert "PRICE_BELOW_COST" in {f.code for f in fs} and verdict(fs)[0] == "재검토"
+
+
+def test_no_market_samples_is_conditional():  # Review Focus 3
+    s = session(market=None)
+    assert codes(s, clean_approval()) == {"THIN_MARKET"}
+
+
+def test_review_reason_does_not_upgrade_verdict():
+    fs = findings(session(missing={"네트워크": {"choice": "exclude"}}), clean_approval())
+    for f in fs:
+        f.reason = "알고 진행"
+    assert verdict(fs)[0] == "재검토"
+
+
+@pytest.mark.parametrize("kw, sess, code, level", [
+    ({"breakdown_ok": False}, {}, "BREAKDOWN_MISMATCH", "재검토"),
+    ({}, {"cost": 3.0, "price": 3.75}, "COST_ABOVE_MARKET", "재검토"),
+    ({}, {"price": 2.2}, "THIN_BREAKEVEN", "조건부"),
+    ({}, {"price": 4.5, "cost": 2.0}, "MARKET_OUT_KEPT", "조건부"),
+    ({"interest_applied": False}, {}, "NO_FINANCING", "조건부"),
+    ({"sensitivity": [{"key": "acquisition_up", "grade": "예시값", "price_delta": 1}]}, {}, "EXAMPLE_IN_TOP2", "조건부"),
+    ({}, {"market": (2, 2.0, 2.9, 4.0)}, "THIN_MARKET", "조건부"),
+])
+def test_rule_table(kw, sess, code, level):
+    fs = {f.code: f for f in findings(session(**sess), clean_approval(**kw))}
+    assert fs[code].level == level
+
+
+def test_odd_mix_and_bench_warn():
+    rows = [BreakdownRow(group="공간", annual_usd=90, hourly_usd=0, share=0),
+            BreakdownRow(group="전력", annual_usd=10, hourly_usd=0, share=0)]
+    ap = clean_approval(breakdown=rows, benchmark=benchmark_shares(rows))
+    s = session()
+    s.checks = [__import__("app.models", fromlist=["BenchFinding"]).BenchFinding(
+        code="KW_PER_GPU", message="x", value=1, low=1.2, high=3.5, source="s")]
+    assert {"ODD_MIX", "BENCH_WARN"} <= codes(s, ap)
