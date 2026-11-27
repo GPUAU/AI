@@ -53,3 +53,19 @@ def test_is_text_page_rule():
     assert is_text_page("가" * 20) and not is_text_page("가" * 19)
     assert not is_text_page("(cid:12)" * 10 + "가" * 30)
     assert not is_text_page("�" * 3 + "가" * 30)
+
+
+def test_narrow_column_gap_with_korean_text_still_splits():
+    # 한글은 글자 폭이 넓어 '글자 폭 2배' 기준이면 좁은 열 간격이 한 칸으로 붙는다 → 글자 높이 기준
+    words = [w("산정", 36, 100, 16), w("금액", 64, 100, 16),
+             w("386,261kWh", 36, 114, 44), w("×", 82, 114, 4), w("0.183", 88, 114, 20), w("70,686", 120, 114, 26)]
+    rows = align_columns([words_to_rows(words)])
+    assert rows[-1] == ["386,261kWh × 0.183", "70,686"]
+
+
+def test_two_line_header_adds_columns():
+    words = [w("항목", 36, 100), w("금액", 200, 100),
+             w("공급가액", 200, 112, 40), w("부가세", 260, 112), w("합계", 320, 112),
+             w("상면", 36, 126), w("420,000,000", 200, 126, 50), w("42,000,000", 260, 126, 50), w("462,000,000", 320, 126, 50)]
+    rows = align_columns([words_to_rows(words)])
+    assert rows[-1] == ["상면", "420,000,000", "42,000,000", "462,000,000"]

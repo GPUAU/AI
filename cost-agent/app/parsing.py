@@ -76,11 +76,12 @@ def detect_currency(rows: list[SheetRow]) -> Currency | None:
 
 
 PDF_SHEET = "PDF"
+SUMMARY_TITLE = ("요약", "summary", "총괄")
 MSG_NEED_OCR = "스캔된 페이지가 있어 OCR이 필요해요. 텍스트가 있는 PDF나 엑셀로 올려 주세요"
 MSG_ENCRYPTED = "암호가 걸린 PDF는 열 수 없어요. 암호를 풀고 올려 주세요"
 
 
-def _pdf_rows(data: bytes, ocr, min_conf: float) -> tuple[list[SheetRow], str, list[str], dict[str, int], bool]:
+def _pdf_rows(data: bytes, ocr, min_conf: float):
     """PDF → 행. 쪽마다 글자가 있으면 pdfplumber, 없으면 OCR. (행, 종류, 저신뢰 ref, 쪽 번호, 잘림)"""
     import pdfplumber
 
@@ -107,24 +108,31 @@ def _pdf_rows(data: bytes, ocr, min_conf: float) -> tuple[list[SheetRow], str, l
             lines = words_to_rows(words)
             page_lines.append(lines)
             for line in lines:
-                nums = [w.conf for cell, text in zip(line, row_cells(line)) if parse_number(text) is not None for w in cell]
-                meta.append((i, min(nums) if nums else 1.0))
+                # 숫자만이 아니라 항목명도 본다: 깨진 한글은 분류 오류나 분기·개시일 같은 단서 손실로 이어진다
+                meta.append((i, min(w.conf for cell in line for w in cell)))
+    # 쪽마다 시트 하나 ('1쪽'). 첫 줄에 요약·summary·총괄이 있으면 '1쪽 요약' → 요약 시트 중복 판별이 그대로 동작
+    sheet_of = {}
+    for i, lines in enumerate(page_lines, start=1):
+        first = " ".join(row_cells(lines[0])).lower() if lines else ""
+        sheet_of[i] = f"{i}쪽 요약" if any(w in first for w in SUMMARY_TITLE) else f"{i}쪽"
     rows: list[SheetRow] = []
     low: list[str] = []
     page_of: dict[str, int] = {}
     truncated = False
-    for n, (cells, (page_no, conf)) in enumerate(zip(align_columns(page_lines), meta), start=1):
+    row_no: dict[int, int] = {}
+    for cells, (page_no, conf) in zip(align_columns(page_lines), meta):
         if len(rows) >= MAX_ROWS:
             truncated = True
             break
-        r = _make_row(PDF_SHEET, n, cells)
+        row_no[page_no] = row_no.get(page_no, 0) + 1
+        r = _make_row(sheet_of[page_no], row_no[page_no], cells)
         if r:
             rows.append(r)
             page_of[r.ref] = page_no
             if conf < min_conf:
                 low.append(r.ref)
     kind = "pdf-mixed" if kinds == {"text", "ocr"} else ("pdf-ocr" if kinds == {"ocr"} else "pdf-text")
-    return rows, kind, low, page_of, truncated
+    return rows, kind, low, page_of, truncated, [sheet_of[i] for i in sorted(sheet_of)]
 
 
 def extract(file_name: str, data: bytes, ocr=None, ocr_min_conf: float = 0.8) -> ExtractedDocument:
@@ -151,10 +159,10 @@ def extract(file_name: str, data: bytes, ocr=None, ocr_min_conf: float = 0.8) ->
                     rows.append(r)
         wb.close()
     elif suffix == ".pdf":
-        rows, kind, low, page_of, truncated = _pdf_rows(data, ocr, ocr_min_conf)
+        rows, kind, low, page_of, truncated, pdf_sheets = _pdf_rows(data, ocr, ocr_min_conf)
         if not rows:
             raise UnsupportedFile("파일에 읽을 수 있는 내용이 없습니다.")
-        return ExtractedDocument(file_name=file_name, sheets=[PDF_SHEET], rows=rows, currency_hint=detect_currency(rows),
+        return ExtractedDocument(file_name=file_name, sheets=pdf_sheets, rows=rows, currency_hint=detect_currency(rows),
                                  truncated=truncated, source_kind=kind, ocr_low_confidence=low, page_of=page_of)
     elif suffix == ".csv":
         text = data.decode("utf-8-sig", errors="replace")

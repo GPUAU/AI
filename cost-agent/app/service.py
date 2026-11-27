@@ -226,7 +226,7 @@ class BillService:
         where = ", ".join(f"{doc.page_of.get(r, '?')}쪽 {r.split('!')[-1]}줄" for r in refs[:5]) + (" 등" if len(refs) > 5 else "")
         return [BenchFinding(code="OCR_LOW_CONFIDENCE", value=len(refs), low=0, high=0,
                              source="로컬 OCR(RapidOCR) 신뢰도 기준 미만",
-                             message=f"OCR로 읽은 숫자 {len(refs)}개는 신뢰도가 낮아요 — {where}을 원본과 비교해 주세요")]
+                             message=f"OCR로 읽은 줄 {len(refs)}개는 글자·숫자 신뢰도가 낮아요 — {where}을 원본과 비교해 주세요")]
 
     @staticmethod
     def _running(items: list[CostItemDraft]) -> float:

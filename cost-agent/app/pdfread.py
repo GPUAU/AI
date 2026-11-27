@@ -47,7 +47,9 @@ def words_to_rows(words: list[Word]) -> list[list[list[Word]]]:
     if not words:
         return []
     height = median(w.bottom - w.top for w in words) or 1.0
-    char_w = median((w.x1 - w.x0) / max(len(w.text), 1) for w in words) or 1.0
+    # 칸 사이 간격 기준: 글자 높이(≈ 글자 크기)의 0.6배. 칸 안의 띄어쓰기는 보통 0.25~0.35배, 열 간격은 그보다 크다.
+    # (글자 폭 기준은 한글이 넓어서 좁은 열 간격을 한 칸으로 붙여 버린다)
+    split_gap = 0.6 * height
     lines: list[list[Word]] = []
     for wd in sorted(words, key=lambda w: ((w.top + w.bottom) / 2, w.x0)):
         c = (wd.top + wd.bottom) / 2
@@ -59,7 +61,7 @@ def words_to_rows(words: list[Word]) -> list[list[list[Word]]]:
     for line in lines:
         cells: list[list[Word]] = []
         for wd in sorted(line, key=lambda w: w.x0):
-            if cells and wd.x0 - cells[-1][-1].x1 <= 2 * char_w:
+            if cells and wd.x0 - cells[-1][-1].x1 <= split_gap:
                 cells[-1].append(wd)
             else:
                 cells.append([wd])
@@ -85,12 +87,24 @@ def _is_number(text: str) -> bool:
 
 
 def _header(lines: list[list[list[Word]]]) -> list[tuple[float, float]] | None:
-    best = None
-    for line in lines:
+    """칸이 가장 많은 숫자 없는 줄 + 바로 아래·위 머리글 줄의 칸 중 겹치지 않는 것 (2줄 병합 머리글)."""
+    def plain(line):
         texts = row_cells(line)
-        if len(texts) >= 2 and not any(_is_number(t) for t in texts) and (best is None or len(line) > len(best)):
-            best = line
-    return [_span(c) for c in best] if best else None
+        return len(texts) >= 1 and not any(_is_number(t) for t in texts)
+
+    best_i = None
+    for i, line in enumerate(lines):
+        if len(line) >= 2 and plain(line) and (best_i is None or len(line) > len(lines[best_i])):
+            best_i = i
+    if best_i is None:
+        return None
+    spans = [_span(c) for c in lines[best_i]]
+    for j in (best_i - 1, best_i + 1):
+        if 0 <= j < len(lines) and plain(lines[j]) and len(lines[j]) >= 2:
+            for sp in (_span(c) for c in lines[j]):
+                if all(min(sp[1], b) - max(sp[0], a) <= 0 for a, b in spans):
+                    spans.append(sp)
+    return sorted(spans)
 
 
 def _place(cell: list[Word], anchors: list[tuple[float, float]]) -> int:

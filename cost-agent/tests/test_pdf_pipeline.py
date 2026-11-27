@@ -14,7 +14,7 @@ def ocr_doc(rows=ROWS, low=("s!3",)):
 def test_low_confidence_numbers_become_bench_warning(service):
     d = service.ingest(ocr_doc())
     b = next(b for b in d.bench if b.code == "OCR_LOW_CONFIDENCE")
-    assert b.value == 1 and "1쪽 3줄" in b.message and "원본과 비교" in b.message
+    assert b.value == 1 and "1쪽 3줄" in b.message and "원본과 비교" in b.message and "글자·숫자" in b.message
 
 
 def test_no_warning_for_text_pdf(service):
@@ -27,3 +27,16 @@ def test_misread_number_surfaces_as_mismatch(service):  # Review Focus 3: 쉼표
     rows[3][1] = "2.000.000"
     d = service.ingest(ocr_doc(rows, low=()))
     assert d.reconciliation.matched is False
+
+
+def test_low_confidence_label_is_flagged(pdf_samples):
+    # OCR이 작은 한글 항목명을 깨뜨리면(신뢰도 낮음) 숫자가 멀쩡해도 경고 대상이다 (분기·개시일 단서가 사라질 수 있음)
+    from app.ocr import engine_from_settings
+    from app.parsing import extract
+    eng = engine_from_settings("rapidocr")
+    if eng is None:
+        import pytest
+        pytest.skip("rapidocr 미설치")
+    d = extract("s.pdf", pdf_samples["bill_r5_quarterly_no_currency.xlsx"]["scan"].read_bytes(), ocr=eng)
+    first = d.rows[0]
+    assert first.ref in d.ocr_low_confidence  # 제목 줄(숫자 없음)도 포함

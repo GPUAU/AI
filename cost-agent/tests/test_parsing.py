@@ -49,7 +49,7 @@ def ocr_engine():
 
 def test_text_pdf_extracts_like_xlsx(pdf_samples):
     d = extract("r1.pdf", pdf_samples["bill_r1_kr_metered_krw.xlsx"]["text"].read_bytes())
-    assert d.source_kind == "pdf-text" and d.sheets == ["PDF"]
+    assert d.source_kind == "pdf-text" and d.sheets == ["1쪽"]
     assert any("고밀도 랙 상면료" in r.label for r in d.rows)
     first = next(r for r in d.rows if "고밀도 랙 상면료" in r.label)
     assert 105_000_000 in first.numbers.values() and d.page_of[first.ref] == 1
