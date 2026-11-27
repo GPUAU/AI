@@ -170,7 +170,9 @@ class AgentSession(BaseModel):
     interpret_ok: bool = False  # 청구서 해석 확인 카드에 담당자가 답함
     checks: list[BenchFinding] = Field(default_factory=list)
     approval: Approval | None = None  # 승인 검토 결과
-    review_basis: str | None = None  # 마지막 승인 검토가 기준으로 삼은 입력 지문  # 가정값·원가 계산 뒤의 업계 기준선 경고 (막지 않음)
+    review_basis: str | None = None  # 마지막 승인 검토가 기준으로 삼은 입력 지문
+    checks_passed: list[str] = Field(default_factory=list)  # 보고서 자동 검증 통과
+    checks_failed: list[str] = Field(default_factory=list)  # 가정값·원가 계산 뒤의 업계 기준선 경고 (막지 않음)
     sim_basis: str | None = None  # 마지막 원가 계산의 입력 지문
     market_basis: str | None = None  # 마지막 시장 비교가 기준으로 삼은 원가 계산
     decisions: list[dict] = Field(default_factory=list)  # 판단자 선택 기록 {tool, reason, by}

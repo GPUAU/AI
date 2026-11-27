@@ -26,8 +26,9 @@ def breakdown(request: dict, response: dict, fx: float | None) -> tuple[list[Bre
     """(묶음별 행, 합계 대조 통과, 금리 반영). 금리가 반영됐을 때만 '금융비용' 행이 생긴다."""
     fx = fx or request.get("inputFxKrwPerUsd")
     a = request.get("assumptions", {})
-    annual = float(response.get("annualCost") or 0)
     hours = float(response.get("billableGpuHoursPerYear") or 0) or 8760 * float(a.get("utilization", 0)) * int(a.get("gpuCount", 0))
+    # 명세상 필수지만 없으면 시간당 원가 × 연간 GPU 시간으로 본다 (설계 §7)
+    annual = float(response.get("annualCost") or 0) or float(response.get("hourlyCost") or 0) * hours
     interest = bool(response.get("appliedAssumptions", {}).get("interestWasProvided")) and any(
         i.get("itemType") == "FINANCING" and i.get("status") == "USER_INPUT" for i in request.get("items", []))
     sums: dict[str, float] = {g: 0.0 for g in GROUPS}

@@ -818,7 +818,17 @@ class CostAgent:
             lines.append("제안가가 시장 범위를 벗어나 에이전트가 마진을 조정해 다시 계산했습니다.")
         for t in s.terms:
             lines.append(f"{t.years}년 계약가 ${t.price:.3f} (할인 {t.discount_rate:.0%}).")
+        from . import verify as V
+        if s.approval:
+            lines.append(f"승인 검토 판정: {s.approval.verdict}.")
+        s.checks_passed, s.checks_failed = V.verify(s)
+        lines.append(f"자동 검증 {len(s.checks_passed)}/{len(V.CHECKS)} 통과.")
         s.summary = lines
+        if s.checks_failed:  # 계산과 맞지 않는 보고서는 내보내지 않는다
+            s.report_ready = False
+            self._board(s, Step.REPORT, Status.ERROR, "자동 검증 실패: " + ", ".join(s.checks_failed))
+            self._log(s, Step.REPORT, "warn", "보고서 자동 검증 실패: " + ", ".join(s.checks_failed))
+            return
         s.report_ready = True
         self._log(s, Step.REPORT, "result", "견적 근거서(엑셀)를 만들었습니다.")
         self._board(s, Step.REPORT, Status.DONE, "엑셀 다운로드 가능")
