@@ -27,7 +27,8 @@ def _usd(v: float) -> str:
     return f"${v:,.2f}"
 
 
-def build_report_html(s: AgentSession) -> str:
+def build_report_html(s: AgentSession, verified: tuple[list[str], list[str]] | None = None) -> str:
+    """verified를 주면 하단 자동 검증 결과로 그 값을 쓴다 (verify가 이 함수를 부를 때 되돌아 부르지 않게)."""
     e = escape
     a, r, ap, m = s.assumptions or {}, s.simulation or {}, s.approval, s.market
     cost, cand = float(r.get("hourlyCost") or 0), float(r.get("candidatePrice") or 0)
@@ -100,7 +101,7 @@ def build_report_html(s: AgentSession) -> str:
         parts.append("<h2>담당자 사유</h2><ul>" + "".join(
             f"<li>[{e(f.level)}] {e(f.message)} — {e(f.reason)}</li>" for f in ap.findings if f.reason) + "</ul>")
 
-    passed, failed = V.verify(s)
+    passed, failed = verified if verified is not None else V.verify(s)
     parts.append(f"<p class=\"foot\">자동 검증 {len(passed)}/{len(V.CHECKS)} 통과"
                  + (f" · 실패: {e(', '.join(failed))}" if failed else "")
                  + " · 원가 계산은 원가 서버(BE) 공식, 문장은 코드 템플릿으로 만들었습니다.</p></body></html>")

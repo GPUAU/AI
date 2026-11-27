@@ -353,7 +353,7 @@ class GraphCostAgent(CostAgent):
                 raise _Refused("최신 시장 비교에서 제안가가 범위를 벗어났을 때만 묻는다")
             q = self._q_market(s)
         elif kind == "review":
-            if not self._review_current(s) or not self._pending_findings(s):
+            if not self._sim_current(s) or not self._review_current(s) or not self._pending_findings(s):
                 raise _Refused("최신 승인 검토에 처리할 발견 사항이 있을 때만 묻는다 → review_price")
             q = self._q_review(s)
         elif kind == "terms":
@@ -418,6 +418,10 @@ class GraphCostAgent(CostAgent):
         if not any(b.key == Step.MARKET and b.status in FINAL for b in s.board):
             self._finish_market(s)
         self._do_report(s)
+        if s.checks_failed:
+            s.question = self._q_verify(s)
+            s.step = Step.REPORT
+            return f"보고서 자동 검증 실패 ({len(s.checks_failed)}개) — 담당자에게 다시 계산을 묻는다"
         s.step = Step.DONE
         return "견적 근거서를 만들고 마쳤다."
 
@@ -519,6 +523,8 @@ class GraphCostAgent(CostAgent):
                     "keep": "제안가 유지 (시장 범위 밖으로 표시)"}.get(ans.choice or "keep", "제안가 유지")
         if q.step == Step.TERMS:
             return "장기계약 할인율 확정, 기간별 가격 계산됨"
+        if q.step == Step.REPORT:
+            return "자동 검증 실패 → 가정값부터 다시 계산하기로 함 → ask_user(assumptions)"
         if q.step == Step.REVIEW:
             fixes = [f.name.split(":", 1)[1] for f in q.fields
                      if f.name.startswith("finding:") and ans.values.get(f.name, f.value) == "fix"]

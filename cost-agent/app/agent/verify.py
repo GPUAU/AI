@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
-from .approval import breakeven, verdict
+from html import escape
+
+from .approval import breakeven, findings, verdict
 from .market import market_view
 
 CHECKS = ["분해 합계", "제안가 공식", "기간별 가격", "손익분기", "시장 통계", "리스크 누락 금지", "권고 일치"]
@@ -25,6 +27,8 @@ def _risk_conditions(s) -> list[tuple[str, str]]:
     for g, rec in s.missing_answers.items():
         if rec.get("choice") == "exclude":
             out.append((f"excluded:{g}", f"'{g}' 비용을 빼고 계산했어요 (불완전 원가)"))
+        elif rec.get("choice") == "amount" and rec.get("source") == "예시값":
+            out.append((f"missing_example:{g}", f"'{g}' 금액이 리포트 예시값이에요 — 실제 계약 금액으로 바꿔야 해요"))
     for i in getattr(s.draft, "interpretations", []) if s.draft else []:
         if not i.applied:
             out.append((f"interp_off:{i.code}", f"담당자가 청구서 해석을 해제했어요: {i.message}"))
@@ -61,8 +65,16 @@ def verify(s) -> tuple[list[str], list[str]]:
         ok["시장 통계"] = (v.min, v.median, v.max) == (m.min, m.median, m.max)
     else:
         ok["시장 통계"] = True
-    listed = set(risks(s))
-    ok["리스크 누락 금지"] = all(text in listed for _, text in _risk_conditions(s))
-    ok["권고 일치"] = bool(ap) and verdict(ap.findings)[0] == ap.verdict
+    # 리스크는 실제로 만든 보고서(HTML)에 실렸는지 본다
+    from . import report_html as RH
+    rendered = RH.build_report_html(s, verified=([], []))
+    ok["리스크 누락 금지"] = all(escape(text) in rendered for _, text in _risk_conditions(s))
+    # 권고는 세션 상태로 발견 사항을 다시 만들어 저장된 것과 비교한다
+    if ap:
+        fresh = findings(s, ap)
+        ok["권고 일치"] = ([(f.code, f.level) for f in fresh] == [(f.code, f.level) for f in ap.findings]
+                        and verdict(fresh)[0] == ap.verdict)
+    else:
+        ok["권고 일치"] = False
     passed = [c for c in CHECKS if ok[c]]
     return passed, [c for c in CHECKS if not ok[c]]

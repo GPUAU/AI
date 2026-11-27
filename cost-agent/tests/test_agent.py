@@ -282,9 +282,14 @@ def suggested(q):
         return Answer(question_id=q.id, values=assumptions(gpu_count=256))
     if q.step == Step.ANALYZE and q.options and q.options[0].value.startswith("currency"):
         return Answer(question_id=q.id, choice="currency:KRW")
-    if q.step == Step.MISSING:
-        return Answer(question_id=q.id, choice="included",
-                      values={"parent": next((f.value for f in q.fields if f.name == "parent"), None) or "RACK_FACILITY"})
+    if q.step == Step.MISSING:  # FE가 보내는 묶음 카드 형식: 그룹마다 '다른 요금에 포함'
+        vals = {}
+        for f in q.fields:
+            if f.name.startswith("choice:"):
+                g = f.name.split(":", 1)[1]
+                parent = next((x.value for x in q.fields if x.name == f"parent:{g}"), None) or "RACK_FACILITY"
+                vals.update({f.name: "included", f"parent:{g}": parent})
+        return Answer(question_id=q.id, values=vals)
     return Answer(question_id=q.id, choice=q.options[0].value if q.options else None, values={})
 
 
@@ -463,7 +468,7 @@ def test_acquisition_example_and_grades(Agent, tmp_path, detailed_doc):
     vals = {k: v for k, v in assumptions(gpu_count=504).items() if k != "acquisition_amount"}
     s = agent.answer(s.id, Answer(question_id=s.question.id, values=vals))
     assert s.assumptions["grades"]["acquisition_amount"] == "예시값"
-    assert s.assumptions["grades"]["fx_krw_per_usd"] == "담당자 입력"  # 테스트 값 1400이 제안값(BE 1400)과 같으면 공개자료
+    assert s.assumptions["grades"]["fx_krw_per_usd"] == "공개자료"  # 1400 == 제안값 1400.0 (숫자로 비교)
 
 
 def test_interest_requires_rate(Agent, tmp_path, doc):

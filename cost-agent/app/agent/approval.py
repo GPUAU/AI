@@ -157,7 +157,13 @@ def findings(s, ap) -> list:
         add("MISSING_EXCLUDED", "재검토", f"{', '.join(excluded)} 비용을 빼고 계산했어요 (불완전 원가)", "MISSING")
     below = [k for k, p in prices.items() if p < cost]
     if below:
-        add("PRICE_BELOW_COST", "재검토", f"{', '.join(below)}이 원가 ${cost:.2f}보다 낮아요 — 팔수록 손실", "TERMS")
+        be = util * cost / prices[below[0]] if prices[below[0]] > 0 else 9.99
+        add("PRICE_BELOW_COST", "재검토",
+            f"{', '.join(below)}: 원가 ${cost:.2f}보다 낮아 가정 가동률 {util:.0%}에서는 손실이에요 (손익분기 가동률 {be:.0%})",
+            "TERMS")
+    examples = [g for g, rec in s.missing_answers.items() if rec.get("choice") == "amount" and rec.get("source") == "예시값"]
+    if examples:
+        add("MISSING_EXAMPLE", "조건부", f"{', '.join(examples)} 금액이 리포트 예시값 그대로예요 — 실제 계약 금액으로 바꿔야 해요", "MISSING")
     if m and m.count and m.median is not None and cost >= m.median:
         add("COST_ABOVE_MARKET", "재검토",
             f"원가 ${cost:.2f}가 시장 중앙값 ${m.median:.2f} 이상이에요 — 마진 조정으로는 맞출 수 없어요", "ASSUMPTIONS")
@@ -171,7 +177,11 @@ def findings(s, ap) -> list:
     if m and m.count and m.min is not None and m.max is not None and (cand < m.min or cand > m.max):
         add("MARKET_OUT_KEPT", "조건부", f"제안가 ${cand:.2f}가 시장 범위 ${m.min:.2f}~${m.max:.2f} 밖이에요", "MARKET")
     if not ap.interest_applied:
-        add("NO_FINANCING", "조건부", "금융비용(이자)이 원가에 반영되지 않았어요", "ASSUMPTIONS")
+        if (s.assumptions or {}).get("interest_rate_type", "NOT_APPLIED") != "NOT_APPLIED":
+            # 금리를 넣었는데 BE가 반영하지 않음 — 담당자가 고칠 수 없으므로 사유만 받는다
+            add("NO_FINANCING", "조건부", "금리를 입력했지만 원가 서버가 금리를 반영하지 않았어요 — 금융비용(이자)이 원가에 빠져 있어요", None)
+        else:
+            add("NO_FINANCING", "조건부", "금융비용(이자)이 원가에 반영되지 않았어요", "ASSUMPTIONS")
     top = [x for x in ap.sensitivity[:2] if x.get("grade") == "예시값"]
     if top:
         add("EXAMPLE_IN_TOP2", "조건부", f"결론을 크게 바꾸는 '{top[0]['label'] if 'label' in top[0] else top[0]['key']}'의 가정이 아직 예시값이에요",

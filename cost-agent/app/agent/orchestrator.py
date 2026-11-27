@@ -48,6 +48,14 @@ ITEM_KO = {"ELECTRICITY": "전기료", "RACK_FACILITY": "랙·상면", "RENT": "
            "OPERATIONS": "운영·유지보수", "MEMORY": "메모리", "GPU": "GPU 임차", "ACQUISITION": "취득비", "OTHER": "기타"}
 
 
+def _same_value(a, b) -> bool:
+    """FE는 숫자를 Number()로 보낸다 (19152000 vs 19152000.0). 숫자로 읽히면 숫자로 비교한다."""
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return str(a) == str(b)
+
+
 class AgentError(RuntimeError):
     pass
 
@@ -338,6 +346,8 @@ class CostAgent:
             rec = {"choice": v["choice"], "types": [t.value for t in BILL_CORE_ITEMS[g]],
                    "currency": v["currency"], "period": v["period"], "parent": v["parent"]}
             if v["choice"] == "amount":
+                if _same_value(v["amount"], defaults.get(f"amount:{g}")) and defaults.get(f"amount:{g}") is not None:
+                    rec["source"] = "예시값"
                 try:
                     rec["amount"] = float(v["amount"])
                 except (TypeError, ValueError) as exc:
@@ -415,6 +425,8 @@ class CostAgent:
             for f in fields:
                 if prev.get(f.name) not in (None, ""):
                     f.value = back.get(f.name, lambda x: x)(prev[f.name])
+                    if prev.get("sources", {}).get(f.name):  # 다시 열어도 그 값의 출처(담당자 입력 등)를 유지한다
+                        f.hint = prev["sources"][f.name]
         self._board(s, Step.ASSUMPTIONS, Status.WAITING, "가정값 확인 대기")
         self._log(s, Step.ASSUMPTIONS, "ask", "청구서에 없는 값(GPU 수·취득비)과 가정값을 근거와 함께 제안합니다.")
         return Question(id=self._qid(), step=Step.ASSUMPTIONS, title="청구서에 없는 값을 확인해 주세요",
@@ -470,7 +482,7 @@ class CostAgent:
             raise AgentError("사내 인건비·판관비는 0 이상의 숫자로 입력하세요.")
         names = {o.value: o.label for o in q.fields[0].options}
         a["model_name"] = names.get(a["model_id"], a["model_id"])
-        a["sources"] = {f.name: (f.hint if str(ans.values.get(f.name, f.value)) == str(f.value) and f.hint else "담당자 입력")
+        a["sources"] = {f.name: (f.hint if _same_value(ans.values.get(f.name, f.value), f.value) and f.hint else "담당자 입력")
                         for f in q.fields}
         a["grades"] = {k: grade_of(k, v) for k, v in a["sources"].items()}
         a["confirmed"] = True
@@ -731,10 +743,10 @@ class CostAgent:
         ap = Approval(breakdown=rows, breakdown_ok=ok, interest_applied=interest,
                       breakeven=breakeven(float(a["utilization"]), cost, prices), sensitivity=sens,
                       benchmark=benchmark_shares(rows))
-        before = {f.code: f.reason for f in (s.approval.findings if s.approval else [])}
+        before = {(f.code, f.message): f.reason for f in (s.approval.findings if s.approval else [])}
         ap.findings = findings(s, ap)
-        for f in ap.findings:  # 같은 발견 사항이면 담당자가 적은 사유를 유지한다
-            f.reason = before.get(f.code, "")
+        for f in ap.findings:  # 같은 발견 사항(코드와 내용이 같음)이면 담당자가 적은 사유를 유지한다
+            f.reason = before.get((f.code, f.message), "")
         ap.verdict, ap.reasons = verdict(ap.findings)
         s.approval, s.review_basis = ap, self._review_basis(s)
         codes = ", ".join(f.code for f in ap.findings) or "없음"
@@ -778,12 +790,15 @@ class CostAgent:
                 reasons[code] = text
         for code, text in reasons.items():
             by_code[code].reason = text
+        for f in fixes:  # 고치기를 고르면 예전 사유는 쓰지 않는다
+            f.reason = ""
         self._log(s, Step.REVIEW, "answer", f"고치기 {len(fixes)}개 · 사유 진행 {len(reasons)}개")
         if not fixes:
             return
         steps = {f.fix_step for f in fixes}
         if "MISSING" in steps:
-            for g in [g for g, rec in s.missing_answers.items() if rec.get("choice") == "exclude"]:
+            for g in [g for g, rec in s.missing_answers.items()
+                      if rec.get("choice") == "exclude" or rec.get("source") == "예시값"]:
                 del s.missing_answers[g]
         if "ASSUMPTIONS" in steps:
             s.assumptions["confirmed"] = False
@@ -797,7 +812,23 @@ class CostAgent:
     # 8) 근거서 -----------------------------------------------------------
     def _step_report(self, s: AgentSession) -> None:
         self._do_report(s)
+        if s.checks_failed:  # 막다른 길이 되지 않게 가정값부터 다시 계산할 길을 준다
+            s.question = self._q_verify(s)
+            return
         self._go(s, Step.DONE)
+
+    def _q_verify(self, s: AgentSession) -> Question:
+        return Question(id=self._qid(), step=Step.REPORT, title="보고서 자동 검증에 실패했어요",
+                        text="계산 결과와 맞지 않는 항목: " + ", ".join(s.checks_failed)
+                             + ". 원가 서버 결과가 바뀌었을 수 있어요. 가정값부터 다시 계산해 주세요.",
+                        options=[Option(value="assumptions", label="가정값부터 다시 계산")])
+
+    def _answer_report(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        if ans.choice != "assumptions":
+            raise AgentError("선택지에서 골라 주세요.")
+        s.assumptions["confirmed"] = False
+        self._log(s, Step.REPORT, "answer", "자동 검증 실패 → 가정값부터 다시 계산")
+        self._go(s, Step.ASSUMPTIONS)
 
     def _do_report(self, s: AgentSession) -> None:
         r, a, m, d = s.simulation, s.assumptions, s.market, s.draft
