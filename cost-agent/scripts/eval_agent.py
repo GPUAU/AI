@@ -88,6 +88,7 @@ def run(agent, path: Path) -> dict:
         s = agent.answer(s.id, auto_answer(s.question))
     return {"asked": asked, "step": s.step.value, "remap": s.remap_tries, "secs": round(time.perf_counter() - t0, 1),
             "cand": round(float(s.simulation["candidatePrice"]), 2) if s.simulation else None,
+            "verdict": (s.approval.verdict + " " + ",".join(f.code for f in s.approval.findings)) if s.approval else "-",
             "decisions": s.decisions, "refused": sum(1 for e in s.events if e.kind == "warn" and "실행 불가" in e.message),
             "thoughts": [e.message for e in s.events if e.kind == "think" and e.message.startswith("에이전트 판단")]}
 
@@ -119,15 +120,16 @@ def main() -> None:
         print(f"· {path.name}: v1 {v1['asked']} → v2 {v2['asked']}", file=sys.stderr)
 
     print(f"# 워크플로 vs LangGraph 에이전트 ({'LLM 분류·판단' if use_llm else '규칙 + 기본 순서'})\n")
-    print("| 샘플 | v1 질문 순서 | v2 질문 순서 | 같은 결론 | v2 판단 (LLM/기본) | 실행 불가 | 판단자 호출 | 시간 v1→v2 |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("| 샘플 | v1 질문 순서 | v2 질문 순서 | 같은 결론 | v2 판단 (LLM/기본) | 실행 불가 | 판단자 호출 | 시간 v1→v2 | 승인 판정 |")
+    print("|---|---|---|---|---|---|---|---|---|")
     same_n = 0
     for name, v1, v2, n_calls in rows:
-        same = v1["asked"] == v2["asked"] and v1["step"] == v2["step"] and v1["cand"] == v2["cand"]
+        same = (v1["asked"] == v2["asked"] and v1["step"] == v2["step"] and v1["cand"] == v2["cand"]
+                and v1["verdict"] == v2["verdict"])
         same_n += same
         by = [d["by"] for d in v2["decisions"]]
         print(f"| {name} | {' → '.join(v1['asked']) or '-'} | {' → '.join(v2['asked']) or '-'} | {'O' if same else 'X'} | "
-              f"{by.count('llm')}/{by.count('policy')} | {v2['refused']} | {n_calls} | {v1['secs']}s → {v2['secs']}s |")
+              f"{by.count('llm')}/{by.count('policy')} | {v2['refused']} | {n_calls} | {v1['secs']}s → {v2['secs']}s | {v1['verdict']} |")
     print(f"\n같은 결론: {same_n}/{len(rows)}\n")
     print("## 에이전트 판단 기록 (예시)\n")
     for name, _, v2, _ in rows[:3]:
