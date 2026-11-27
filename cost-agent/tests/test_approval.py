@@ -65,3 +65,56 @@ def test_krw_items_without_fx_is_not_ok():
     req = copy.deepcopy(SPEC_REQ)
     req["items"][1]["currency"] = "KRW"
     assert breakdown(req, SPEC_RES, fx=None)[1] is False
+
+
+# ---------------------------------------------------------------- 손익분기·업계 비교·민감도
+from app.agent.approval import benchmark_shares, breakeven, sensitivity  # noqa: E402
+from app.agent.models import BreakdownRow  # noqa: E402
+from app.be_client import build_request  # noqa: E402
+from app.models import CostItemDraft, Currency, ItemStatus, ItemType, Period, SimulationInput  # noqa: E402
+
+
+def test_breakeven_formula():
+    b = breakeven(0.7, 2.0, {"candidate": 2.5, "3y": 2.125, "bad": 0})
+    assert b["candidate"] == pytest.approx(0.56) and b["3y"] == pytest.approx(0.6588, rel=1e-3)
+    assert b["bad"] == 9.99
+
+
+def test_benchmark_ratio_excludes_financing():
+    rows = [BreakdownRow(group=g, annual_usd=v, hourly_usd=0, share=0) for g, v in
+            [("감가상각", 36), ("공간", 34), ("전력", 16), ("운영", 14), ("금융비용", 50)]]
+    out = {x["group"]: x for x in benchmark_shares(rows)}
+    assert "금융비용" not in out and all(x["ratio"] == pytest.approx(1.0) for x in out.values())
+
+
+BASE = SimulationInput(model_id="29", gpu_count=8, acquisition_amount=400000, depreciation_years=5,
+                       utilization=0.7, pricing_method="REVENUE_MARGIN", target_rate=0.2)
+ITEMS = [CostItemDraft(item_type=ItemType.OPERATIONS, status=ItemStatus.USER_INPUT, amount=34000,
+                       currency=Currency.USD, period=Period.YEAR)]
+
+
+def fake_sim(calls):
+    def simulate(req):
+        calls.append(req)
+        a = req["assumptions"]
+        acq = next((i["amount"] for i in req["items"] if i["itemType"] == "ACQUISITION"), 0)
+        annual = 34000 + acq / a["depreciationYears"] + acq * (a.get("annualInterestRate") or 0)
+        cost = annual / (8760 * a["utilization"] * a["gpuCount"])
+        return {"candidatePrice": str(cost / 0.8), "hourlyCost": str(cost)}
+    return simulate
+
+
+def test_sensitivity_sorted_and_isolated():
+    calls = []
+    base_req = build_request(ITEMS, BASE)
+    base_price = float(fake_sim([])(base_req)["candidatePrice"])
+    res = sensitivity(BASE, ITEMS, fake_sim(calls), {"utilization": "리포트 가정"}, has_krw=False, base_price=base_price)
+    assert len(calls) == 6 and res[0]["key"] == "utilization_down" and res[0]["grade"] == "리포트 가정"
+    assert abs(res[0]["price_delta"]) >= abs(res[-1]["price_delta"])
+    assert BASE.utilization == 0.7 and build_request(ITEMS, BASE) == base_req  # 원래 입력은 그대로
+
+
+def test_sensitivity_skips_failed_calls():
+    def boom(req):
+        raise RuntimeError("BE down")
+    assert sensitivity(BASE, ITEMS, boom, {}, has_krw=True, base_price=3.0) == []

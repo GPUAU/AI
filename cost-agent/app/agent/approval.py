@@ -69,3 +69,61 @@ def breakdown(request: dict, response: dict, fx: float | None) -> tuple[list[Bre
     rows = [BreakdownRow(group=g, item_types=t, annual_usd=round(v, 6), hourly_usd=v / hours if hours else 0.0,
                          share=v / total) for g, t, v in parts]
     return rows, ok, interest
+
+
+# ---------------------------------------------------------------- 손익분기·업계 비교·민감도
+# 현대차증권 표 18 GPUaaS MW당 비용 구성 (금융비용 제외)
+REF_SHARES = {"감가상각": 0.36, "공간": 0.34, "전력": 0.16, "운영": 0.14}
+
+
+def breakeven(utilization: float, hourly_cost: float, prices: dict[str, float]) -> dict[str, float]:
+    """이 가격으로 팔 때 손익이 0이 되는 가동률 = 가정 가동률 × 원가 ÷ 가격. 가격이 0 이하면 9.99."""
+    return {k: (utilization * hourly_cost / p if p > 0 else 9.99) for k, p in prices.items()}
+
+
+def benchmark_shares(rows: list[BreakdownRow]) -> list[dict]:
+    """원가 구성비를 리포트 기준과 비교한다. 금융비용은 기준에 없어 빼고 다시 100%로 나눈다."""
+    use = [r for r in rows if r.group in REF_SHARES]
+    total = sum(r.annual_usd for r in use) or 1.0
+    out = []
+    for g, ref in REF_SHARES.items():
+        share = sum(r.annual_usd for r in use if r.group == g) / total
+        out.append({"group": g, "share": share, "ref_share": ref, "ratio": share / ref})
+    return out
+
+
+def sensitivity(base_input, items, simulate, grades: dict[str, str], has_krw: bool, base_price: float) -> list[dict]:
+    """가정 하나만 바꿔 BE를 다시 불러 제안가 변화를 잰다. 원래 입력·세션은 바꾸지 않는다. 실패한 호출은 건너뛴다."""
+    from ..be_client import build_request
+
+    u = base_input.utilization
+    cases: list[tuple[str, str, str, dict]] = [
+        ("utilization_down", f"가동률 {u:.0%} → {max(0.05, u - 0.1):.0%}", "utilization", {"utilization": max(0.05, u - 0.1)}),
+        ("utilization_up", f"가동률 {u:.0%} → {min(1.0, u + 0.1):.0%}", "utilization", {"utilization": min(1.0, u + 0.1)}),
+    ]
+    if base_input.acquisition_amount:
+        acq = base_input.acquisition_amount
+        cases += [("acquisition_down", "취득비 −10%", "acquisition_amount", {"acquisition_amount": acq * 0.9}),
+                  ("acquisition_up", "취득비 +10%", "acquisition_amount", {"acquisition_amount": acq * 1.1})]
+    years = 6 if base_input.depreciation_years == 5 else 5
+    cases.append(("depreciation_alt", f"감가상각 {base_input.depreciation_years}년 → {years}년", "depreciation_years",
+                  {"depreciation_years": years}))
+    if base_input.interest_rate_type == "NOT_APPLIED":
+        cases.append(("interest_up", "금리 0% → 2% (가정)", "interest_rate_type",
+                      {"interest_rate_type": "ASSUMED", "annual_interest_rate": 0.02}))
+    else:
+        r = base_input.annual_interest_rate or 0
+        cases.append(("interest_up", f"금리 {r:.1%} → {r + 0.02:.1%}", "interest_rate_type", {"annual_interest_rate": r + 0.02}))
+    if has_krw and base_input.fx_krw_per_usd:
+        fx = base_input.fx_krw_per_usd
+        cases += [("fx_down", "환율 −5%", "fx_krw_per_usd", {"fx_krw_per_usd": fx * 0.95}),
+                  ("fx_up", "환율 +5%", "fx_krw_per_usd", {"fx_krw_per_usd": fx * 1.05})]
+    out = []
+    for key, label, grade_key, change in cases:
+        try:
+            res = simulate(build_request(items, base_input.model_copy(update=change)))
+            delta = float(res["candidatePrice"]) - base_price
+        except Exception:  # noqa: BLE001 - 민감도 하나가 실패해도 검토는 계속한다
+            continue
+        out.append({"key": key, "label": label, "price_delta": delta, "grade": grades.get(grade_key, "")})
+    return sorted(out, key=lambda x: abs(x["price_delta"]), reverse=True)
