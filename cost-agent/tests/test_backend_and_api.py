@@ -93,3 +93,17 @@ def test_api_end_to_end(tmp_path, samples):
     assert client.get("/v1/bills/nope").status_code == 404
     big = b"0" * (1024 * 1024 + 10)
     assert client.post("/v1/bills", files={"file": ("big.csv", big)}).status_code == 413
+
+
+# ---------------------------------------------------------------- 2순위: 금리 (설계 §4B-2)
+def test_financing_item_sent_when_interest_assumed():
+    req = build_request([], SimulationInput(model_id="29", gpu_count=8, acquisition_amount=1e5,
+                                            interest_rate_type="ASSUMED", annual_interest_rate=0.05))
+    assert {"itemType": "FINANCING", "status": "USER_INPUT"} in req["items"]
+    assert req["assumptions"]["interestRateType"] == "ASSUMED" and req["assumptions"]["annualInterestRate"] == 0.05
+
+
+def test_not_applied_request_unchanged():
+    req = build_request([], SimulationInput(model_id="29", gpu_count=8, acquisition_amount=1e5))
+    assert not any(i["itemType"] == "FINANCING" for i in req["items"])
+    assert req["assumptions"]["interestRateType"] == "NOT_APPLIED" and "annualInterestRate" not in req["assumptions"]

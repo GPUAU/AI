@@ -11,7 +11,8 @@ from __future__ import annotations
 import uuid
 
 from ..be_client import BackendClient, BackendError, build_request
-from ..benchmarks import cost_check, gpu_checks, inhouse_suggestion, missing_suggestion
+from ..benchmarks import GPU_UNIT_PRICE_USD, cost_check, gpu_checks, inhouse_suggestion, missing_suggestion
+from .sources import grade_of
 from ..models import (
     BillDraft,
     CostItemDraft,
@@ -386,7 +387,9 @@ class CostAgent:
             FieldSpec(name="model_id", label="GPU 모델", type="select", value=g.model_id,
                       options=[Option(value=m["id"], label=m["name"]) for m in models], hint="시장 가격 비교 기준"),
             FieldSpec(name="gpu_count", label="GPU 수", value=g.gpu_count, hint="이 청구서의 시설에서 운영할 GPU 수"),
-            FieldSpec(name="acquisition_amount", label="서버·GPU 취득비", hint="청구서에 없는 값 · 견적서 기준으로 입력"),
+            FieldSpec(name="acquisition_amount", label="서버·GPU 취득비",
+                      value=g.gpu_count * GPU_UNIT_PRICE_USD if g.gpu_count else None,
+                      hint=f"예시값 · 현대차증권 표 18 GPU 단가 ${GPU_UNIT_PRICE_USD:,.0f} × GPU 수 · 견적서 값으로 바꾸세요"),
             FieldSpec(name="acquisition_currency", label="취득비 통화", type="select", value="USD",
                       options=[Option(value="USD", label="달러"), Option(value="KRW", label="원")]),
             FieldSpec(name="depreciation_years", label="감가상각 연수", value=5,
@@ -397,6 +400,12 @@ class CostAgent:
                       options=[Option(value="REVENUE_MARGIN", label="매출 기준 이익률"), Option(value="COST_MARKUP", label="원가 가산율")]),
             FieldSpec(name="target_rate", label="목표 마진 (%)", value=20, hint="제안값 20%: 같은 보고서의 목표 마진 예시"),
             self._inhouse_field(s),
+            FieldSpec(name="interest_rate_type", label="금융비용 (금리)", type="select", value="NOT_APPLIED",
+                      hint="투자금 이자. 적용하지 않으면 보고서에 '금융비용 미반영'으로 표시돼요",
+                      options=[Option(value="NOT_APPLIED", label="적용 안 함"), Option(value="ASSUMED", label="가정"),
+                               Option(value="ACTUAL_LOAN", label="실제 대출")]),
+            FieldSpec(name="annual_interest_rate", label="연 금리 (%)", required=False,
+                      show_for=["ASSUMED", "ACTUAL_LOAN"], hint="예: 5"),
         ]
         if needs_fx:
             fields.append(FieldSpec(name="fx_krw_per_usd", label="환율 (원/달러)", value=fx_value, hint=fx_hint))
@@ -441,6 +450,17 @@ class CostAgent:
             raise AgentError("필수 값을 모두 숫자로 입력하세요.") from exc
         if not a["model_id"] or a["model_id"] == "None" or a["gpu_count"] <= 0 or not 0 < a["utilization"] <= 1:
             raise AgentError("GPU 모델, GPU 수(1 이상), 가동률(0~100%)을 확인하세요.")
+        a["interest_rate_type"] = v.get("interest_rate_type") or "NOT_APPLIED"
+        if a["interest_rate_type"] not in ("NOT_APPLIED", "ASSUMED", "ACTUAL_LOAN"):
+            raise AgentError("금리 종류를 선택지에서 골라 주세요.")
+        a["annual_interest_rate"] = None
+        if a["interest_rate_type"] != "NOT_APPLIED":
+            try:
+                a["annual_interest_rate"] = float(v.get("annual_interest_rate")) / 100
+            except (TypeError, ValueError) as exc:
+                raise AgentError("연 금리를 0 이상의 숫자로 입력하세요.") from exc
+            if a["annual_interest_rate"] < 0:
+                raise AgentError("연 금리를 0 이상의 숫자로 입력하세요.")
         raw = v.get("inhouse_annual")
         try:
             a["inhouse_annual"] = 0.0 if raw in (None, "") else float(raw)
@@ -452,6 +472,7 @@ class CostAgent:
         a["model_name"] = names.get(a["model_id"], a["model_id"])
         a["sources"] = {f.name: (f.hint if str(ans.values.get(f.name, f.value)) == str(f.value) and f.hint else "담당자 입력")
                         for f in q.fields}
+        a["grades"] = {k: grade_of(k, v) for k, v in a["sources"].items()}
         a["confirmed"] = True
         s.assumptions = a
         self._log(s, Step.ASSUMPTIONS, "answer",
@@ -510,7 +531,8 @@ class CostAgent:
             model_id=a["model_id"], gpu_count=a["gpu_count"], acquisition_amount=a["acquisition_amount"],
             acquisition_currency=Currency(a["acquisition_currency"]), depreciation_years=a["depreciation_years"],
             utilization=a["utilization"], pricing_method=a["pricing_method"], target_rate=a["target_rate"],
-            fx_krw_per_usd=a.get("fx_krw_per_usd"))
+            fx_krw_per_usd=a.get("fx_krw_per_usd"),
+            interest_rate_type=a.get("interest_rate_type", "NOT_APPLIED"), annual_interest_rate=a.get("annual_interest_rate"))
         self._log(s, Step.SIMULATE, "tool", "BE 원가 계산 API를 호출합니다 (계산식은 BE 한 곳에만 있음).")
         try:
             s.request = build_request(s.final_items, inp)

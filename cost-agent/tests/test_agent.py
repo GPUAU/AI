@@ -442,3 +442,33 @@ def test_missing_card_rejects_bad_amount(Agent, tmp_path, doc):
         agent.answer(s.id, Answer(question_id=s.question.id, values={"choice:운영·유지보수": "amount",
                                                                     "amount:운영·유지보수": "abc"}))
     assert s.question is not None and s.missing_answers == {}
+
+
+# ---------------------------------------------------------------- 2순위: 가정값 (설계 §4B-2)
+def test_acquisition_example_and_grades(Agent, tmp_path, detailed_doc):
+    agent, s, seen = r1_with_backend(Agent, tmp_path, detailed_doc)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    f = {x.name: x for x in s.question.fields}
+    assert f["acquisition_amount"].value == 504 * 38_000 and "예시값" in f["acquisition_amount"].hint
+    assert [o.value for o in f["interest_rate_type"].options] == ["NOT_APPLIED", "ASSUMED", "ACTUAL_LOAN"]
+    assert f["annual_interest_rate"].show_for == ["ASSUMED", "ACTUAL_LOAN"]
+    vals = {k: v for k, v in assumptions(gpu_count=504).items() if k != "acquisition_amount"}
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=vals))
+    assert s.assumptions["grades"]["acquisition_amount"] == "예시값"
+    assert s.assumptions["grades"]["fx_krw_per_usd"] == "담당자 입력"  # 테스트 값 1400이 제안값(BE 1400)과 같으면 공개자료
+
+
+def test_interest_requires_rate(Agent, tmp_path, doc):
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend()[0])
+    s = agent.start(doc("a"), Goal(model_id="29", gpu_count=32))
+    with pytest.raises(AgentError):
+        agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(interest_rate_type="ASSUMED")))
+
+
+def test_interest_sent_to_backend(Agent, tmp_path, doc):
+    backend, seen = fake_backend()
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    s = agent.start(doc("a"), Goal(model_id="29", gpu_count=32))
+    agent.answer(s.id, Answer(question_id=s.question.id,
+                              values=assumptions(interest_rate_type="ASSUMED", annual_interest_rate=5)))
+    assert seen[0]["assumptions"]["annualInterestRate"] == 0.05

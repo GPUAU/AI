@@ -15,6 +15,7 @@ POWER_PER_KW_MONTH = 173_667.0  # 원/계약kW/월 = 730h × PUE 1.3 × 183원 (
 KW_PER_GPU = 2.0  # GPU당 서버·네트워크 포함 (표 18 A)
 COST_PER_GPU_HOUR_USD = 2.51  # 표 18 비용 합 127.7억 ÷ 350.4만 GPU·h ÷ 1,450
 OTHER_OPEX_PER_MW_YEAR = 1_800_000_000.0  # 원/MW/년, 인건비·네트워크·판관 (표 18 J)
+GPU_UNIT_PRICE_USD = 38_000.0  # $/GPU, H100~B300 믹스 (표 18 B) — 취득비 예시값
 
 SRC_HD = "현대차증권 2026-09 표 16·18"
 
