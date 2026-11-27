@@ -73,16 +73,20 @@ def to_pdf(xlsx_path: Path, pdf_path: Path) -> None:
         multi = [r for r in rows if sum(1 for x in r if x) >= 2]
         if multi and ncol:
             widths[0] = max(pdfmetrics.stringWidth(r[0], font, FONT_SIZE) for r in multi)
+        # 표가 쪽 너비를 넘으면 글자·간격을 줄여 한 쪽에 맞춘다 (잘린 칸이 생기지 않게)
+        total = sum(widths) + GAP * max(ncol - 1, 0)
+        k = min(1.0, (w - 2 * MARGIN) / total) if total else 1.0
+        size = FONT_SIZE * k
         xs, x = [], MARGIN
         for wd in widths:
             xs.append(x)
-            x += wd + GAP
+            x += (wd + GAP) * k
         y = h - MARGIN
-        c.setFont(font, FONT_SIZE)
+        c.setFont(font, size)
         for r in rows:
             if y < MARGIN:
                 c.showPage()
-                c.setFont(font, FONT_SIZE)
+                c.setFont(font, size)
                 y = h - MARGIN
             for i, t in enumerate(r):
                 if t:
