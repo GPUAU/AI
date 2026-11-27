@@ -150,6 +150,17 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
         except AgentError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    @app.get("/v1/agent/sessions/{session_id}/report.html")
+    def agent_report_html(session_id: str):
+        from .agent.report_html import build_report_html
+        try:
+            s = agent.get(session_id)
+        except KeyError as exc:
+            raise HTTPException(404, "세션을 찾을 수 없습니다.") from exc
+        if not s.report_ready:
+            raise HTTPException(409, "아직 보고서가 준비되지 않았습니다.")
+        return Response(build_report_html(s), media_type="text/html; charset=utf-8")
+
     @app.get("/v1/agent/sessions/{session_id}/report.xlsx")
     def agent_report(session_id: str):
         try:

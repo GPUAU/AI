@@ -125,7 +125,8 @@ def test_full_flow_with_questions_market_loop_and_report(Agent, tmp_path, doc):
 
     from app.agent.report import build_report
     wb = load_workbook(io.BytesIO(build_report(s)))
-    assert wb.sheetnames == ["요약", "원가 항목", "가정값", "청구서 해석", "시장 비교", "진행 기록"]
+    assert wb.sheetnames == ["승인 요약", "원가 구성", "민감도", "검토 결과", "요약", "원가 항목", "가정값", "청구서 해석",
+                             "시장 비교", "진행 기록"]
 
 
 def test_remap_loop_fixes_total_with_feedback(Agent, tmp_path, doc):
