@@ -110,6 +110,39 @@ class TermPrice(BaseModel):
     price: float
 
 
+class BreakdownRow(BaseModel):
+    """원가 한 묶음의 연간·시간당 금액 (BE annualCost 기준으로 나눈 것)."""
+
+    group: str  # 공간 | 전력 | 운영 | 감가상각 | 금융비용
+    item_types: list[str] = Field(default_factory=list)
+    annual_usd: float
+    hourly_usd: float
+    share: float  # 원가 대비 비중 0~1
+    refs: list[str] = Field(default_factory=list)
+
+
+class Finding(BaseModel):
+    """승인 검토의 발견 사항. 문구는 코드 템플릿."""
+
+    code: str
+    level: str  # 재검토 | 조건부
+    message: str
+    fix_step: str | None = None  # Step 값
+    reason: str = ""  # 담당자가 적은 진행 사유
+
+
+class Approval(BaseModel):
+    breakdown: list[BreakdownRow] = Field(default_factory=list)
+    breakdown_ok: bool = False
+    interest_applied: bool = False
+    breakeven: dict[str, float] = Field(default_factory=dict)  # candidate | 3y | 5y → 손익분기 가동률
+    sensitivity: list[dict] = Field(default_factory=list)  # {key, label, price_delta, grade}
+    benchmark: list[dict] = Field(default_factory=list)  # {group, share, ref_share, ratio}
+    findings: list[Finding] = Field(default_factory=list)
+    verdict: str = ""  # 승인 권고 | 조건부 | 재검토
+    reasons: list[str] = Field(default_factory=list)
+
+
 class AgentSession(BaseModel):
     id: str
     goal: Goal
@@ -133,7 +166,8 @@ class AgentSession(BaseModel):
     engine: str = "workflow"  # workflow | graph
     mismatch_ok: bool = False  # 총액 불일치를 담당자가 알고 진행
     interpret_ok: bool = False  # 청구서 해석 확인 카드에 담당자가 답함
-    checks: list[BenchFinding] = Field(default_factory=list)  # 가정값·원가 계산 뒤의 업계 기준선 경고 (막지 않음)
+    checks: list[BenchFinding] = Field(default_factory=list)
+    approval: Approval | None = None  # 승인 검토 결과  # 가정값·원가 계산 뒤의 업계 기준선 경고 (막지 않음)
     sim_basis: str | None = None  # 마지막 원가 계산의 입력 지문
     market_basis: str | None = None  # 마지막 시장 비교가 기준으로 삼은 원가 계산
     decisions: list[dict] = Field(default_factory=list)  # 판단자 선택 기록 {tool, reason, by}
