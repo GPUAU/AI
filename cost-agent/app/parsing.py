@@ -75,7 +75,59 @@ def detect_currency(rows: list[SheetRow]) -> Currency | None:
     return Currency.KRW if krw >= usd else Currency.USD
 
 
-def extract(file_name: str, data: bytes) -> ExtractedDocument:
+PDF_SHEET = "PDF"
+MSG_NEED_OCR = "스캔된 페이지가 있어 OCR이 필요해요. 텍스트가 있는 PDF나 엑셀로 올려 주세요"
+MSG_ENCRYPTED = "암호가 걸린 PDF는 열 수 없어요. 암호를 풀고 올려 주세요"
+
+
+def _pdf_rows(data: bytes, ocr, min_conf: float) -> tuple[list[SheetRow], str, list[str], dict[str, int], bool]:
+    """PDF → 행. 쪽마다 글자가 있으면 pdfplumber, 없으면 OCR. (행, 종류, 저신뢰 ref, 쪽 번호, 잘림)"""
+    import pdfplumber
+
+    from .ocr import page_image
+    from .pdfread import align_columns, is_text_page, row_cells, text_page_words, words_to_rows
+
+    try:
+        pdf = pdfplumber.open(io.BytesIO(data))
+        pages = list(pdf.pages)
+    except Exception as exc:  # noqa: BLE001 - 손상·암호 PDF
+        name = type(exc).__name__.lower() + " " + str(exc).lower()
+        raise UnsupportedFile(MSG_ENCRYPTED if "password" in name or "encrypt" in name else "PDF 파일을 열 수 없습니다.") from exc
+    kinds: set[str] = set()
+    page_lines, meta = [], []  # meta: 줄마다 (쪽 번호, 숫자 칸의 최소 OCR 신뢰도)
+    with pdf:
+        for i, page in enumerate(pages, start=1):
+            if is_text_page(page.extract_text() or ""):
+                words, kind = text_page_words(page), "text"
+            else:
+                if ocr is None:
+                    raise UnsupportedFile(MSG_NEED_OCR)
+                words, kind = ocr.words(page_image(data, i - 1)), "ocr"
+            kinds.add(kind)
+            lines = words_to_rows(words)
+            page_lines.append(lines)
+            for line in lines:
+                nums = [w.conf for cell, text in zip(line, row_cells(line)) if parse_number(text) is not None for w in cell]
+                meta.append((i, min(nums) if nums else 1.0))
+    rows: list[SheetRow] = []
+    low: list[str] = []
+    page_of: dict[str, int] = {}
+    truncated = False
+    for n, (cells, (page_no, conf)) in enumerate(zip(align_columns(page_lines), meta), start=1):
+        if len(rows) >= MAX_ROWS:
+            truncated = True
+            break
+        r = _make_row(PDF_SHEET, n, cells)
+        if r:
+            rows.append(r)
+            page_of[r.ref] = page_no
+            if conf < min_conf:
+                low.append(r.ref)
+    kind = "pdf-mixed" if kinds == {"text", "ocr"} else ("pdf-ocr" if kinds == {"ocr"} else "pdf-text")
+    return rows, kind, low, page_of, truncated
+
+
+def extract(file_name: str, data: bytes, ocr=None, ocr_min_conf: float = 0.8) -> ExtractedDocument:
     suffix = PurePath(file_name).suffix.lower()
     rows: list[SheetRow] = []
     sheets: list[str] = []
@@ -98,6 +150,12 @@ def extract(file_name: str, data: bytes) -> ExtractedDocument:
                 if r:
                     rows.append(r)
         wb.close()
+    elif suffix == ".pdf":
+        rows, kind, low, page_of, truncated = _pdf_rows(data, ocr, ocr_min_conf)
+        if not rows:
+            raise UnsupportedFile("파일에 읽을 수 있는 내용이 없습니다.")
+        return ExtractedDocument(file_name=file_name, sheets=[PDF_SHEET], rows=rows, currency_hint=detect_currency(rows),
+                                 truncated=truncated, source_kind=kind, ocr_low_confidence=low, page_of=page_of)
     elif suffix == ".csv":
         text = data.decode("utf-8-sig", errors="replace")
         sheets.append("csv")
@@ -109,7 +167,7 @@ def extract(file_name: str, data: bytes) -> ExtractedDocument:
             if r:
                 rows.append(r)
     else:
-        raise UnsupportedFile("xlsx 또는 csv 파일만 올릴 수 있습니다.")
+        raise UnsupportedFile("xlsx, csv, pdf 파일만 올릴 수 있습니다.")
     if not rows:
         raise UnsupportedFile("파일에 읽을 수 있는 내용이 없습니다.")
     return ExtractedDocument(
@@ -118,4 +176,5 @@ def extract(file_name: str, data: bytes) -> ExtractedDocument:
         rows=rows,
         currency_hint=detect_currency(rows),
         truncated=truncated,
+        source_kind="csv" if suffix == ".csv" else "xlsx",
     )
