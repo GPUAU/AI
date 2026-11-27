@@ -41,7 +41,7 @@ def test_llm_controller_drives_tools_and_guard_blocks_early_finish(tmp_path, doc
     # 판단자가 finish를 일찍 불렀지만 guard가 이유와 함께 돌려보냈다
     refusal = next(m["content"] for m in calls[2] if m.get("role") == "tool" and m["content"].startswith("실행 불가"))
     assert "누락 비용 미처리: 운영·유지보수" in refusal and "가정값 미확정" in refusal
-    assert s.step == Step.MISSING and s.question.title.startswith("'운영·유지보수'")
+    assert s.step == Step.MISSING and s.question.title == "청구서에 없는 큰 비용이 1개 있어요"
     assert any(e.kind == "think" and e.message.startswith("에이전트 판단") for e in s.events)
 
     s = agent.answer(s.id, Answer(question_id=s.question.id, choice="amount",

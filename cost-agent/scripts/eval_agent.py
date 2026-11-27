@@ -62,7 +62,12 @@ def auto_answer(q) -> Answer:
     if q.step == Step.ANALYZE:
         return Answer(question_id=q.id, choice="currency:KRW" if q.options[0].value.startswith("currency") else "proceed")
     if q.step == Step.MISSING:
-        return Answer(question_id=q.id, choice="amount", values={"amount": 3000000, "currency": "KRW", "period": "MONTH"})
+        vals = {}
+        for f in q.fields:
+            if f.name.startswith("choice:"):
+                g = f.name.split(":", 1)[1]
+                vals.update({f.name: "amount", f"amount:{g}": 3000000, f"currency:{g}": "KRW", f"period:{g}": "MONTH"})
+        return Answer(question_id=q.id, values=vals)
     if q.step == Step.ASSUMPTIONS:
         return Answer(question_id=q.id, values={"model_id": "29", "gpu_count": 32, "acquisition_amount": 1500000,
                                                 "acquisition_currency": "USD", "fx_krw_per_usd": 1400})

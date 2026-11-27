@@ -334,7 +334,7 @@ class GraphCostAgent(CostAgent):
             groups = self._missing_groups(s)
             if not groups:
                 raise _Refused("처리할 누락 비용이 없다")
-            q = self._q_missing(s, groups[0][0])
+            q = self._q_missing(s, [name for name, _ in groups])
         elif kind == "assumptions":
             if d.currency is None or self._needs_interpret(s) or self._missing_groups(s):
                 raise _Refused("통화·청구서 해석 확인과 누락 비용 처리를 먼저 끝낸다")
@@ -477,9 +477,15 @@ class GraphCostAgent(CostAgent):
                         + (" · 담당자가 청구서 다시 보기를 골라 중단" if stop else ""))
             return "총액 차이를 알고 그대로 진행" if ans.choice == "proceed" else "중단 (분류표 수정)"
         if q.step == Step.MISSING:
-            name = q.title.split("'")[1]
-            return {"amount": f"'{name}'는 별도 계약 금액을 입력함 (금액 기록됨)",
-                    "included": f"'{name}'는 다른 요금에 포함됨", "exclude": f"'{name}'는 이번엔 제외 (불완전 원가)"}.get(ans.choice, "")
+            ko = {"amount": "별도 계약 금액 입력 (금액 기록됨)", "included": "다른 요금에 포함됨", "exclude": "이번엔 제외 (불완전 원가)"}
+            parts = []
+            for f in q.fields:
+                if f.name.startswith("choice:"):
+                    g = f.name.split(":", 1)[1]
+                    c = ans.choice if ans.choice and not any(k.startswith("choice:") for k in ans.values) \
+                        else ans.values.get(f.name, f.value)
+                    parts.append(f"'{g}' {ko.get(c, c)}")
+            return " · ".join(parts)
         if q.step == Step.ASSUMPTIONS:
             return "가정값 확정 (GPU 모델·수, 취득비, 감가상각, 가동률, 마진 기록됨). 원가를 다시 계산해야 한다."
         if q.step == Step.MARKET:

@@ -78,6 +78,24 @@ def cost_check(hourly_cost_usd: float) -> list[BenchFinding]:
                 "빠지거나 두 번 들어간 비용이 없는지 확인해 주세요.")]
 
 
+def missing_suggestion(group: str, currency: Currency | None, contract: ContractInfo) -> float | None:
+    """청구서에 없는 핵심 항목의 월 금액 예시값 (계약전력 기준). 그룹 이름은 validation.BILL_CORE_ITEMS의 키."""
+    if not contract.power_kw:
+        return None
+    kw = contract.power_kw
+    monthly = {
+        "전력": POWER_PER_KW_MONTH * kw,
+        "공간·상면": RENT_PER_KW_MONTH[0] * kw,
+        "네트워크": OTHER_OPEX_PER_MW_YEAR / 4 / 12 * kw / 1000,
+        "운영·유지보수": OTHER_OPEX_PER_MW_YEAR / 4 / 12 * kw / 1000,
+    }.get(group)
+    if monthly is None:
+        return None
+    if currency == Currency.USD:
+        return float(round(monthly / REPORT_FX / 10) * 10)
+    return float(round(monthly / 10_000) * 10_000)
+
+
 def inhouse_suggestion(items: list[CostItemDraft], currency: Currency | None, contract: ContractInfo) -> float | None:
     """사내 인건비·판관비 예시값 = 표 18 기타 운영비 × MW − 청구서의 네트워크·운영 연간 금액."""
     if not contract.power_kw:

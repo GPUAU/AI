@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 
 from ..be_client import BackendClient, BackendError, build_request
-from ..benchmarks import cost_check, gpu_checks, inhouse_suggestion
+from ..benchmarks import cost_check, gpu_checks, inhouse_suggestion, missing_suggestion
 from ..models import (
     BillDraft,
     CostItemDraft,
@@ -266,28 +266,55 @@ class CostAgent:
             self._finish_missing(s)
             self._go(s, Step.ASSUMPTIONS)
             return
-        s.question = self._q_missing(s, groups[0][0])
+        s.question = self._q_missing(s, [name for name, _ in groups])
 
-    def _q_missing(self, s: AgentSession, name: str) -> Question:
-        present = sorted({c.item_type.value for c in s.draft.cost_items if c.status == ItemStatus.USER_INPUT
+    NOTE_WORDS = ("직접 계약", "별도 계약", "별도 청구", "고객사 부담")
+    GROUP_WORDS = {"전력": ("전력", "전기", "power"), "공간·상면": ("상면", "랙", "공간"),
+                   "네트워크": ("회선", "네트워크", "인터넷", "ix", "cross connect", "크로스커넥트"),
+                   "운영·유지보수": ("운영", "관제", "유지보수")}
+
+    def _note_hint(self, s: AgentSession, group: str) -> str | None:
+        """청구서 비고에 '직접 계약'처럼 그 항목을 따로 낸다는 말이 있으면 그 줄을 돌려준다."""
+        doc = self._docs.get(s.id)
+        for r in doc.rows if doc else []:
+            t = " ".join(c for c in r.cells if c)
+            low = t.lower()
+            if any(w in t for w in self.NOTE_WORDS) and any(w in low for w in self.GROUP_WORDS.get(group, ())):
+                return f"{r.ref} '{t[:40]}'"
+        return None
+
+    def _q_missing(self, s: AgentSession, names: list[str]) -> Question:
+        """빠진 핵심 항목을 카드 한 장에 모아 묻는다. 입력칸 이름은 '역할:그룹'."""
+        d = s.draft
+        present = sorted({c.item_type.value for c in d.cost_items if c.status == ItemStatus.USER_INPUT
                           and c.item_type != ItemType.ACQUISITION})
-        self._board(s, Step.MISSING, Status.WAITING, f"'{name}' 확인 대기")
-        self._log(s, Step.MISSING, "ask", f"청구서에 '{name}' 비용이 없습니다. 큰 비용이 빠지면 원가 전체를 믿을 수 없어 담당자에게 확인합니다.")
-        return Question(
-            id=self._qid(), step=Step.MISSING, title=f"'{name}' 비용이 청구서에 없어요",
-            text="다른 계약으로 따로 내는지, 다른 요금에 포함됐는지 알려 주세요. 모르면 '이번엔 제외'를 고르면 결과에 '불완전 원가'로 표시합니다.",
-            options=[Option(value="amount", label="별도 계약 금액 입력"),
-                     Option(value="included", label="다른 요금에 포함됨"),
-                     Option(value="exclude", label="이번엔 제외")],
-            fields=[
-                FieldSpec(name="amount", label="금액", show_for=["amount"]),
-                FieldSpec(name="currency", label="통화", type="select", value=(s.draft.currency or Currency.KRW).value,
-                          options=[Option(value="KRW", label="원"), Option(value="USD", label="달러")], show_for=["amount"]),
-                FieldSpec(name="period", label="기간", type="select", value="MONTH",
-                          options=[Option(value="MONTH", label="월"), Option(value="YEAR", label="연")], show_for=["amount"]),
-                FieldSpec(name="parent", label="포함된 요금", type="select", value=present[0] if present else None,
-                          options=[Option(value=p, label=ITEM_KO.get(p, p)) for p in present], show_for=["included"]),
-            ])
+        cur = (d.currency or Currency.KRW).value
+        fields: list[FieldSpec] = []
+        for g in names:
+            note = self._note_hint(s, g)
+            hint = (f"비고 {note}에 따로 계약한다고 적혀 있어 '별도 계약'을 골라 뒀어요" if note
+                    else "모르면 '이번엔 제외'를 고르면 결과에 '불완전 원가'로 표시돼요")
+            suggest = missing_suggestion(g, d.currency, d.contract)
+            fields += [
+                FieldSpec(name=f"choice:{g}", label=f"'{g}' 비용", type="select", value="amount", hint=hint,
+                          options=[Option(value="amount", label="별도 계약 금액 입력"),
+                                   Option(value="included", label="다른 요금에 포함됨"),
+                                   Option(value="exclude", label="이번엔 제외")]),
+                FieldSpec(name=f"amount:{g}", label="금액", required=False, value=suggest, show_for=["amount"],
+                          hint="예시값 · 현대차증권 표 16·18 (계약전력 기준, 월) · 실제 계약 금액으로 바꾸세요" if suggest else ""),
+                FieldSpec(name=f"currency:{g}", label="통화", type="select", value=cur, show_for=["amount"],
+                          options=[Option(value="KRW", label="원"), Option(value="USD", label="달러")]),
+                FieldSpec(name=f"period:{g}", label="기간", type="select", value="MONTH", show_for=["amount"],
+                          options=[Option(value="MONTH", label="월"), Option(value="YEAR", label="연")]),
+                FieldSpec(name=f"parent:{g}", label="포함된 요금", type="select", show_for=["included"],
+                          value=present[0] if present else None,
+                          options=[Option(value=p, label=ITEM_KO.get(p, p)) for p in present]),
+            ]
+        self._board(s, Step.MISSING, Status.WAITING, f"빠진 큰 비용 {len(names)}개 확인 대기")
+        self._log(s, Step.MISSING, "ask", f"청구서에 {', '.join(names)} 비용이 없습니다. 큰 비용이 빠지면 원가 전체를 믿을 수 없어 담당자에게 확인합니다.")
+        return Question(id=self._qid(), step=Step.MISSING, title=f"청구서에 없는 큰 비용이 {len(names)}개 있어요",
+                        text="다른 계약으로 따로 내는지, 다른 요금에 포함됐는지 항목마다 알려 주세요.",
+                        fields=fields, submit_label="이대로 계속")
 
     def _finish_missing(self, s: AgentSession) -> None:
         n = len(s.missing_answers)
@@ -296,20 +323,34 @@ class CostAgent:
                     [f"{k}: {self._missing_text(v)}" for k, v in s.missing_answers.items()])
 
     def _answer_missing(self, s: AgentSession, q: Question, ans: Answer) -> None:
-        name = q.title.split("'")[1]
-        types = BILL_CORE_ITEMS[name]
-        rec = {"choice": ans.choice, "types": [t.value for t in types], **ans.values}
-        if ans.choice == "amount":
-            try:
-                rec["amount"] = float(ans.values.get("amount"))
-            except (TypeError, ValueError) as exc:
-                raise AgentError("금액을 숫자로 입력하세요.") from exc
-            if rec["amount"] < 0:
-                raise AgentError("금액은 0 이상이어야 합니다.")
-        if ans.choice == "included" and not ans.values.get("parent"):
-            raise AgentError("포함된 요금을 고르세요.")
-        s.missing_answers[name] = rec
-        self._log(s, Step.MISSING, "answer", f"{name}: {self._missing_text(rec)}")
+        groups = [f.name.split(":", 1)[1] for f in q.fields if f.name.startswith("choice:")]
+        defaults = {f.name: f.value for f in q.fields}
+        recs: dict[str, dict] = {}
+        for g in groups:
+            if ans.choice and not any(k.startswith("choice:") for k in ans.values):
+                # 예전 형식(선택 하나 + amount·currency·period·parent)으로 답하면 모든 항목에 적용한다
+                v = {"choice": ans.choice, **{k: ans.values.get(k, defaults.get(f"{k}:{g}"))
+                                               for k in ("amount", "currency", "period", "parent")}}
+            else:
+                v = {k: ans.values.get(f"{k}:{g}", defaults.get(f"{k}:{g}"))
+                     for k in ("choice", "amount", "currency", "period", "parent")}
+            rec = {"choice": v["choice"], "types": [t.value for t in BILL_CORE_ITEMS[g]],
+                   "currency": v["currency"], "period": v["period"], "parent": v["parent"]}
+            if v["choice"] == "amount":
+                try:
+                    rec["amount"] = float(v["amount"])
+                except (TypeError, ValueError) as exc:
+                    raise AgentError(f"'{g}' 금액을 숫자로 입력하세요.") from exc
+                if rec["amount"] < 0:
+                    raise AgentError("금액은 0 이상이어야 합니다.")
+            elif v["choice"] == "included" and not v["parent"]:
+                raise AgentError(f"'{g}'가 포함된 요금을 고르세요.")
+            elif v["choice"] not in ("amount", "included", "exclude"):
+                raise AgentError("선택지에서 골라 주세요.")
+            recs[g] = rec
+        for g, rec in recs.items():  # 모두 검사한 뒤에 반영한다 (잘못된 입력이면 아무것도 바꾸지 않음)
+            s.missing_answers[g] = rec
+            self._log(s, Step.MISSING, "answer", f"{g}: {self._missing_text(rec)}")
 
     @staticmethod
     def _missing_text(rec: dict) -> str:

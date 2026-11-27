@@ -87,8 +87,8 @@ def test_full_flow_with_questions_market_loop_and_report(Agent, tmp_path, doc):
     s = agent.start(doc("c"), Goal(model_id="29", gpu_count=32))
 
     # 1) 분석 끝 → 2) 운영비 누락 질문
-    assert s.step == Step.MISSING and s.question.title.startswith("'운영·유지보수'")
-    assert [o.value for o in s.question.options] == ["amount", "included", "exclude"]
+    assert s.step == Step.MISSING and s.question.title == "청구서에 없는 큰 비용이 1개 있어요"
+    assert "choice:운영·유지보수" in {f.name for f in s.question.fields}
     with pytest.raises(AgentError):
         agent.answer(s.id, Answer(question_id=s.question.id, choice="amount", values={"amount": "abc"}))
     assert s.question is not None                        # 잘못된 입력이면 같은 질문 유지
@@ -408,3 +408,37 @@ def test_report_without_interpretations_says_so(Agent, tmp_path, doc):
         s = agent.answer(s.id, suggested(s.question))
     ws = load_workbook(io.BytesIO(build_report(s)))["청구서 해석"]
     assert ws.cell(2, 1).value == "해석 변경 없음"
+
+
+# ---------------------------------------------------------------- 2순위: 누락 확인 카드 한 장 (설계 §4B-1)
+def test_missing_groups_in_one_card(Agent, tmp_path, detailed_doc):  # r4: 네트워크만 빠짐 + 비고 '직접 계약'
+    agent, s = start(Agent, tmp_path, detailed_doc("bill_r4_prorated_first_month_krw.xlsx"))
+    s = run_to(agent, s, Step.MISSING)
+    f = {x.name: x for x in s.question.fields}
+    assert s.question.title == "청구서에 없는 큰 비용이 1개 있어요"
+    assert f["choice:네트워크"].value == "amount" and "직접 계약" in f["choice:네트워크"].hint
+    assert [o.value for o in f["choice:네트워크"].options] == ["amount", "included", "exclude"]
+    assert f["amount:네트워크"].value == 12_000_000  # 18억/4/12 × 0.32MW, 만원 반올림
+    assert f["amount:네트워크"].show_for == ["amount"] and f["parent:네트워크"].show_for == ["included"]
+
+
+def test_missing_card_answers_all_groups(Agent, tmp_path, doc):
+    backend, seen = fake_backend()
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    s = agent.start(doc("c"), Goal(model_id="29", gpu_count=32))
+    assert s.step == Step.MISSING and "choice:운영·유지보수" in {f.name for f in s.question.fields}
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={
+        "choice:운영·유지보수": "amount", "amount:운영·유지보수": 1_000_000, "currency:운영·유지보수": "KRW",
+        "period:운영·유지보수": "MONTH"}))
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions()))
+    ops = next(i for i in seen[0]["items"] if i["itemType"] == "OPERATIONS")
+    assert ops["amount"] == 12_000_000.0
+
+
+def test_missing_card_rejects_bad_amount(Agent, tmp_path, doc):
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend()[0])
+    s = agent.start(doc("c"), Goal(model_id="29", gpu_count=32))
+    with pytest.raises(AgentError):
+        agent.answer(s.id, Answer(question_id=s.question.id, values={"choice:운영·유지보수": "amount",
+                                                                    "amount:운영·유지보수": "abc"}))
+    assert s.question is not None and s.missing_answers == {}
