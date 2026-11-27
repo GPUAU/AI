@@ -68,3 +68,29 @@ def detailed_doc(detailed):
 @pytest.fixture(scope="session")
 def samples_all() -> list[ExtractedDocument]:
     return [extract(p.name, p.read_bytes()) for p in sorted((ROOT / "samples").iterdir())]
+
+
+# ---------------------------------------------------------------- PDF 샘플 (상세 샘플을 PDF로)
+_pspec = importlib.util.spec_from_file_location("make_pdf_samples", ROOT / "scripts" / "make_pdf_samples.py")
+make_pdf_samples = importlib.util.module_from_spec(_pspec)
+_pspec.loader.exec_module(make_pdf_samples)
+
+
+@pytest.fixture(scope="session")
+def pdf_samples(detailed, tmp_path_factory) -> dict[str, dict[str, Path]]:
+    d = tmp_path_factory.mktemp("pdf")
+    out = {}
+    for name, (xlsx, _) in detailed.items():
+        text, scan = d / f"{xlsx.stem}.pdf", d / f"{xlsx.stem}.scan.pdf"
+        make_pdf_samples.to_pdf(xlsx, text)
+        make_pdf_samples.to_scanned(text, scan)
+        out[name] = {"text": text, "scan": scan}
+    return out
+
+
+@pytest.fixture(scope="session")
+def mixed_pdf(pdf_samples, tmp_path_factory) -> Path:
+    r2 = pdf_samples["bill_r2_multisheet_thousand_krw.xlsx"]
+    out = tmp_path_factory.mktemp("mixed") / "mixed.pdf"
+    make_pdf_samples.to_mixed(r2["text"], r2["scan"], out)
+    return out
