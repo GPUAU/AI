@@ -90,6 +90,17 @@ class LLMMappingError(RuntimeError):
     pass
 
 
+def create_with_fallback(create, **kw):
+    """chat.completions.create 호출. 모델이 temperature를 받지 않으면(일부 최신 모델) temperature 없이 한 번 더 시도한다."""
+    try:
+        return create(**kw)
+    except Exception as exc:  # noqa: BLE001 - 400 + 'temperature'만 다시 시도, 나머지는 그대로 올린다
+        if "temperature" in kw and getattr(exc, "status_code", None) == 400 and "temperature" in str(exc).lower():
+            kw = {k: v for k, v in kw.items() if k != "temperature"}
+            return create(**kw)
+        raise
+
+
 def openai_completion(api_key: str, model: str, timeout: float = 60.0, base_url: str | None = None) -> Completion:
     """OpenAI 또는 OpenAI 호환 서버(사내 sLLM: vLLM·Ollama 등)를 부른다. base_url이 있으면 그 서버로만 보낸다."""
     from openai import OpenAI
@@ -98,7 +109,8 @@ def openai_completion(api_key: str, model: str, timeout: float = 60.0, base_url:
     client = tracing.wrap_openai(OpenAI(api_key=api_key or "not-needed", timeout=timeout, base_url=base_url or None))
 
     def complete(system: str, user: str, schema: dict) -> str:
-        resp = client.chat.completions.create(
+        resp = create_with_fallback(
+            client.chat.completions.create,
             model=model,
             temperature=0,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],

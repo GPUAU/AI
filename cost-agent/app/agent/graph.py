@@ -101,7 +101,8 @@ def openai_controller(api_key: str, model: str, timeout: float = 30.0, base_url:
 
     def decide(messages: list[dict], tools: list[dict]) -> dict | None:
         try:
-            resp = client.chat.completions.create(model=model, temperature=0, messages=messages, tools=tools,
+            from ..mapping.llm import create_with_fallback
+            resp = create_with_fallback(client.chat.completions.create, model=model, temperature=0, messages=messages, tools=tools,
                                                   tool_choice="required", parallel_tool_calls=False)
             call = resp.choices[0].message.tool_calls[0]
             return {"name": call.function.name, "args": json.loads(call.function.arguments or "{}"), "id": call.id}
