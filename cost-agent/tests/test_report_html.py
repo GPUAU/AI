@@ -79,6 +79,45 @@ def test_html_endpoint_409_before_ready(tmp_path, samples):
 def test_xlsx_sheet_order(tmp_path, detailed_doc):
     _, s = done_session(tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
     wb = load_workbook(io.BytesIO(build_report(s)))
-    assert wb.sheetnames[:5] == ["승인 요약", "원가 구성", "민감도", "검토 결과", "요약"]
-    head = [c.value for c in next(wb["가정값"].iter_rows(min_row=1, max_row=1))]
-    assert "출처 등급" in head
+    assert wb.sheetnames == ["요약", "원가 근거", "원가 구성·민감도", "시장 비교", "부록"]
+    heads = [[c.value for c in r] for r in wb["원가 근거"].iter_rows() if r[0].value == "가정"]
+    assert heads and "출처 등급" in heads[0]
+
+
+def test_xlsx_summary_is_readable(tmp_path, detailed_doc):
+    """첫 시트에 권고·제안 요금·확인할 점이 있고, 코드값 대신 한글·서식이 나온다."""
+    from app.agent.models import Finding
+    _, s = done_session(tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
+    s.approval.findings = [Finding(code="PRICE_BELOW_COST", level="재검토", message="5년가: 원가보다 낮아 손실이에요",
+                                   fix_step="TERMS", reason="전략 가격")]
+    s.approval.verdict = "재검토"
+    wb = load_workbook(io.BytesIO(build_report(s)))
+    ws = wb["요약"]
+    cells = {c.coordinate: c for r in ws.iter_rows() for c in r if c.value is not None}
+    text = [str(c.value) for c in cells.values()]
+    assert cells["B4"].value == "재검토" and cells["B4"].fill.fgColor.rgb.endswith("FDECEE")
+    assert abs(cells["B8"].value - float(s.simulation["hourlyCost"])) < 1e-9 and cells["B8"].number_format.startswith('"$"')
+    assert cells["C9"].value.startswith("=IF($B$8=0")                      # 원가 대비는 수식
+    row = next(c.row for c in cells.values() if c.value == "5년가: 원가보다 낮아 손실이에요")
+    assert ws.cell(row, 1).value == "재검토" and ws.cell(row, 3).value == "기간별 가격" and ws.cell(row, 4).value == "전략 가격"
+    assert not any(code in t for t in text for code in ("REVENUE_MARGIN", "USER_INPUT", "candidate"))
+    assert ws.oddHeader.right.text == "내부용 · 대외 반출 금지"
+    ev = [[c.value for c in r] for r in wb["원가 근거"].iter_rows()]
+    assert not any(v in ("USER_INPUT", "NOT_INCLUDED", "REVENUE_MARGIN") for r in ev for v in r)
+    util = next(r for r in wb["원가 근거"].iter_rows() if r[0].value == "유료 가동률")
+    assert util[1].number_format.startswith("0%")
+
+
+def test_xlsx_summary_shows_decisions_and_applied_fixes(tmp_path, detailed_doc):
+    """승인 검토 카드의 결정(참고 확인·그대로 진행)과 '제안대로 고치기'로 바꾼 것이 요약의 확인할 점에 남는다."""
+    from app.agent.models import Finding
+    _, s = done_session(tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
+    s.approval.findings = [Finding(code="NO_FINANCING", level="조건부", message="금융비용(이자)이 원가에 반영되지 않았어요",
+                                   fix_step="ASSUMPTIONS", decision="ack", reason="참고 확인")]
+    s.approval.applied = [{"code": "PRICE_BELOW_COST", "message": "5년가: 원가보다 낮아 손실이에요",
+                           "label": "5년 할인 25% → 20%", "effect": "5년가 $3.20 ≥ 원가 $1.90"}]
+    ws = load_workbook(io.BytesIO(build_report(s)))["요약"]
+    rows = {r[1].value: r for r in ws.iter_rows() if r[1].value}
+    fixed = rows["5년가: 원가보다 낮아 손실이에요"]
+    assert fixed[0].value == "고침" and fixed[3].value == "제안대로 고침: 5년 할인 25% → 20% → 5년가 $3.20 ≥ 원가 $1.90"
+    assert rows["금융비용(이자)이 원가에 반영되지 않았어요"][3].value == "참고 확인"

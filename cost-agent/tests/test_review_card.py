@@ -111,9 +111,10 @@ def test_decisions_are_recorded_in_report(Agent, tmp_path, doc):
             break
         s = agent.answer(s.id, decide(s.question))
     assert s.approval.applied and s.approval.applied[0]["code"] == "PRICE_BELOW_COST"
-    ws = load_workbook(io.BytesIO(build_report(s)))["검토 결과"]
-    assert [c.value for c in ws[1]] == ["코드", "수준", "내용", "담당자 결정", "사유"]
-    rows = [[c.value for c in r] for r in ws.iter_rows(min_row=2)]
-    assert any(r[0] == "PRICE_BELOW_COST" and r[3] == "제안대로 고침" and "20%" in (r[4] or "") for r in rows)
-    assert any(r[3] == "그대로 진행" and r[4] == "전략 가격" for r in rows)
+    ws = load_workbook(io.BytesIO(build_report(s)))["요약"]  # 근거서 5장 구성: 검토 결과는 요약의 '확인할 점'
+    head = next(r for r in ws.iter_rows() if r[0].value == "등급")
+    assert [c.value for c in head] == ["등급", "내용", "관련 단계", "담당자 결정 · 사유", "코드"]
+    rows = [[c.value for c in r] for r in ws.iter_rows(min_row=head[0].row + 1)]
+    assert any(r[4] == "PRICE_BELOW_COST" and r[0] == "고침" and "제안대로 고침" in r[3] and "20%" in r[3] for r in rows)
+    assert any(r[3] == "그대로 진행 · 전략 가격" for r in rows)
     assert "제안대로 고침" in build_report_html(s)
