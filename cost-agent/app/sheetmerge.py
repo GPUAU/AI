@@ -65,7 +65,8 @@ def _set(cell: Cell, group: list[FieldHit], grade: str) -> None:
         cell.value, cell.status = None, "conflict"
         cell.sources = [h.source for h in group]
         cell.candidates = [{"doc": h.source.doc, "value": None if math.isnan(h.value.number) else h.value.number,
-                            "text": _fmt(h.value), "row": h.source.row} for h in group]
+                            "text": _fmt(h.value), "row": h.source.row,
+                            "unit": h.value.unit, "currency": h.value.currency} for h in group]
 
 
 def build_sheet(hits: list[FieldHit], bills: list[tuple[str, BillDraft]],

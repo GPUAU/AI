@@ -126,11 +126,13 @@ class GraphCostAgent(CostAgent):
         self.graph = self._build(checkpointer or MemorySaver())
 
     # ------------------------------------------------------------------ 진입점
-    def start(self, doc: ExtractedDocument, goal: Goal) -> AgentSession:
+    def start_many(self, docs: list[ExtractedDocument], goal: Goal) -> AgentSession:
+        if not docs:
+            raise AgentError("문서를 하나 이상 올려 주세요.")
         s = AgentSession(id=uuid.uuid4().hex[:12], goal=goal, engine="graph",
                          board=[BoardStep(key=k, title=t) for k, t in STEP_TITLES.items()])
-        self._docs[s.id] = doc
         self._log(s, Step.ANALYZE, "think", f"목표: 청구서로 원가·제안가·{'/'.join(map(str, goal.terms_years))}년 가격과 근거서를 만든다.")
+        self._prepare_docs(s, docs)
         goal_text = (f"목표 GPU 모델 {'지정됨' if goal.model_id else '미정'}, GPU 수 {'지정됨' if goal.gpu_count else '미정'}, "
                      f"장기계약 {'/'.join(map(str, goal.terms_years)) or '없음'}년 가격 필요.")
         state: GState = {"session": s.model_dump(mode="json"), "fails": 0, "action": None,
@@ -506,7 +508,8 @@ class GraphCostAgent(CostAgent):
                         + (" · 담당자가 청구서 다시 보기를 골라 중단" if stop else ""))
             return "총액 차이를 알고 그대로 진행" if ans.choice == "proceed" else "중단 (분류표 수정)"
         if q.step == Step.MISSING:
-            ko = {"amount": "별도 계약 금액 입력 (금액 기록됨)", "included": "다른 요금에 포함됨", "exclude": "이번엔 제외 (불완전 원가)"}
+            ko = {"amount": "별도 계약 금액 입력 (금액 기록됨)", "included": "다른 요금에 포함됨", "exclude": "이번엔 제외 (불완전 원가)",
+                  "excluded": "이번엔 제외 (불완전 원가)"}
             parts = []
             for f in q.fields:
                 if f.name.startswith("choice:"):
@@ -514,6 +517,9 @@ class GraphCostAgent(CostAgent):
                     c = ans.choice if ans.choice and not any(k.startswith("choice:") for k in ans.values) \
                         else ans.values.get(f.name, f.value)
                     parts.append(f"'{g}' {ko.get(c, c)}")
+                elif f.name.startswith("cell:") and f.type == "select":  # 기준표 충돌 칸
+                    c = ans.values.get(f.name, f.value)
+                    parts.append(f"'{f.name.split(':', 1)[1]}' {'담당자 직접 입력' if c == 'manual' else '문서 값 선택'}")
             return " · ".join(parts)
         if q.step == Step.ASSUMPTIONS:
             return "가정값 확정 (GPU 모델·수, 취득비, 감가상각, 가동률, 마진 기록됨). 원가를 다시 계산해야 한다."
