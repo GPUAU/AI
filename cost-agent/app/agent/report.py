@@ -18,6 +18,9 @@ ITEM_KO = {
 }
 
 
+DECISION_KO = {"apply": "제안대로 고침", "proceed": "그대로 진행", "ack": "참고 확인", "fix": "돌아가서 고침"}
+
+
 def _header(ws, row, values):
     for i, v in enumerate(values, 1):
         c = ws.cell(row, i, v)
@@ -60,9 +63,11 @@ def _approval_sheets(wb, s: AgentSession) -> None:
         ws.append([x["label"], round(x["price_delta"], 4), x.get("grade", "")])
 
     ws = wb.create_sheet("검토 결과", 3)
-    _header(ws, 1, ["코드", "수준", "내용", "담당자 사유"])
+    _header(ws, 1, ["코드", "수준", "내용", "담당자 결정", "사유"])
+    for x in (ap.applied if ap else []):
+        ws.append([x["code"], "재검토", x["message"], "제안대로 고침", f"{x['label']} → {x['effect']}"])
     for f in (ap.findings if ap else []):
-        ws.append([f.code, f.level, f.message, f.reason])
+        ws.append([f.code, f.level, f.message, DECISION_KO.get(f.decision, ""), f.reason])
     ws.append([])
     ws.append(["자동 검증", "", ", ".join(s.checks_passed) + " 통과", ", ".join(s.checks_failed) + (" 실패" if s.checks_failed else "")])
     for col, w in zip("ABCD", [20, 10, 70, 40]):
