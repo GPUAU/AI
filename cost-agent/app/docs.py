@@ -63,6 +63,7 @@ class FieldHit:
     value: Value
     source: Source
     role: str  # table | prose | result
+    via: str = "rule"  # rule | llm (가린 사본 위치 매핑)
 
 
 # 표 줄 항목명 → 칸. 위에서부터 먼저 맞는 것 (긴 이름 먼저). 스프링 칸이 아닌 항목은 목록에 없어 버려진다.
@@ -231,4 +232,46 @@ def extract_fields(doc: ExtractedDocument, kind: DocKind, doc_name: str, complet
     if kind == DocKind.BILL:
         return _prose_hits(doc, doc_name)
     table = _quote_hits(doc, doc_name) if kind == DocKind.QUOTE else _memo_hits(doc, doc_name, kind == DocKind.PLAN)
+    if complete is not None:
+        table += _llm_hits(doc, doc_name, table, complete)
     return table + _prose_hits(doc, doc_name)
+
+
+# LLM이 고른 칸의 단위가 칸에 맞는지 (단위가 다르면 위치를 잘못 고른 것 → 버림)
+_UNIT_OK = {
+    "cost": lambda v: v.currency is not None,
+    "gpu_count": lambda v: v.unit in ("장", "대", ""),
+    "depreciation_years": lambda v: v.unit in ("년", "개월"),
+    "utilization": lambda v: v.unit == "%", "target_rate": lambda v: v.unit == "%",
+    "discount_3": lambda v: v.unit == "%", "discount_5": lambda v: v.unit == "%",
+    "annual_interest_rate": lambda v: v.unit == "%",
+    "fx_krw_per_usd": lambda v: v.unit in ("KRW/USD", "", "원"),
+    "gpu_model": lambda v: v.unit == "model",
+}
+
+
+def _llm_hits(doc: ExtractedDocument, doc_name: str, found: list[FieldHit], complete) -> list[FieldHit]:
+    """규칙으로 못 찾은 칸만, 규칙이 쓰지 않은 숫자 줄만 가린 사본으로 묻는다."""
+    from .costsheet import FIELDS
+    from .mapping.fields_llm import map_fields_llm
+
+    have = {h.key for h in found}
+    used = {h.source.row for h in found}
+    rows = [r for r in doc.rows if r.numbers and r.row not in used and len(_filled(r)) >= 2]
+    keys = [f.key for f in FIELDS if f.kind in ("cost", "assumption") and f.key not in have
+            and f.key not in ("pricing_method", "interest_rate_type")]
+    if not rows or not keys:
+        return []
+    by_ref = {r.ref: r for r in rows}
+    out = []
+    for key, ref, col in map_fields_llm(doc, rows, keys, complete):
+        r = by_ref[ref]
+        v = parse_value(r.cells[col])
+        if v is None:
+            continue
+        v = _with_currency(v, doc)
+        kind = "cost" if key in {f.key for f in FIELDS if f.kind == "cost"} else key
+        if not _UNIT_OK.get(kind, lambda _v: True)(v):
+            continue
+        out.append(FieldHit(key, v, _src(doc_name, r, col), "table", via="llm"))
+    return out
