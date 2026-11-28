@@ -146,6 +146,14 @@ pytest
 
 샘플: `python scripts/make_pdf_samples.py` → `samples-detailed/pdf/` (텍스트판·스캔판·섞인 판). 채점 결과는 `samples-detailed/README.md`.
 
+## 5-1-1. 금리 가정 (한국은행 공시 금리)
+
+가정값 카드의 금융비용(금리)은 BE `GET /api/v1/interest-rates/latest`(한국은행 ECOS 시장금리(일별) **회사채(3년, AA-)**)로 미리 채웁니다.
+
+- 우선순위: 자금팀 문서 금리(대출·차입 금리면 '실제 대출') > 공시 금리('가정') > 적용 안 함
+- 출처 등급 '공개자료'. BE에 ECOS 키(`ECOS_API_KEY`, Secret `ecos-api`)가 없거나 조회에 실패하면 예전처럼 '적용 안 함'
+- 금리를 넣으면 BE가 취득비에 이자를 얹어 원가를 계산하고, 승인 검토의 '금융비용 미반영'은 사라집니다
+
 ## 5-2. LangSmith 추적 (선택)
 
 에이전트가 어떤 단계·도구를 어떤 순서로 불렀고 얼마나 걸렸는지 LangSmith에서 봅니다. **금액·회사명·견적번호·사업장은 가린 채로만** 나갑니다.

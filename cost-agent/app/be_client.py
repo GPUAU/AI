@@ -95,6 +95,11 @@ class BackendClient:
         r = self.get("/api/v1/exchange-rates/latest")
         return r if r.get("status") == "AVAILABLE" and r.get("rate") else None
 
+    def latest_interest(self) -> dict | None:
+        """한국은행 ECOS 회사채(3년, AA-) 최신 공시 금리 (BE). 없으면 None."""
+        r = self.get("/api/v1/interest-rates/latest")
+        return r if r.get("status") == "AVAILABLE" and r.get("annualRatePercent") else None
+
     def simulate(self, request: dict) -> dict:
         try:
             resp = self._client.post("/api/v1/cost-simulations", json=request)
