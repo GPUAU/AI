@@ -185,15 +185,18 @@ def test_plan_arithmetic_mismatch_is_a_finding(Agent, tmp_path, dept_docs):
     assert "PLAN_MISMATCH" in {f.code for f in s.approval.findings}
 
 
-def test_low_kwh_per_gpu_warns():
-    from app.benchmarks import power_per_gpu_check
-    f = power_per_gpu_check(24_000, 32)  # 03의 24,000kWh ÷ 32장 = 750
-    assert [x.code for x in f] == ["POWER_PER_GPU"] and f[0].value == 750
-    assert power_per_gpu_check(32_000, 32) == []
+def test_kwh_per_gpu_band_follows_report_baseline():
+    from app.benchmarks import POWER_KWH_PER_GPU_MONTH, power_per_gpu_check
+    assert round(POWER_KWH_PER_GPU_MONTH) == 1898                     # 2kW × 730h × PUE 1.3
+    assert power_per_gpu_check(24_000, 32) == []                      # 03의 750kWh: 가동률 70%면 나올 수 있는 값
+    assert power_per_gpu_check(1898 * 32, 32) == []                   # 리포트 기준값 자체는 경고하지 않는다
+    low = power_per_gpu_check(8_000, 32)                              # 250kWh: 일부 장비만의 검침량일 가능성
+    assert [x.code for x in low] == ["POWER_PER_GPU"] and low[0].value == 250
+    assert [x.code for x in power_per_gpu_check(100_000, 32)] == ["POWER_PER_GPU"]   # 3,125kWh: GPU 수가 적게 들어간 경우
 
 
-def test_dept_flow_flags_power_per_gpu(Agent, tmp_path, dept_docs):
+def test_dept_flow_has_no_power_false_alarm(Agent, tmp_path, dept_docs):
     agent, s = start_many(Agent, tmp_path, list(dept_docs.values()))
     s = past_analyze(agent, s)
     s = agent.answer(s.id, Answer(question_id=s.question.id, values={}))
-    assert "POWER_PER_GPU" in {c.code for c in s.checks}
+    assert "POWER_PER_GPU" not in {c.code for c in s.checks}
