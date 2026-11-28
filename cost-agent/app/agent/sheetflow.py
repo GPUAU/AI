@@ -205,6 +205,10 @@ class SheetFlow:
                 f.value, f.hint = c["acquisition"].value, src("acquisition")
             elif f.name == "acquisition_currency" and c["acquisition"].status == "filled":
                 f.value = c["acquisition"].currency or "KRW"
+            elif f.name == "annual_interest_rate" and f.name in av:  # 자금팀 문서 금리가 공시 금리보다 우선
+                f.value, f.hint = round(float(av[f.name]) * 100, 4), src(f.name)
+            elif f.name == "interest_rate_type" and f.name in av:
+                f.value = av[f.name]
             elif f.name in ("utilization", "target_rate") and f.name in av:
                 f.value, f.hint = round(float(av[f.name]) * 100, 4), src(f.name)
             elif f.name in ("gpu_count", "depreciation_years", "pricing_method", "fx_krw_per_usd") and f.name in av:

@@ -78,6 +78,7 @@ _MEMO_LABELS: list[tuple[str, str]] = [
     (r"합계\s*유료\s*판매|유료\s*판매\s*예상", "check_paid_hours"),
     (r"공급\s*가능\s*시간", "check_supply_hours"),
     (r"계획\s*환율|환율", "fx_krw_per_usd"),
+    (r"대출\s*금리|차입\s*금리|조달\s*금리|연\s*금리|이자율|금리", "annual_interest_rate"),
     (r"마진\s*방식", "pricing_method"),
     (r"목표\s*마진", "target_rate"),
 ]
@@ -176,6 +177,9 @@ def _memo_hits(doc: ExtractedDocument, doc_name: str, plan: bool) -> list[FieldH
         if v is None:
             continue
         out.append(FieldHit(key, _with_currency(v, doc), _src(doc_name, r, last), role))
+        if key == "annual_interest_rate":  # 대출·차입 금리면 실제 대출, 그 밖은 가정 금리
+            kind = "ACTUAL_LOAN" if re.search(r"대출|차입", label) else "ASSUMED"
+            out.append(FieldHit("interest_rate_type", Value(math.nan, "method", None, kind), _src(doc_name, r, 0), "table"))
         if key == "target_rate":  # '목표 마진 | 매출 기준 이익률 | 20%' → 마진 방식도
             basis = " ".join(r.cells[i] for i in f[1:-1])
             if m := _method(basis):

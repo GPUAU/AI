@@ -7,7 +7,7 @@ from typing import Literal
 
 Grade = Literal["공개자료", "리포트 가정", "예시값", "담당자 입력", "사내 문서"]
 
-_PUBLIC = re.compile(r"수출입은행|한전|한국전력")
+_PUBLIC = re.compile(r"수출입은행|한전|한국전력|한국은행|ECOS")
 _REPORT = re.compile(r"보고서|리포트|표\s*\d+|미래에셋|현대차|하나증권")
 
 
