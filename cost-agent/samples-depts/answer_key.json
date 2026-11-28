@@ -12,7 +12,7 @@
     "utilization": 0.7,
     "fx_krw_per_usd": 1350,
     "target_rate": 0.2,
-    "pricing_method": "MARGIN"
+    "pricing_method": "REVENUE_MARGIN"
   },
   "plan": {"plan_annual_cost": 369800000, "plan_hourly_cost": 1885, "plan_price": 2356, "plan_price_usd": 1.74}
 }
