@@ -9,6 +9,8 @@ GET  /v1/templates             저장된 양식 템플릿 목록
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 
 from .agent.models import AgentSession, Answer, Goal
@@ -17,7 +19,10 @@ from .agent.orchestrator import AgentError
 from .agent.report import build_report
 
 from .be_client import BackendClient, BackendError, build_request
+from starlette.concurrency import run_in_threadpool
+
 from .config import Settings
+from .errors import AppException, ErrorCode, install_handlers
 from .mapping.llm import LLMMapper, openai_completion
 from .mapping.rules import RulesMapper
 from .mapping.templates import TemplateStore
@@ -26,6 +31,7 @@ from .parsing import UnsupportedFile, extract
 from .service import BillService
 
 
+log = logging.getLogger("cost-agent")
 MAX_FILES = 20  # 한 세션에 올릴 수 있는 문서 수
 
 
@@ -60,6 +66,8 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
     service = service or build_service(settings)
     backend = backend or BackendClient(settings.spring_url)
     app = FastAPI(title="GPU AU Cost Agent", version="0.2.0")
+    install_handlers(app)  # 오류는 BE와 같은 모양 {isSuccess, code, message}으로 (app/errors.py)
+    mb = lambda n: f"{n / (1024 * 1024):g}"  # noqa: E731
     controller = build_controller(settings, service)
     agent = build_agent(settings.agent_engine, service, backend, controller, checkpointer_from(settings.checkpoint_db))
     if hasattr(service.mapper, "_complete"):  # 부서 문서 칸 위치 매핑도 같은 LLM으로 (늘 가린 사본만 보낸다)
@@ -85,13 +93,15 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
 
     @app.post("/v1/bills", response_model=BillDraft)
     async def upload(file: UploadFile = File(...), s: BillService = Depends(svc)):
+        name = file.filename or "upload.xlsx"
         data = await file.read(settings.max_upload_bytes + 1)
         if len(data) > settings.max_upload_bytes:
-            raise HTTPException(413, "파일이 너무 큽니다.")
+            raise AppException(ErrorCode.FILE_TOO_LARGE, name=name, mb=mb(settings.max_upload_bytes))
         try:
-            doc = extract(file.filename or "upload.xlsx", data, ocr=get_ocr() if (file.filename or "").lower().endswith(".pdf") else None, ocr_min_conf=settings.ocr_min_conf)
+            doc = await run_in_threadpool(extract, name, data, ocr=get_ocr() if name.lower().endswith(".pdf") else None,
+                                          ocr_min_conf=settings.ocr_min_conf)
         except UnsupportedFile as exc:
-            raise HTTPException(400, str(exc)) from exc
+            raise AppException(ErrorCode.UNSUPPORTED_FILE, reason=str(exc)) from exc
         return s.ingest(doc)
 
     @app.get("/v1/bills/{draft_id}", response_model=BillDraft)
@@ -126,7 +136,9 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
             request = build_request(draft.cost_items, inp)
             result = backend.simulate(request)
         except BackendError as exc:
-            raise HTTPException(502 if exc.status is None else 422,
+            if exc.status is None:  # 원가 서버 연결 실패
+                raise AppException(ErrorCode.BACKEND_UNAVAILABLE) from exc
+            raise HTTPException(422,
                                 {"message": str(exc), "errors": exc.errors}) from exc
         return {"request": request, "result": result,
                 "warnings": [i.model_dump() for i in draft.issues if i.level != IssueLevel.INFO]}
@@ -138,35 +150,46 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
         """청구서 하나(file) 또는 부서 문서 여러 개(files). 하나면 지금과 같은 흐름."""
         uploads = [*(files or []), *([file] if file else [])]
         if not uploads:
-            raise HTTPException(400, "파일을 하나 이상 올려 주세요.")
+            raise AppException(ErrorCode.FILE_REQUIRED)
         if len(uploads) > MAX_FILES:
-            raise HTTPException(400, f"한 번에 {MAX_FILES}개까지 올릴 수 있어요.")
-        docs = []
+            raise AppException(ErrorCode.TOO_MANY_FILES, max=MAX_FILES)
         try:
-            for up in uploads:
-                data = await up.read(settings.max_upload_bytes + 1)
-                if len(data) > settings.max_upload_bytes:
-                    raise HTTPException(413, f"파일이 너무 큽니다: {up.filename}")
-                name = up.filename or "upload.xlsx"
-                docs.append(extract(name, data, ocr=get_ocr() if name.lower().endswith(".pdf") else None,
-                                    ocr_min_conf=settings.ocr_min_conf))
             years = [int(x) for x in terms.split(",") if x.strip()]
-        except UnsupportedFile as exc:
-            raise HTTPException(400, str(exc)) from exc
         except ValueError as exc:
-            raise HTTPException(400, "계약 기간은 '3,5'처럼 숫자로 입력하세요.") from exc
+            raise AppException(ErrorCode.INVALID_TERMS) from exc
+        blobs, total = [], 0  # 크기는 모두 먼저 확인한다 (느린 PDF·OCR 읽기 전에 바로 알려 주게)
+        for up in uploads:
+            name = up.filename or "upload.xlsx"
+            data = await up.read(settings.max_upload_bytes + 1)
+            if len(data) > settings.max_upload_bytes:
+                raise AppException(ErrorCode.FILE_TOO_LARGE, name=name, mb=mb(settings.max_upload_bytes))
+            total += len(data)
+            if total > settings.max_total_upload_bytes:
+                raise AppException(ErrorCode.UPLOAD_TOO_LARGE, mb=mb(settings.max_total_upload_bytes))
+            blobs.append((name, data))
+        docs = []
+        for name, data in blobs:
+            try:  # PDF·OCR은 오래 걸릴 수 있어 작업 스레드에서 (다른 요청을 막지 않게)
+                docs.append(await run_in_threadpool(extract, name, data,
+                                                    ocr=get_ocr() if name.lower().endswith(".pdf") else None,
+                                                    ocr_min_conf=settings.ocr_min_conf))
+            except UnsupportedFile as exc:
+                raise AppException(ErrorCode.UNSUPPORTED_FILE, reason=f"'{name}': {exc}") from exc
+            except Exception as exc:  # noqa: BLE001 - 깨진 파일 등: 내부 오류 내용은 감추고 어느 파일인지만 알린다
+                log.warning("파일 읽기 실패 %s: %s", name, type(exc).__name__)
+                raise AppException(ErrorCode.FILE_UNREADABLE, name=name) from exc
         try:
             with tracing.span("cost-agent.start", {"files": len(docs), "engine": settings.agent_engine}):
                 return agent.start_many(docs, Goal(model_id=model_id or None, gpu_count=gpu_count, terms_years=years))
         except AgentError as exc:
-            raise HTTPException(422, str(exc)) from exc
+            raise AppException(ErrorCode.AGENT_INPUT, reason=str(exc)) from exc
 
     @app.get("/v1/agent/sessions/{session_id}", response_model=AgentSession)
     def agent_get(session_id: str):
         try:
             return agent.get(session_id)
         except KeyError as exc:
-            raise HTTPException(404, "세션을 찾을 수 없습니다.") from exc
+            raise AppException(ErrorCode.SESSION_NOT_FOUND) from exc
 
     @app.post("/v1/agent/sessions/{session_id}/answer", response_model=AgentSession)
     def agent_answer(session_id: str, ans: Answer):
@@ -174,9 +197,9 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
             with tracing.span("cost-agent.answer", {"session": session_id, "engine": settings.agent_engine}):
                 return agent.answer(session_id, ans)
         except KeyError as exc:
-            raise HTTPException(404, "세션을 찾을 수 없습니다.") from exc
+            raise AppException(ErrorCode.SESSION_NOT_FOUND) from exc
         except AgentError as exc:
-            raise HTTPException(422, str(exc)) from exc
+            raise AppException(ErrorCode.AGENT_INPUT, reason=str(exc)) from exc
 
     @app.get("/v1/agent/sessions/{session_id}/report.html")
     def agent_report_html(session_id: str):
@@ -184,9 +207,9 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
         try:
             s = agent.get(session_id)
         except KeyError as exc:
-            raise HTTPException(404, "세션을 찾을 수 없습니다.") from exc
+            raise AppException(ErrorCode.SESSION_NOT_FOUND) from exc
         if not s.report_ready:
-            raise HTTPException(409, "아직 보고서가 준비되지 않았습니다.")
+            raise AppException(ErrorCode.REPORT_NOT_READY, what="보고서")
         return Response(build_report_html(s), media_type="text/html; charset=utf-8")
 
     @app.get("/v1/agent/sessions/{session_id}/report.xlsx")
@@ -194,9 +217,9 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
         try:
             s = agent.get(session_id)
         except KeyError as exc:
-            raise HTTPException(404, "세션을 찾을 수 없습니다.") from exc
+            raise AppException(ErrorCode.SESSION_NOT_FOUND) from exc
         if not s.report_ready:
-            raise HTTPException(409, "아직 근거서가 준비되지 않았습니다.")
+            raise AppException(ErrorCode.REPORT_NOT_READY, what="견적 근거서")
         return Response(build_report(s), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": f'attachment; filename="cost-report-{session_id}.xlsx"'})
 
