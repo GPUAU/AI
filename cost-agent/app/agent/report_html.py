@@ -19,7 +19,9 @@ border-radius:8px;margin-bottom:10px}.verdict b{font-size:16px}.v-ok{background:
 table{border-collapse:collapse;width:100%}td,th{padding:4px 6px;border-bottom:1px solid #eef0f3;text-align:left;vertical-align:top}
 th{color:#6b7280;font-weight:500}.num{text-align:right;font-variant-numeric:tabular-nums}.bar{display:inline-block;height:9px;
 background:#7f8ea3;border-radius:2px}ul{margin:4px 0;padding-left:18px}.foot{margin-top:16px;color:#6b7280;font-size:12px}
-@media print{body{padding:14mm}@page{size:A4 portrait;margin:0}h2{break-after:avoid}}
+.lv{display:inline-block;min-width:44px;margin-right:6px;padding:0 6px;border-radius:3px;font-size:11px;font-weight:600;text-align:center}.lv-rev{background:#fbd5d5;color:#9b1c1c}.lv-cond{background:#fdecc8;color:#8a4b00}
+.tools{display:flex;justify-content:flex-end;gap:8px;margin:-8px 0 12px}.tools button{font:inherit;padding:6px 14px;border:1px solid #c9ced6;border-radius:6px;background:#fff;cursor:pointer}.tools button.primary{background:#ea002c;border-color:#ea002c;color:#fff}
+@media print{body{padding:14mm}@page{size:A4 portrait;margin:0}h2{break-after:avoid}.tools{display:none}.verdict,.lv{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 """
 
 
@@ -40,9 +42,15 @@ def build_report_html(s: AgentSession, verified: tuple[list[str], list[str]] | N
     parts.append(f"<h1>GPU 요금 제안 검토 — {e(str(a.get('model_name', '')))} {e(str(a.get('gpu_count', '')))}장 · {today}</h1>")
     parts.append(f"<p class=\"sub\">청구서 {e(s.draft.file_name if s.draft else '')} · 입력 가정에 따른 시뮬레이션이며 확정 견적이 아닙니다.</p>")
 
-    reasons = ap.reasons[:3] if ap else []
-    parts.append(f"<div class=\"verdict {cls}\"><b>권고: {e(verdict)}</b>"
-                 + ("<ul>" + "".join(f"<li>{e(x)}</li>" for x in reasons) + "</ul>" if reasons else "") + "</div>")
+    # 인쇄 창의 'PDF로 저장'으로 내려받는다 (서버에 PDF 라이브러리·한글 글꼴을 두지 않는다). ?print=1이면 열자마자 인쇄 창을 띄운다.
+    parts.append("<div class=\"tools\"><button type=\"button\" class=\"primary\" onclick=\"window.print()\">PDF로 저장</button></div>"
+                 "<script>if(new URLSearchParams(location.search).get('print')==='1')"
+                 "addEventListener('load',function(){setTimeout(function(){window.print()},300)});</script>")
+    found = (ap.findings or [])[:3] if ap else []
+    lv = {"재검토": "lv-rev", "조건부": "lv-cond"}
+    items = ("".join(f"<li><span class=\"lv {lv.get(f.level, '')}\">{e(f.level)}</span>{e(f.message)}</li>" for f in found) if found
+             else "".join(f"<li>{e(x)}</li>" for x in (ap.reasons[:3] if ap else [])))
+    parts.append(f"<div class=\"verdict {cls}\"><b>권고: {e(verdict)}</b>" + (f"<ul>{items}</ul>" if items else "") + "</div>")
 
     terms = " · ".join(f"{t.years}년 {_usd(t.price)} (할인 {t.discount_rate:.0%})" for t in s.terms)
     margin = a.get("target_rate")

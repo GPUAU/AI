@@ -32,6 +32,23 @@ def test_html_escapes_bill_text(tmp_path, detailed_doc):
     assert "<script>alert" not in h and "&lt;script&gt;" in h
 
 
+def test_html_has_pdf_button_hidden_in_print(tmp_path, detailed_doc):
+    _, s = done_session(tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
+    h = build_report_html(s)
+    assert "PDF로 저장" in h and "window.print()" in h and "get('print')==='1'" in h
+    assert ".tools{display:none}" in h.split("@media print", 1)[1]
+
+
+def test_html_marks_finding_levels(tmp_path, detailed_doc):
+    from app.agent.models import Finding
+    _, s = done_session(tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
+    s.approval.findings = [Finding(code="TERM_BELOW_COST", level="재검토", message="5년 계약가가 원가보다 낮아요"),
+                           Finding(code="MARKET_LOW", level="조건부", message="시장 최저가보다 낮아요")]
+    h = build_report_html(s)
+    assert '<span class="lv lv-rev">재검토</span>5년 계약가가 원가보다 낮아요' in h
+    assert '<span class="lv lv-cond">조건부</span>시장 최저가보다 낮아요' in h
+
+
 def test_html_omits_breakdown_when_mismatch(tmp_path, detailed_doc):
     _, s = done_session(tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
     s.approval.breakdown_ok = False

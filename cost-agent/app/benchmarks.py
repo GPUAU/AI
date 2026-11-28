@@ -18,13 +18,18 @@ OTHER_OPEX_PER_MW_YEAR = 1_800_000_000.0  # 원/MW/년, 인건비·네트워크�
 GPU_UNIT_PRICE_USD = 38_000.0  # $/GPU, H100~B300 믹스 (표 18 B) — 취득비 예시값
 
 SRC_HD = "현대차증권 2026-09 표 16·18"
-# GPU 한 장의 월 전력량 (서버·냉각 포함): 약 1.2~2kW × 730h × PUE → 900~1,500kWh/월
-POWER_KWH_PER_GPU_MONTH = (900.0, 1500.0)
+HOURS_PER_MONTH = 730.0
+PUE = 1.3  # 표 18 G
+# GPU 한 장의 월 전력량 기준: GPU당 2kW(서버·네트워크 포함) × 730h × PUE 1.3 ≈ 1,898kWh — 만실·풀가동 값 (표 18 A·G)
+POWER_KWH_PER_GPU_MONTH = KW_PER_GPU * HOURS_PER_MONTH * PUE
 
 RENT_BAND = (RENT_PER_KW_MONTH[0] * 0.5, RENT_PER_KW_MONTH[1] * 2)
 POWER_BAND = (POWER_PER_KW_MONTH * 0.3, POWER_PER_KW_MONTH * 1.5)
 KW_PER_GPU_BAND = (1.2, 3.5)
 COST_BAND = (COST_PER_GPU_HOUR_USD * 0.4, COST_PER_GPU_HOUR_USD * 2.5)
+# 전기료 kW 단가(POWER_BAND)와 같은 폭. 실제 검침량은 가동률과 계량 범위(IT 전력만인지, 냉각 포함인지)에 따라
+# 풀가동 값보다 한참 낮을 수 있어 하한을 넓게 둔다 (약 570~2,850kWh). 이 밖이면 일부 장비만의 값이거나 GPU 수가 다를 가능성이 크다.
+POWER_KWH_PER_GPU_BAND = (POWER_KWH_PER_GPU_MONTH * 0.3, POWER_KWH_PER_GPU_MONTH * 1.5)
 
 
 def _annual(items: list[CostItemDraft], *types: ItemType) -> float:
@@ -111,14 +116,15 @@ def inhouse_suggestion(items: list[CostItemDraft], currency: Currency | None, co
 
 
 def power_per_gpu_check(kwh_month: float, gpu_count: int) -> list[BenchFinding]:
-    """전기료 원문의 월 kWh ÷ GPU 수가 기준(900~1,500kWh)을 벗어나면 짚는다."""
+    """전기료 원문의 월 kWh ÷ GPU 수가 기준 범위(POWER_KWH_PER_GPU_BAND)를 벗어나면 짚는다."""
     if not kwh_month or not gpu_count:
         return []
     v = kwh_month / gpu_count
-    lo, hi = POWER_KWH_PER_GPU_MONTH
+    lo, hi = POWER_KWH_PER_GPU_BAND
     if lo <= v <= hi:
         return []
     return [BenchFinding(
-        code="POWER_PER_GPU", value=round(v, 1), low=lo, high=hi, source="현대차증권 표 18 A·G (GPU당 약 2kW, PUE 1.3)",
-        message=f"월 전력 사용량 ÷ GPU 수가 {v:,.0f}kWh예요. GPU 한 장은 서버·냉각 포함 월 900~1,500kWh가 보통이라, "
-                "전력량이 일부 장비만의 값인지·GPU 수가 맞는지 확인해 주세요.")]
+        code="POWER_PER_GPU", value=round(v, 1), low=round(lo), high=round(hi),
+        source="현대차증권 표 18 A·G (GPU당 2kW × 730h × PUE 1.3)",
+        message=f"월 전력 사용량 ÷ GPU 수가 {v:,.0f}kWh예요. 풀가동 기준(GPU당 2kW·PUE 1.3) 약 {POWER_KWH_PER_GPU_MONTH:,.0f}kWh에서 "
+                f"가동률을 감안한 범위({lo:,.0f}~{hi:,.0f}kWh)를 벗어나, 전력량이 일부 장비만의 값인지·GPU 수가 맞는지 확인해 주세요.")]
