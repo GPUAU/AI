@@ -122,6 +122,29 @@ scripts/migrate_data.sh <원본 DB URL> <대상 DB URL>
 
 DDL만 적용한 뒤 기준 정보까지 원본 ID 그대로 옮기고(seed는 적용하지 않음), 테이블 건수와 identity 시퀀스를 원본과 비교한다.
 
+## 한국은행 DRAM 수출물가지수 적재
+
+한국은행 [경제통계시스템(ECOS)](https://ecos.bok.or.kr/)에서 매월 발표하는 달러 기준 DRAM 수출물가지수
+(통계표 `402Y016`, 품목 `30911201AA`, 달러 기준 `D`, 기준연도 `2020=100`)를
+`public.dram_export_price_index`에 적재한다. 첫 적재 시 테이블이 생성된다.
+
+```bash
+cd collector
+# 기존 collector 설치 환경에서 실행한다. --check는 DB 없이 API 응답만 검사한다.
+python -m gpu_collector.erd.dram --since 2024-01 --check
+# 대상 PostgreSQL의 DATABASE_URL을 설정한 뒤 실행한다.
+python -m gpu_collector.erd.dram --since 2024-01
+```
+
+`--since`의 기본값은 `2024-01`이다. `--until YYYY-MM`을 생략하면 한국시간의 이번 달까지 요청하고,
+아직 공표되지 않은 마지막 달은 적재 대상에서 빠진다. `ECOS_API_KEY`는 [ECOS Open API](https://ecos.bok.or.kr/api/)
+발급 키를 쓸 때 환경 변수로 지정한다. 공개 샘플로 조회할 때는 요청당 최대 10개월씩 조회한다.
+
+기준월은 월의 첫날을 사용하고, 지수 값과 해당 월을 확인할 수 있는 공식 URL을 저장한다.
+같은 월에 같은 값이 들어오면 유지하고, 개정된 값은 최신 API 응답으로 갱신한다.
+이 자료는 D램 수출가격의 월별 지표다. GPU 임대료와는 양쪽에 관측이 있는 월을 비교하고
+결과의 단위를 월로 표시한다.
+
 ## 테스트
 
 ```bash
@@ -140,4 +163,5 @@ pytest
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS 가격 API 호출(IAM 사용자 `gpu-price-collector`, 가격 조회 권한만). EKS에서는 Kubernetes Secret으로 주입하고 이미지·저장소에 넣지 않는다 |
 | `KOREAEXIM_API_KEY` | 한국수출입은행 현재환율 API 인증키(`collect fx`·`backfill fx`). 발급 2년 뒤 파기되므로(등록 이메일로 재동의하면 연장) 종료 코드 3과 `result_3`이 나오면 키 만료를 먼저 확인한다. EKS에서는 Kubernetes Secret으로 주입한다 |
 | `HYPERSTACK_API_KEY` | Hyperstack API 키(`collect hyperstack`, 헤더 `api_key`). 콘솔에서 발급. 없으면 종료 코드 3 |
+| `ECOS_API_KEY` | ECOS Open API에 쓸 발급 키. 선택. DRAM 적재는 비어 있으면 공개 샘플로 조회한다 |
 | `CACHE_DIR` | 원천 파일 캐시 위치. 선택, 기본 `./var/cache` |
