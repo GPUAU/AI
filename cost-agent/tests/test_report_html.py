@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
 from app.agent.report import build_report
-from app.agent.report_html import build_report_html
+from app.agent.report_html import build_report_html, formal
 from app.agent.verify import risks
 from app.config import Settings
 from app.main import create_app
@@ -20,9 +20,11 @@ def test_html_has_sections_and_numbers_from_session(tmp_path, detailed_doc):
     assert h.startswith("<!DOCTYPE html>") and "GPU 요금 제안 검토" in h
     assert f"권고: {s.approval.verdict}" in h and f"${cand:.2f}" in h
     assert all(f"${t.price:.2f}" in h for t in s.terms)
-    assert "자동 검증 7/7 통과" in h and all(r in h for r in risks(s))
+    assert "자동 검증 7/7 통과" in h and all(formal(r) in h for r in risks(s))
     assert "원가 구성" in h and "결론을 바꿀 수 있는 가정" in h and "@media print" in h
-    assert "http" not in h.split("<body", 1)[0]  # 외부 리소스 없음
+    head = h.split("<body", 1)[0]
+    assert "http://" not in head and "https://" not in head  # 외부 리소스 없음 (글꼴·로고는 data: URI)
+    assert "data:font/woff2;base64," in head and "data:image/png;base64," in h
 
 
 def test_html_escapes_bill_text(tmp_path, detailed_doc):
@@ -45,8 +47,8 @@ def test_html_marks_finding_levels(tmp_path, detailed_doc):
     s.approval.findings = [Finding(code="TERM_BELOW_COST", level="재검토", message="5년 계약가가 원가보다 낮아요"),
                            Finding(code="MARKET_LOW", level="조건부", message="시장 최저가보다 낮아요")]
     h = build_report_html(s)
-    assert '<span class="lv lv-rev">재검토</span>5년 계약가가 원가보다 낮아요' in h
-    assert '<span class="lv lv-cond">조건부</span>시장 최저가보다 낮아요' in h
+    assert '<span class="badge b-rev">재검토</span> 5년 계약가가 원가보다 낮습니다' in h      # 보고서는 합니다체
+    assert '<span class="badge b-cond">조건부</span> 시장 최저가보다 낮습니다' in h
 
 
 def test_html_omits_breakdown_when_mismatch(tmp_path, detailed_doc):
@@ -121,3 +123,24 @@ def test_xlsx_summary_shows_decisions_and_applied_fixes(tmp_path, detailed_doc):
     fixed = rows["5년가: 원가보다 낮아 손실이에요"]
     assert fixed[0].value == "고침" and fixed[3].value == "제안대로 고침: 5년 할인 25% → 20% → 5년가 $3.20 ≥ 원가 $1.90"
     assert rows["금융비용(이자)이 원가에 반영되지 않았어요"][3].value == "참고 확인"
+
+
+def test_html_is_company_report_with_cost_derivation(tmp_path, detailed_doc):
+    """사내 보고서 형식: SKT 로고·Pretendard·결재란·4쪽, 원가 계산 단계를 이번 숫자로 보여 준다."""
+    _, s = done_session(tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
+    h = build_report_html(s)
+    assert 'font-family:"Pretendard"' in h and 'alt="SK telecom"' in h
+    assert h.count('<section class="page">') == 4 and '<td class="side" rowspan="2">결재</td>' in h
+    assert "내부용 · 대외 반출 금지" in h and "counter(pages)" in h
+    for step in ("연간 운영비", "연간 자본회수액", "연간 원가", "연간 유료 GPU 시간", "GPU·시간당 원가", "제안가"):
+        assert f"<b>{step}" in h
+    cost = float(s.simulation["hourlyCost"])
+    assert f"${cost:,.4f}" in h                                                       # 원가 단계 결과 = 원가 서버 값
+    assert "의사결정 요청" in h and "승인 조건" in h
+
+
+def test_formal_turns_screen_sentences_into_report_tone():
+    assert formal("금융비용(이자)이 원가에 반영되지 않았어요 — 마진이 실제보다 높게 보일 수 있어요") == \
+        "금융비용(이자)이 원가에 반영되지 않았습니다 — 마진이 실제보다 높게 보일 수 있습니다"
+    assert formal("시장 범위 $3.99~$10.00 밖이에요") == "시장 범위 $3.99~$10.00 밖입니다"
+    assert formal("5년가: 원가 $2.12보다 낮아요") == "5년가: 원가 $2.12보다 낮습니다"
