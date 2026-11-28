@@ -106,3 +106,18 @@ def test_xlsx_summary_is_readable(tmp_path, detailed_doc):
     assert not any(v in ("USER_INPUT", "NOT_INCLUDED", "REVENUE_MARGIN") for r in ev for v in r)
     util = next(r for r in wb["원가 근거"].iter_rows() if r[0].value == "유료 가동률")
     assert util[1].number_format.startswith("0%")
+
+
+def test_xlsx_summary_shows_decisions_and_applied_fixes(tmp_path, detailed_doc):
+    """승인 검토 카드의 결정(참고 확인·그대로 진행)과 '제안대로 고치기'로 바꾼 것이 요약의 확인할 점에 남는다."""
+    from app.agent.models import Finding
+    _, s = done_session(tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
+    s.approval.findings = [Finding(code="NO_FINANCING", level="조건부", message="금융비용(이자)이 원가에 반영되지 않았어요",
+                                   fix_step="ASSUMPTIONS", decision="ack", reason="참고 확인")]
+    s.approval.applied = [{"code": "PRICE_BELOW_COST", "message": "5년가: 원가보다 낮아 손실이에요",
+                           "label": "5년 할인 25% → 20%", "effect": "5년가 $3.20 ≥ 원가 $1.90"}]
+    ws = load_workbook(io.BytesIO(build_report(s)))["요약"]
+    rows = {r[1].value: r for r in ws.iter_rows() if r[1].value}
+    fixed = rows["5년가: 원가보다 낮아 손실이에요"]
+    assert fixed[0].value == "고침" and fixed[3].value == "제안대로 고침: 5년 할인 25% → 20% → 5년가 $3.20 ≥ 원가 $1.90"
+    assert rows["금융비용(이자)이 원가에 반영되지 않았어요"][3].value == "참고 확인"

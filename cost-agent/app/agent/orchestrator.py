@@ -773,10 +773,11 @@ class CostAgent(SheetFlow):
         ap = Approval(breakdown=rows, breakdown_ok=ok, interest_applied=interest,
                       breakeven=breakeven(float(a["utilization"]), cost, prices), sensitivity=sens,
                       benchmark=benchmark_shares(rows))
-        before = {(f.code, f.message): f.reason for f in (s.approval.findings if s.approval else [])}
+        before = {(f.code, f.message): (f.reason, f.decision) for f in (s.approval.findings if s.approval else [])}
+        ap.applied = list(s.approval.applied) if s.approval else []  # 제안대로 고친 기록은 다시 검토해도 남긴다
         ap.findings = findings(s, ap)
-        for f in ap.findings:  # 같은 발견 사항(코드와 내용이 같음)이면 담당자가 적은 사유를 유지한다
-            f.reason = before.get((f.code, f.message), "")
+        for f in ap.findings:  # 같은 발견 사항(코드와 내용이 같음)이면 담당자가 고른 결정·사유를 유지한다
+            f.reason, f.decision = before.get((f.code, f.message), ("", ""))
         ap.verdict, ap.reasons = verdict(ap.findings)
         s.approval, s.review_basis = ap, self._review_basis(s)
         codes = ", ".join(f.code for f in ap.findings) or "없음"
@@ -786,43 +787,104 @@ class CostAgent(SheetFlow):
 
     FIX_ORDER = ["MISSING", "ASSUMPTIONS", "MARKET", "TERMS"]
 
+    # 막는 것(재검토)을 그대로 진행할 때 고르는 사유. '기타'만 짧은 글을 받는다
+    REASON_CHIPS = [("strategic", "전략 가격"), ("market_entry", "시장 진입용"), ("customer_agreed", "고객 협의 완료"),
+                    ("other", "기타")]
+    NOTE_ACK = "참고 확인"
+
     def _q_review(self, s: AgentSession) -> Question:
+        """막는 것은 '제안대로 고치기 / 단계로 돌아가 고치기 / 이대로 진행(사유 칩)' 중 하나를 고르고, 참고는 확인만 한다."""
         fields: list[FieldSpec] = []
-        for f in s.approval.findings:
-            opts = [Option(value="proceed", label="사유를 적고 진행")]
-            if f.fix_step in self.FIX_ORDER:
-                opts.insert(0, Option(value="fix", label="고치기"))
-            fields += [
-                FieldSpec(name=f"finding:{f.code}", label=f"[{f.level}] {f.message}", type="select", value="proceed",
-                          options=opts, hint=f"고치면 '{STEP_TITLES.get(Step(f.fix_step), '')}' 단계로 돌아가요"
-                          if f.fix_step in self.FIX_ORDER else "이 단계에서 고칠 수 없어 사유를 남겨요"),
-                FieldSpec(name=f"reason:{f.code}", label="진행 사유", type="text", required=False, value=f.reason or None,
-                          show_for=["proceed"]),
-            ]
-        self._board(s, Step.REVIEW, Status.WAITING, f"판정: {s.approval.verdict} · 확인 대기")
-        self._log(s, Step.REVIEW, "ask", f"승인 전에 담당자가 확인할 발견 사항 {len(s.approval.findings)}개를 보여줍니다.")
-        return Question(id=self._qid(), step=Step.REVIEW, title=f"승인 전에 확인할 점이 {len(s.approval.findings)}개 있어요",
-                        text=f"판정: {s.approval.verdict}. 항목마다 고치거나, 사유를 적고 진행하세요. 재검토 사유는 사유를 적어도 판정이 바뀌지 않아요.",
-                        fields=fields, submit_label="확인")
+        findings = sorted(s.approval.findings, key=lambda f: f.kind != "block")  # 막는 것 먼저
+        for f in findings:
+            fixable = f.fix_step in self.FIX_ORDER
+            step_title = STEP_TITLES.get(Step(f.fix_step), "") if fixable else ""
+            meta = {"kind": f.kind, "level": f.level, "message": f.message, "suggestion": f.suggestion,
+                    "fix_step": step_title}
+            if f.kind == "block":
+                opts = ([Option(value="apply", label="제안대로 고치기", description=f.suggestion["label"])] if f.suggestion else [])
+                if fixable:
+                    opts.append(Option(value="fix", label="돌아가서 고치기", description=f"'{step_title}' 단계로"))
+                opts.append(Option(value="proceed", label="이대로 진행"))
+                prev = f.decision if f.decision in {o.value for o in opts} else None
+                fields += [
+                    FieldSpec(name=f"finding:{f.code}", label=f.message, type="select", value=prev, options=opts, meta=meta),
+                    FieldSpec(name=f"reason:{f.code}", label="진행 사유", type="select", required=False,
+                              value=self._chip_of(f.reason), show_for=["proceed"],
+                              options=[Option(value=k, label=v) for k, v in self.REASON_CHIPS]),
+                    FieldSpec(name=f"reason_text:{f.code}", label="기타 사유", type="text", required=False,
+                              value=f.reason.removeprefix("기타: ") if f.reason.startswith("기타: ") else None,
+                              show_for=["other"]),
+                ]
+            else:
+                opts = [Option(value="ack", label="확인")]
+                if fixable:
+                    opts.append(Option(value="fix", label="고치기", description=f"'{step_title}' 단계로"))
+                fields.append(FieldSpec(name=f"finding:{f.code}", label=f.message, type="select", value="ack",
+                                        options=opts, meta=meta, required=False))
+        n_block = sum(1 for f in s.approval.findings if f.kind == "block")
+        n_note = len(s.approval.findings) - n_block
+        self._board(s, Step.REVIEW, Status.WAITING, f"판정: {s.approval.verdict} · 막는 것 {n_block}개 · 참고 {n_note}개")
+        self._log(s, Step.REVIEW, "ask", f"승인 전에 막는 것 {n_block}개는 결정을, 참고 {n_note}개는 확인을 받습니다.")
+        text = (f"막는 것 {n_block}개는 고칠지 그대로 진행할지 골라 주세요. 참고 {n_note}개는 보고서에 단서로 들어가요."
+                if n_block else f"참고 {n_note}개는 보고서에 단서로 들어가요. 고칠 것만 골라 주세요.")
+        return Question(id=self._qid(), step=Step.REVIEW,
+                        title=f"승인 전 확인 — 막는 것 {n_block}개 · 참고 {n_note}개", text=text,
+                        fields=fields, submit_label="결정 완료하고 보고서 만들기")
+
+    @classmethod
+    def _chip_of(cls, reason: str) -> str | None:
+        if reason.startswith("기타"):
+            return "other"
+        return next((k for k, v in cls.REASON_CHIPS if v == reason), None)
 
     def _answer_review(self, s: AgentSession, q: Question, ans: Answer) -> None:
         v = {f.name: ans.values.get(f.name, f.value) for f in q.fields}
+        chips = dict(self.REASON_CHIPS)
         by_code = {f.code: f for f in s.approval.findings}
-        fixes, reasons = [], {}
+        decided: dict[str, tuple[str, str]] = {}  # code → (decision, reason)
+        missing = []
         for code, f in by_code.items():
-            choice = v.get(f"finding:{code}", "proceed")
-            if choice == "fix" and f.fix_step in self.FIX_ORDER:
-                fixes.append(f)
+            choice = v.get(f"finding:{code}")
+            raw = str(v.get(f"reason:{code}") or "").strip()
+            if f.kind == "note":
+                if choice == "fix" and f.fix_step in self.FIX_ORDER:
+                    decided[code] = ("fix", "")
+                else:
+                    decided[code] = ("ack", raw if raw and raw not in chips else self.NOTE_ACK)
+                continue
+            if not choice and raw:  # 예전 화면: 사유 글만 보냄 → 그대로 진행
+                choice = "proceed"
+            if choice == "apply" and f.suggestion:
+                decided[code] = ("apply", "")
+            elif choice == "fix" and f.fix_step in self.FIX_ORDER:
+                decided[code] = ("fix", "")
+            elif choice == "proceed":
+                if raw == "other" or raw == "기타":
+                    text = str(v.get(f"reason_text:{code}") or "").strip()
+                    if not text:
+                        raise AgentError("'기타'를 골랐다면 사유를 짧게 적어 주세요.")
+                    decided[code] = ("proceed", f"기타: {text}")
+                elif raw in chips:
+                    decided[code] = ("proceed", chips[raw])
+                elif raw:
+                    decided[code] = ("proceed", raw)  # 예전 형식의 자유 사유
+                else:
+                    raise AgentError("그대로 진행하려면 사유를 하나 골라 주세요.")
             else:
-                text = str(v.get(f"reason:{code}") or "").strip()
-                if not text:
-                    raise AgentError("진행하려면 사유를 적어 주세요.")
-                reasons[code] = text
-        for code, text in reasons.items():
-            by_code[code].reason = text
-        for f in fixes:  # 고치기를 고르면 예전 사유는 쓰지 않는다
-            f.reason = ""
-        self._log(s, Step.REVIEW, "answer", f"고치기 {len(fixes)}개 · 사유 진행 {len(reasons)}개")
+                missing.append(f)
+        if missing:
+            raise AgentError(f"막는 항목 {len(missing)}개의 처리 방법을 골라 주세요: " + ", ".join(f.message[:30] for f in missing))
+
+        applies = [by_code[c] for c, (d, _) in decided.items() if d == "apply"]
+        fixes = [by_code[c] for c, (d, _) in decided.items() if d == "fix"]
+        for code, (d, reason) in decided.items():
+            by_code[code].decision, by_code[code].reason = d, reason
+        self._log(s, Step.REVIEW, "answer",
+                  f"제안대로 고치기 {len(applies)}개 · 돌아가서 고치기 {len(fixes)}개 · 그대로 진행 "
+                  f"{sum(1 for d, _ in decided.values() if d == 'proceed')}개 · 참고 확인 {sum(1 for d, _ in decided.values() if d == 'ack')}개")
+        for f in applies:  # 그 자리에서 고치고 다시 검토한다 (단계로 돌아가지 않음)
+            self._apply_suggestion(s, f)
         if not fixes:
             return
         steps = {f.fix_step for f in fixes}
@@ -839,6 +901,18 @@ class CostAgent(SheetFlow):
             s.terms = []
         first = next(st for st in self.FIX_ORDER if st in steps)
         self._go(s, Step(first))
+
+    def _apply_suggestion(self, s: AgentSession, f) -> None:
+        """승인 검토가 제안한 값을 바로 적용한다 (지금은 기간별 할인율)."""
+        sug = f.suggestion or {}
+        new = {int(y): float(d) for y, d in (sug.get("terms") or {}).items()}
+        if not new:
+            return
+        s.terms = [TermPrice(years=t.years, discount_rate=new.get(t.years, t.discount_rate), price=t.price) for t in s.terms]
+        self._price_terms(s)
+        s.approval.applied.append({"code": f.code, "message": f.message, "label": sug.get("label", ""),
+                                   "effect": sug.get("effect", "")})
+        self._log(s, Step.REVIEW, "result", f"제안대로 고침: {sug.get('label', '')} → {sug.get('effect', '')}")
 
     # 8) 근거서 -----------------------------------------------------------
     def _step_report(self, s: AgentSession) -> None:

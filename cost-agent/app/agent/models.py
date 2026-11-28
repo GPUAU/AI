@@ -64,6 +64,7 @@ class FieldSpec(BaseModel):
     hint: str = ""  # 제안 근거
     options: list[Option] = Field(default_factory=list)
     show_for: list[str] = Field(default_factory=list)  # 특정 선택지일 때만 표시
+    meta: dict[str, Any] = Field(default_factory=dict)  # 화면이 특별한 카드를 그릴 때 쓰는 정보 (승인 검토: kind·suggestion…)
 
 
 class Question(BaseModel):
@@ -132,7 +133,14 @@ class Finding(BaseModel):
     level: str  # 재검토 | 조건부
     message: str
     fix_step: str | None = None  # Step 값
-    reason: str = ""  # 담당자가 적은 진행 사유
+    reason: str = ""  # 담당자 결정의 사유 (칩 이름·기타 문구·'참고 확인')
+    decision: str = ""  # apply | proceed | ack | fix
+    suggestion: dict | None = None  # 막는 것의 구체적인 고침 제안 {label, effect, terms: {연수: 할인율}}
+
+    @property
+    def kind(self) -> str:
+        """막는 것(재검토) / 참고(조건부)."""
+        return "block" if self.level == "재검토" else "note"
 
 
 class Approval(BaseModel):
@@ -144,6 +152,7 @@ class Approval(BaseModel):
     benchmark: list[dict] = Field(default_factory=list)  # {group, share, ref_share, ratio}
     findings: list[Finding] = Field(default_factory=list)
     verdict: str = ""  # 승인 권고 | 조건부 | 재검토
+    applied: list[dict] = Field(default_factory=list)  # 승인 검토에서 '제안대로 고치기'로 바꾼 것 {code, message, label, effect}
     reasons: list[str] = Field(default_factory=list)
 
 

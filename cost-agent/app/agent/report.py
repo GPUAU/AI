@@ -46,6 +46,7 @@ PERIOD_KO = {"YEAR": "연간", "MONTH": "월", "ONE_TIME": "1회"}
 METHOD_KO = {"REVENUE_MARGIN": "매출 기준 이익률", "MARKUP": "원가 가산율", "COST_PLUS": "원가 가산율"}
 CELL_STATUS_KO = {"filled": "채움", "included": "다른 요금에 포함", "excluded": "제외", "empty": "빈칸", "conflict": "충돌"}
 KIND_KO = {"think": "판단", "tool": "도구", "ask": "질문", "answer": "답변", "result": "결과", "warn": "주의"}
+DECISION_KO = {"apply": "제안대로 고침", "proceed": "그대로 진행", "ack": "참고 확인", "fix": "돌아가서 고침"}  # report_html도 쓴다
 COMPLETENESS_KO = {"COMPLETE": "완전", "INCOMPLETE": "불완전 (빠진 항목 있음)"}
 LEVEL_STYLE = {"재검토": (RED, RED_BG), "조건부": (AMB, AMB_BG), "참고": (MUTED, "F3F4F6")}
 VERDICT_STYLE = {"재검토": (RED, RED_BG), "조건부": (AMB, AMB_BG), "승인 권고": (OK, OK_BG)}
@@ -197,20 +198,30 @@ def _summary(wb, s: AgentSession) -> None:
     # 확인할 점: 승인 검토 발견 사항 + 그 밖의 리스크
     row += 2
     _section(ws, row, "확인할 점")
-    _header(ws, row + 1, ["등급", "내용", "관련 단계", "진행 사유", "코드"])
+    _header(ws, row + 1, ["등급", "내용", "관련 단계", "담당자 결정 · 사유", "코드"])
     row += 2
     found = list(ap.findings) if ap else []
-    listed = {f.message for f in found}
+    applied = list(ap.applied) if ap else []
+    listed = {f.message for f in found} | {x["message"] for x in applied}
     extra = [x for x in V.risks(s) if x not in listed and not any(x.startswith(m.split(" — ")[0]) for m in listed)]
-    if not found and not extra:
+    if not found and not extra and not applied:
         _put(ws, row, 1, "없음", font=_f(color=OK))
+        row += 1
+    for x in applied:  # 승인 검토에서 '제안대로 고치기'로 해결한 것: 남은 문제는 아니지만 무엇을 바꿨는지 남긴다
+        _put(ws, row, 1, "고침", font=_f(9, True, OK), fill=OK_BG)
+        _put(ws, row, 2, x["message"], font=_f(color=MUTED), wrap=True)
+        _put(ws, row, 3, "-")
+        _put(ws, row, 4, f"제안대로 고침: {x['label']} → {x['effect']}", wrap=True)
+        _put(ws, row, 5, x.get("code", ""), font=_f(8, color=MUTED))
+        _line(ws, row, 5)
         row += 1
     for f in found:
         color, bg = LEVEL_STYLE.get(f.level, LEVEL_STYLE["참고"])
+        decision = DECISION_KO.get(getattr(f, "decision", ""), "")
         _put(ws, row, 1, f.level, font=_f(9, True, color), fill=bg)
         _put(ws, row, 2, f.message, font=_f(bold=f.level == "재검토", color=RED if f.level == "재검토" else INK), wrap=True)
         _put(ws, row, 3, _step_ko(f.fix_step) if f.fix_step else "-")
-        _put(ws, row, 4, f.reason or "", font=_f(color=MUTED), wrap=True)
+        _put(ws, row, 4, " · ".join(x for x in (decision, f.reason if f.reason != decision else "") if x), font=_f(color=MUTED), wrap=True)
         _put(ws, row, 5, f.code, font=_f(8, color=MUTED))
         _line(ws, row, 5)
         row += 1
