@@ -68,7 +68,7 @@ def verify(s) -> tuple[list[str], list[str]]:
     # 리스크는 실제로 만든 보고서(HTML)에 실렸는지 본다
     from . import report_html as RH
     rendered = RH.build_report_html(s, verified=([], []))
-    ok["리스크 누락 금지"] = all(escape(text) in rendered for _, text in _risk_conditions(s))
+    ok["리스크 누락 금지"] = all(escape(RH.formal(text)) in rendered for _, text in _risk_conditions(s))  # 보고서는 합니다체로 싣는다
     # 권고는 세션 상태로 발견 사항을 다시 만들어 저장된 것과 비교한다
     if ap:
         fresh = findings(s, ap)
