@@ -412,6 +412,16 @@ class CostAgent(SheetFlow):
                 fx_value, fx_hint = float(fx["rate"]), f"한국수출입은행 {fx.get('referenceDate', '')} 기준 (BE 환율 API)"
         except BackendError:
             pass
+        # 금리 가정: 한국은행 공시 금리(BE)를 제안값으로. 없으면 예전처럼 '적용 안 함'
+        rate_type, rate_value, rate_hint = "NOT_APPLIED", None, "예: 5"
+        try:
+            ir = self.backend.latest_interest()
+            if ir:
+                rate_type, rate_value = "ASSUMED", float(ir["annualRatePercent"])
+                rate_hint = (f"한국은행 ECOS {ir.get('seriesName', '회사채(3년, AA-)')} {ir.get('referenceDate', '')} 기준 공시 금리"
+                             " · 실제 차입 금리가 있으면 바꾸세요")
+        except (BackendError, KeyError, TypeError, ValueError):
+            pass
         needs_fx = any(c.currency == Currency.KRW for c in s.draft.cost_items) or any(
             v.get("currency") == "KRW" for v in s.missing_answers.values())
         g = s.goal
@@ -432,12 +442,12 @@ class CostAgent(SheetFlow):
                       options=[Option(value="REVENUE_MARGIN", label="매출 기준 이익률"), Option(value="COST_MARKUP", label="원가 가산율")]),
             FieldSpec(name="target_rate", label="목표 마진 (%)", value=20, hint="제안값 20%: 같은 보고서의 목표 마진 예시"),
             self._inhouse_field(s),
-            FieldSpec(name="interest_rate_type", label="금융비용 (금리)", type="select", value="NOT_APPLIED",
+            FieldSpec(name="interest_rate_type", label="금융비용 (금리)", type="select", value=rate_type,
                       hint="투자금 이자. 적용하지 않으면 보고서에 '금융비용 미반영'으로 표시돼요",
                       options=[Option(value="NOT_APPLIED", label="적용 안 함"), Option(value="ASSUMED", label="가정"),
                                Option(value="ACTUAL_LOAN", label="실제 대출")]),
-            FieldSpec(name="annual_interest_rate", label="연 금리 (%)", required=False,
-                      show_for=["ASSUMED", "ACTUAL_LOAN"], hint="예: 5"),
+            FieldSpec(name="annual_interest_rate", label="연 금리 (%)", required=False, value=rate_value,
+                      show_for=["ASSUMED", "ACTUAL_LOAN"], hint=rate_hint),
         ]
         if needs_fx:
             fields.append(FieldSpec(name="fx_krw_per_usd", label="환율 (원/달러)", value=fx_value, hint=fx_hint))
