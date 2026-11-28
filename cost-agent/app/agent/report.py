@@ -24,6 +24,74 @@ def _header(ws, row, values):
         c.font, c.fill = Font(bold=True, color="FFFFFF"), HEAD
 
 
+def _approval_sheets(wb, s: AgentSession) -> None:
+    """승인 검토 시트 4개를 맨 앞에 둔다: 승인 요약 · 원가 구성 · 민감도 · 검토 결과."""
+    from . import verify as V
+    ap, r, a = s.approval, s.simulation or {}, s.assumptions or {}
+    ws = wb.create_sheet("승인 요약", 0)
+    ws["A1"] = "GPU 요금 제안 검토"
+    ws["A1"].font = Font(bold=True, size=15)
+    rows = [("권고", ap.verdict if ap else "검토 전"), ("GPU 모델 · 수", f"{a.get('model_name', '')} · {a.get('gpu_count', '')}장"),
+            ("제안가 (USD/GPU·시간)", r.get("candidatePrice")), ("원가 = 최저 수용가", r.get("hourlyCost"))]
+    rows += [(f"{t.years}년 계약가", t.price) for t in s.terms]
+    if ap:
+        rows += [(f"손익분기 가동률 ({k})", round(v, 4)) for k, v in ap.breakeven.items()]
+        rows += [("권고 이유", x) for x in ap.reasons]
+    rows += [("리스크", x) for x in V.risks(s)]
+    rows.append(("자동 검증", f"{len(s.checks_passed)}/{len(V.CHECKS)} 통과" + (f" · 실패: {', '.join(s.checks_failed)}" if s.checks_failed else "")))
+    for i, (k, v) in enumerate(rows, 3):
+        ws.cell(i, 1, k).font = Font(bold=True)
+        ws.cell(i, 2, v)
+    ws.column_dimensions["A"].width, ws.column_dimensions["B"].width = 28, 80
+
+    ws = wb.create_sheet("원가 구성", 1)
+    _header(ws, 1, ["묶음", "원가 항목", "연간 (USD)", "GPU·시간당 (USD)", "비중", "업계 기준 비중", "근거 줄"])
+    bench = {b["group"]: b for b in (ap.benchmark if ap else [])}
+    if ap and ap.breakdown_ok:
+        for row in ap.breakdown:
+            ws.append([row.group, ", ".join(ITEM_KO.get(t, t) for t in row.item_types), round(row.annual_usd, 2),
+                       round(row.hourly_usd, 4), round(row.share, 4), bench.get(row.group, {}).get("ref_share"), ", ".join(row.refs)])
+    else:
+        ws.append(["분해 없음", "원가 항목 합계가 원가 서버 결과와 맞지 않아 싣지 않았습니다 (재검토 사유)"])
+
+    ws = wb.create_sheet("민감도", 2)
+    _header(ws, 1, ["가정 변화", "제안가 변화 (USD)", "출처 등급"])
+    for x in (ap.sensitivity if ap else []):
+        ws.append([x["label"], round(x["price_delta"], 4), x.get("grade", "")])
+
+    ws = wb.create_sheet("검토 결과", 3)
+    _header(ws, 1, ["코드", "수준", "내용", "담당자 사유"])
+    for f in (ap.findings if ap else []):
+        ws.append([f.code, f.level, f.message, f.reason])
+    ws.append([])
+    ws.append(["자동 검증", "", ", ".join(s.checks_passed) + " 통과", ", ".join(s.checks_failed) + (" 실패" if s.checks_failed else "")])
+    for col, w in zip("ABCD", [20, 10, 70, 40]):
+        ws.column_dimensions[col].width = w
+
+
+STATUS_KO = {"filled": "채움", "included": "다른 요금에 포함", "excluded": "제외", "empty": "빈칸", "conflict": "충돌"}
+
+
+def _cost_sheet(wb, s: AgentSession) -> None:
+    """여러 부서 문서 세션: 맨 앞에 '원가 기준표' — 칸마다 값·출처·교차 확인·담당자 수정."""
+    from ..costsheet import FIELDS
+    ws = wb.create_sheet("원가 기준표", 0)
+    _header(ws, 1, ["칸", "값", "단위", "상태", "출처(문서·쪽·행·열)", "교차 확인 수", "담당자 수정", "메모"])
+    for f in FIELDS:
+        c = s.sheet.cells[f.key]
+        if c.status == "empty" and f.kind != "cost":
+            continue
+        where = " / ".join(f"{x.doc} · {x.page or '-'}쪽 · {x.row}행 · {x.col}열" if x.doc != "담당자 입력" else x.doc
+                           for x in c.sources)
+        docs = {x.doc for x in c.sources if x.doc != "담당자 입력"}
+        ws.append([f.label, c.value, c.unit, STATUS_KO.get(c.status, c.status), where, len(docs) if len(docs) > 1 else None,
+                   "예" if f.key in s.sheet_answers else "", c.note])
+    for n in s.sheet.notices:
+        ws.append(["알림", n])
+    for w, col in zip((34, 16, 8, 14, 70, 12, 10, 60), "ABCDEFGH"):
+        ws.column_dimensions[col].width = w
+
+
 def build_report(s: AgentSession) -> bytes:
     wb = Workbook()
     ws = wb.active
@@ -69,12 +137,12 @@ def build_report(s: AgentSession) -> bytes:
         ws.column_dimensions[col].width = w
 
     ws = wb.create_sheet("가정값")
-    _header(ws, 1, ["가정", "값", "근거"])
+    _header(ws, 1, ["가정", "값", "근거", "출처 등급"])
     for k, label in [("gpu_count", "GPU 수"), ("acquisition_amount", "서버·GPU 취득비"), ("acquisition_currency", "취득비 통화"),
                      ("depreciation_years", "감가상각 연수"), ("utilization", "유료 가동률"), ("fx_krw_per_usd", "환율 (원/달러)"),
                      ("pricing_method", "마진 방식"), ("target_rate", "목표 마진"),
                      ("inhouse_annual", "사내 인건비·판관비 (연간)")]:
-        ws.append([label, a.get(k), a.get("sources", {}).get(k, "담당자 입력")])
+        ws.append([label, a.get(k), a.get("sources", {}).get(k, "담당자 입력"), a.get("grades", {}).get(k, "")])
     ws.column_dimensions["A"].width = 18
     ws.column_dimensions["C"].width = 60
 
@@ -101,6 +169,10 @@ def build_report(s: AgentSession) -> bytes:
             ws.append([x["provider"], x["region"], x["gpu_count"], x["price"], x["collected_at"]])
         ws.column_dimensions["A"].width = 16
         ws.column_dimensions["E"].width = 26
+
+    _approval_sheets(wb, s)
+    if s.sheet is not None:
+        _cost_sheet(wb, s)
 
     ws = wb.create_sheet("진행 기록")
     _header(ws, 1, ["시각", "단계", "구분", "내용"])

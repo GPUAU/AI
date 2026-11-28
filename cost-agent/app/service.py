@@ -17,6 +17,7 @@ from .mapping.llm import LLMMappingError
 from .mapping.rules import RulesMapper, detect_period
 from .mapping.templates import TemplateStore, apply_template, fingerprint, template_from_lines
 from .models import (
+    BenchFinding,
     BillDraft,
     CorrectionRequest,
     CostItemDraft,
@@ -217,6 +218,17 @@ class BillService:
         return aggregate(lines, mapping.currency, mapping.default_period, it.months, base, it.prorate)
 
     @staticmethod
+    def _ocr_warnings(doc: ExtractedDocument) -> list[BenchFinding]:
+        """OCR 신뢰도가 낮은 숫자 — 해석 확인 카드·승인 검토·리스크로 이어진다 (조용히 원가에 들어가지 않게)."""
+        refs = doc.ocr_low_confidence
+        if not refs:
+            return []
+        where = ", ".join(f"{doc.page_of.get(r, '?')}쪽 {r.split('!')[-1]}줄" for r in refs[:5]) + (" 등" if len(refs) > 5 else "")
+        return [BenchFinding(code="OCR_LOW_CONFIDENCE", value=len(refs), low=0, high=0,
+                             source="로컬 OCR(RapidOCR) 신뢰도 기준 미만",
+                             message=f"OCR로 읽은 줄 {len(refs)}개는 글자·숫자 신뢰도가 낮아요 — {where}을 원본과 비교해 주세요")]
+
+    @staticmethod
     def _running(items: list[CostItemDraft]) -> float:
         """연간 운영원가: 청구서에서 온 운영비 합 (1회성 취득비 제외)."""
         return sum(c.amount or 0 for c in items if c.status == ItemStatus.USER_INPUT and c.item_type != ItemType.ACQUISITION)
@@ -249,5 +261,5 @@ class BillService:
             unit_multiplier=it.multiplier,
             billing_months=it.months or (12.0 if mapping.default_period == Period.YEAR else 1.0),
             contract=meta.contract, interpretations=it.found,
-            bench=bill_checks(items, mapping.currency, meta.contract),
+            bench=bill_checks(items, mapping.currency, meta.contract) + self._ocr_warnings(doc),
         )

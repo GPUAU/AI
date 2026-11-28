@@ -1,0 +1,18 @@
+{
+  "_note": "팀 목데이터 8종(가상 시나리오)의 기준표 칸 정답. 연간 금액은 원(KRW).",
+  "cells": {
+    "acquisition": 1009000000,
+    "gpu_model": "H100 80GB",
+    "gpu_count": 32,
+    "electricity": 57600000,
+    "rack": 28800000,
+    "network": 9600000,
+    "depreciation_years": 5,
+    "operations": 72000000,
+    "utilization": 0.7,
+    "fx_krw_per_usd": 1350,
+    "target_rate": 0.2,
+    "pricing_method": "REVENUE_MARGIN"
+  },
+  "plan": {"plan_annual_cost": 369800000, "plan_hourly_cost": 1885, "plan_price": 2356, "plan_price_usd": 1.74}
+}

@@ -11,7 +11,8 @@ from __future__ import annotations
 import uuid
 
 from ..be_client import BackendClient, BackendError, build_request
-from ..benchmarks import cost_check, gpu_checks, inhouse_suggestion
+from ..benchmarks import GPU_UNIT_PRICE_USD, cost_check, gpu_checks, inhouse_suggestion, missing_suggestion
+from .sources import grade_of
 from ..models import (
     BillDraft,
     CostItemDraft,
@@ -27,6 +28,7 @@ from ..models import (
 from ..service import BillService
 from ..validation import BILL_CORE_ITEMS
 from .market import margin_for_price, market_view, offer_prices
+from .sheetflow import SheetFlow
 from .models import (
     STEP_TITLES,
     AgentSession,
@@ -47,24 +49,40 @@ ITEM_KO = {"ELECTRICITY": "전기료", "RACK_FACILITY": "랙·상면", "RENT": "
            "OPERATIONS": "운영·유지보수", "MEMORY": "메모리", "GPU": "GPU 임차", "ACQUISITION": "취득비", "OTHER": "기타"}
 
 
+def _same_value(a, b) -> bool:
+    """FE는 숫자를 Number()로 보낸다 (19152000 vs 19152000.0). 숫자로 읽히면 숫자로 비교한다."""
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return str(a) == str(b)
+
+
 class AgentError(RuntimeError):
     pass
 
 
-class CostAgent:
-    def __init__(self, bills: BillService, backend: BackendClient):
+class CostAgent(SheetFlow):
+    def __init__(self, bills: BillService, backend: BackendClient, fields_completion=None):
         self.bills = bills
         self.backend = backend
         self.sessions: dict[str, AgentSession] = {}
         self._docs: dict[str, ExtractedDocument] = {}
+        self._hits: dict[str, list] = {}  # 세션 → 부서 문서에서 뽑은 칸 값 (기준표 재구성용)
+        self.fields_completion = fields_completion  # 부서 문서 칸 위치 매핑용 LLM (없으면 규칙만)
 
     # ------------------------------------------------------------------ 진입점
     def start(self, doc: ExtractedDocument, goal: Goal) -> AgentSession:
+        return self.start_many([doc], goal)
+
+    def start_many(self, docs: list[ExtractedDocument], goal: Goal) -> AgentSession:
+        """문서 여러 개(부서 문서·청구서). 청구서 한 장이면 기존 흐름 그대로."""
+        if not docs:
+            raise AgentError("문서를 하나 이상 올려 주세요.")
         s = AgentSession(id=uuid.uuid4().hex[:12], goal=goal,
                          board=[BoardStep(key=k, title=t) for k, t in STEP_TITLES.items()])
         self.sessions[s.id] = s
-        self._docs[s.id] = doc
         self._log(s, Step.ANALYZE, "think", f"목표: 청구서로 원가·제안가·{'/'.join(map(str, goal.terms_years))}년 가격과 근거서를 만든다.")
+        self._prepare_docs(s, docs)
         return self._run(s)
 
     def answer(self, session_id: str, ans: Answer) -> AgentSession:
@@ -154,7 +172,10 @@ class CostAgent:
         errors = [i for i in d.issues if i.level == IssueLevel.ERROR]
         status = Status.WARNING if errors or rec.matched is None else Status.DONE
         summary = ("총액 대조 일치" if rec.matched else "총액 줄 없음") + (f" · 재분류 {s.remap_tries}회" if s.remap_tries else "")
-        self._board(s, Step.ANALYZE, status, summary, [i.message for i in d.issues if i.level != IssueLevel.INFO][:5])
+        # 여러 문서 세션: 청구서 밖 비용(누락 핵심 항목·취득비)은 기준표 단계가 문서 전체로 판단한다
+        sheet_only = {"MISSING_CORE_ITEM", "ACQUISITION_OUTSIDE_BILL"} if s.sheet is not None else set()
+        self._board(s, Step.ANALYZE, status, summary,
+                    [i.message for i in d.issues if i.level != IssueLevel.INFO and i.code not in sheet_only][:5])
 
     def _q_currency(self, s: AgentSession) -> Question:
         self._board(s, Step.ANALYZE, Status.WAITING, "통화 확인 대기")
@@ -256,6 +277,8 @@ class CostAgent:
 
     # 2) 누락 확인 --------------------------------------------------------
     def _missing_groups(self, s: AgentSession) -> list[tuple[str, tuple[ItemType, ...]]]:
+        if s.sheet is not None:  # 여러 문서 세션: 기준표의 빈 핵심 칸·충돌 칸
+            return self._sheet_missing(s)
         missing = set(s.draft.missing_items) if s.draft else set()
         return [(name, types) for name, types in BILL_CORE_ITEMS.items()
                 if missing.intersection(types) and name not in s.missing_answers]
@@ -266,50 +289,101 @@ class CostAgent:
             self._finish_missing(s)
             self._go(s, Step.ASSUMPTIONS)
             return
-        s.question = self._q_missing(s, groups[0][0])
+        s.question = self._q_missing(s, [name for name, _ in groups])
 
-    def _q_missing(self, s: AgentSession, name: str) -> Question:
-        present = sorted({c.item_type.value for c in s.draft.cost_items if c.status == ItemStatus.USER_INPUT
+    NOTE_WORDS = ("직접 계약", "별도 계약", "별도 청구", "고객사 부담")
+    GROUP_WORDS = {"전력": ("전력", "전기", "power"), "공간·상면": ("상면", "랙", "공간"),
+                   "네트워크": ("회선", "네트워크", "인터넷", "ix", "cross connect", "크로스커넥트"),
+                   "운영·유지보수": ("운영", "관제", "유지보수")}
+
+    def _note_hint(self, s: AgentSession, group: str) -> str | None:
+        """청구서 비고에 '직접 계약'처럼 그 항목을 따로 낸다는 말이 있으면 그 줄을 돌려준다."""
+        doc = self._docs.get(s.id)
+        for r in doc.rows if doc else []:
+            t = " ".join(c for c in r.cells if c)
+            low = t.lower()
+            if any(w in t for w in self.NOTE_WORDS) and any(w in low for w in self.GROUP_WORDS.get(group, ())):
+                return f"{r.ref} '{t[:40]}'"
+        return None
+
+    def _q_missing(self, s: AgentSession, names: list[str]) -> Question:
+        """빠진 핵심 항목을 카드 한 장에 모아 묻는다. 입력칸 이름은 '역할:그룹'."""
+        if s.sheet is not None:
+            return self._q_sheet(s, names)
+        d = s.draft
+        present = sorted({c.item_type.value for c in d.cost_items if c.status == ItemStatus.USER_INPUT
                           and c.item_type != ItemType.ACQUISITION})
-        self._board(s, Step.MISSING, Status.WAITING, f"'{name}' 확인 대기")
-        self._log(s, Step.MISSING, "ask", f"청구서에 '{name}' 비용이 없습니다. 큰 비용이 빠지면 원가 전체를 믿을 수 없어 담당자에게 확인합니다.")
-        return Question(
-            id=self._qid(), step=Step.MISSING, title=f"'{name}' 비용이 청구서에 없어요",
-            text="다른 계약으로 따로 내는지, 다른 요금에 포함됐는지 알려 주세요. 모르면 '이번엔 제외'를 고르면 결과에 '불완전 원가'로 표시합니다.",
-            options=[Option(value="amount", label="별도 계약 금액 입력"),
-                     Option(value="included", label="다른 요금에 포함됨"),
-                     Option(value="exclude", label="이번엔 제외")],
-            fields=[
-                FieldSpec(name="amount", label="금액", show_for=["amount"]),
-                FieldSpec(name="currency", label="통화", type="select", value=(s.draft.currency or Currency.KRW).value,
-                          options=[Option(value="KRW", label="원"), Option(value="USD", label="달러")], show_for=["amount"]),
-                FieldSpec(name="period", label="기간", type="select", value="MONTH",
-                          options=[Option(value="MONTH", label="월"), Option(value="YEAR", label="연")], show_for=["amount"]),
-                FieldSpec(name="parent", label="포함된 요금", type="select", value=present[0] if present else None,
-                          options=[Option(value=p, label=ITEM_KO.get(p, p)) for p in present], show_for=["included"]),
-            ])
+        cur = (d.currency or Currency.KRW).value
+        fields: list[FieldSpec] = []
+        for g in names:
+            note = self._note_hint(s, g)
+            hint = (f"비고 {note}에 따로 계약한다고 적혀 있어 '별도 계약'을 골라 뒀어요" if note
+                    else "모르면 '이번엔 제외'를 고르면 결과에 '불완전 원가'로 표시돼요")
+            suggest = missing_suggestion(g, d.currency, d.contract)
+            fields += [
+                FieldSpec(name=f"choice:{g}", label=f"'{g}' 비용", type="select", value="amount", hint=hint,
+                          options=[Option(value="amount", label="별도 계약 금액 입력"),
+                                   Option(value="included", label="다른 요금에 포함됨"),
+                                   Option(value="exclude", label="이번엔 제외")]),
+                FieldSpec(name=f"amount:{g}", label="금액", required=False, value=suggest, show_for=["amount"],
+                          hint="예시값 · 현대차증권 표 16·18 (계약전력 기준, 월) · 실제 계약 금액으로 바꾸세요" if suggest else ""),
+                FieldSpec(name=f"currency:{g}", label="통화", type="select", value=cur, show_for=["amount"],
+                          options=[Option(value="KRW", label="원"), Option(value="USD", label="달러")]),
+                FieldSpec(name=f"period:{g}", label="기간", type="select", value="MONTH", show_for=["amount"],
+                          options=[Option(value="MONTH", label="월"), Option(value="YEAR", label="연")]),
+                FieldSpec(name=f"parent:{g}", label="포함된 요금", type="select", show_for=["included"],
+                          value=present[0] if present else None,
+                          options=[Option(value=p, label=ITEM_KO.get(p, p)) for p in present]),
+            ]
+        self._board(s, Step.MISSING, Status.WAITING, f"빠진 큰 비용 {len(names)}개 확인 대기")
+        self._log(s, Step.MISSING, "ask", f"청구서에 {', '.join(names)} 비용이 없습니다. 큰 비용이 빠지면 원가 전체를 믿을 수 없어 담당자에게 확인합니다.")
+        return Question(id=self._qid(), step=Step.MISSING, title=f"청구서에 없는 큰 비용이 {len(names)}개 있어요",
+                        text="다른 계약으로 따로 내는지, 다른 요금에 포함됐는지 항목마다 알려 주세요.",
+                        fields=fields, submit_label="이대로 계속")
 
     def _finish_missing(self, s: AgentSession) -> None:
+        if s.sheet is not None:
+            self._finish_sheet(s)
+            return
         n = len(s.missing_answers)
         self._board(s, Step.MISSING, Status.DONE if not n else Status.WARNING,
                     "빠진 큰 비용 없음" if not n else f"{n}건 담당자 확인 완료",
                     [f"{k}: {self._missing_text(v)}" for k, v in s.missing_answers.items()])
 
     def _answer_missing(self, s: AgentSession, q: Question, ans: Answer) -> None:
-        name = q.title.split("'")[1]
-        types = BILL_CORE_ITEMS[name]
-        rec = {"choice": ans.choice, "types": [t.value for t in types], **ans.values}
-        if ans.choice == "amount":
-            try:
-                rec["amount"] = float(ans.values.get("amount"))
-            except (TypeError, ValueError) as exc:
-                raise AgentError("금액을 숫자로 입력하세요.") from exc
-            if rec["amount"] < 0:
-                raise AgentError("금액은 0 이상이어야 합니다.")
-        if ans.choice == "included" and not ans.values.get("parent"):
-            raise AgentError("포함된 요금을 고르세요.")
-        s.missing_answers[name] = rec
-        self._log(s, Step.MISSING, "answer", f"{name}: {self._missing_text(rec)}")
+        if s.sheet is not None:
+            self._answer_sheet(s, q, ans)
+            return
+        groups = [f.name.split(":", 1)[1] for f in q.fields if f.name.startswith("choice:")]
+        defaults = {f.name: f.value for f in q.fields}
+        recs: dict[str, dict] = {}
+        for g in groups:
+            if ans.choice and not any(k.startswith("choice:") for k in ans.values):
+                # 예전 형식(선택 하나 + amount·currency·period·parent)으로 답하면 모든 항목에 적용한다
+                v = {"choice": ans.choice, **{k: ans.values.get(k, defaults.get(f"{k}:{g}"))
+                                               for k in ("amount", "currency", "period", "parent")}}
+            else:
+                v = {k: ans.values.get(f"{k}:{g}", defaults.get(f"{k}:{g}"))
+                     for k in ("choice", "amount", "currency", "period", "parent")}
+            rec = {"choice": v["choice"], "types": [t.value for t in BILL_CORE_ITEMS[g]],
+                   "currency": v["currency"], "period": v["period"], "parent": v["parent"]}
+            if v["choice"] == "amount":
+                if _same_value(v["amount"], defaults.get(f"amount:{g}")) and defaults.get(f"amount:{g}") is not None:
+                    rec["source"] = "예시값"
+                try:
+                    rec["amount"] = float(v["amount"])
+                except (TypeError, ValueError) as exc:
+                    raise AgentError(f"'{g}' 금액을 숫자로 입력하세요.") from exc
+                if rec["amount"] < 0:
+                    raise AgentError("금액은 0 이상이어야 합니다.")
+            elif v["choice"] == "included" and not v["parent"]:
+                raise AgentError(f"'{g}'가 포함된 요금을 고르세요.")
+            elif v["choice"] not in ("amount", "included", "exclude"):
+                raise AgentError("선택지에서 골라 주세요.")
+            recs[g] = rec
+        for g, rec in recs.items():  # 모두 검사한 뒤에 반영한다 (잘못된 입력이면 아무것도 바꾸지 않음)
+            s.missing_answers[g] = rec
+            self._log(s, Step.MISSING, "answer", f"{g}: {self._missing_text(rec)}")
 
     @staticmethod
     def _missing_text(rec: dict) -> str:
@@ -345,7 +419,9 @@ class CostAgent:
             FieldSpec(name="model_id", label="GPU 모델", type="select", value=g.model_id,
                       options=[Option(value=m["id"], label=m["name"]) for m in models], hint="시장 가격 비교 기준"),
             FieldSpec(name="gpu_count", label="GPU 수", value=g.gpu_count, hint="이 청구서의 시설에서 운영할 GPU 수"),
-            FieldSpec(name="acquisition_amount", label="서버·GPU 취득비", hint="청구서에 없는 값 · 견적서 기준으로 입력"),
+            FieldSpec(name="acquisition_amount", label="서버·GPU 취득비",
+                      value=g.gpu_count * GPU_UNIT_PRICE_USD if g.gpu_count else None,
+                      hint=f"예시값 · 현대차증권 표 18 GPU 단가 ${GPU_UNIT_PRICE_USD:,.0f} × GPU 수 · 견적서 값으로 바꾸세요"),
             FieldSpec(name="acquisition_currency", label="취득비 통화", type="select", value="USD",
                       options=[Option(value="USD", label="달러"), Option(value="KRW", label="원")]),
             FieldSpec(name="depreciation_years", label="감가상각 연수", value=5,
@@ -356,15 +432,25 @@ class CostAgent:
                       options=[Option(value="REVENUE_MARGIN", label="매출 기준 이익률"), Option(value="COST_MARKUP", label="원가 가산율")]),
             FieldSpec(name="target_rate", label="목표 마진 (%)", value=20, hint="제안값 20%: 같은 보고서의 목표 마진 예시"),
             self._inhouse_field(s),
+            FieldSpec(name="interest_rate_type", label="금융비용 (금리)", type="select", value="NOT_APPLIED",
+                      hint="투자금 이자. 적용하지 않으면 보고서에 '금융비용 미반영'으로 표시돼요",
+                      options=[Option(value="NOT_APPLIED", label="적용 안 함"), Option(value="ASSUMED", label="가정"),
+                               Option(value="ACTUAL_LOAN", label="실제 대출")]),
+            FieldSpec(name="annual_interest_rate", label="연 금리 (%)", required=False,
+                      show_for=["ASSUMED", "ACTUAL_LOAN"], hint="예: 5"),
         ]
         if needs_fx:
             fields.append(FieldSpec(name="fx_krw_per_usd", label="환율 (원/달러)", value=fx_value, hint=fx_hint))
+        if s.sheet is not None:  # 기준표 값으로 미리 채우고 출처 문서를 근거로 보인다
+            fields = self._sheet_prefill(s, fields)
         prev = s.assumptions or {}
         if prev:  # 다시 묻는 경우: 담당자가 넣었던 값을 그대로 채워 둔다
             back = {"utilization": lambda x: round(x * 100, 4), "target_rate": lambda x: round(x * 100, 4)}
             for f in fields:
                 if prev.get(f.name) not in (None, ""):
                     f.value = back.get(f.name, lambda x: x)(prev[f.name])
+                    if prev.get("sources", {}).get(f.name):  # 다시 열어도 그 값의 출처(담당자 입력 등)를 유지한다
+                        f.hint = prev["sources"][f.name]
         self._board(s, Step.ASSUMPTIONS, Status.WAITING, "가정값 확인 대기")
         self._log(s, Step.ASSUMPTIONS, "ask", "청구서에 없는 값(GPU 수·취득비)과 가정값을 근거와 함께 제안합니다.")
         return Question(id=self._qid(), step=Step.ASSUMPTIONS, title="청구서에 없는 값을 확인해 주세요",
@@ -400,6 +486,17 @@ class CostAgent:
             raise AgentError("필수 값을 모두 숫자로 입력하세요.") from exc
         if not a["model_id"] or a["model_id"] == "None" or a["gpu_count"] <= 0 or not 0 < a["utilization"] <= 1:
             raise AgentError("GPU 모델, GPU 수(1 이상), 가동률(0~100%)을 확인하세요.")
+        a["interest_rate_type"] = v.get("interest_rate_type") or "NOT_APPLIED"
+        if a["interest_rate_type"] not in ("NOT_APPLIED", "ASSUMED", "ACTUAL_LOAN"):
+            raise AgentError("금리 종류를 선택지에서 골라 주세요.")
+        a["annual_interest_rate"] = None
+        if a["interest_rate_type"] != "NOT_APPLIED":
+            try:
+                a["annual_interest_rate"] = float(v.get("annual_interest_rate")) / 100
+            except (TypeError, ValueError) as exc:
+                raise AgentError("연 금리를 0 이상의 숫자로 입력하세요.") from exc
+            if a["annual_interest_rate"] < 0:
+                raise AgentError("연 금리를 0 이상의 숫자로 입력하세요.")
         raw = v.get("inhouse_annual")
         try:
             a["inhouse_annual"] = 0.0 if raw in (None, "") else float(raw)
@@ -409,20 +506,25 @@ class CostAgent:
             raise AgentError("사내 인건비·판관비는 0 이상의 숫자로 입력하세요.")
         names = {o.value: o.label for o in q.fields[0].options}
         a["model_name"] = names.get(a["model_id"], a["model_id"])
-        a["sources"] = {f.name: (f.hint if str(ans.values.get(f.name, f.value)) == str(f.value) and f.hint else "담당자 입력")
+        a["sources"] = {f.name: (f.hint if _same_value(ans.values.get(f.name, f.value), f.value) and f.hint else "담당자 입력")
                         for f in q.fields}
+        a["grades"] = {k: grade_of(k, v) for k, v in a["sources"].items()}
         a["confirmed"] = True
         s.assumptions = a
         self._log(s, Step.ASSUMPTIONS, "answer",
                   f"{a['model_name']} {a['gpu_count']}장 · 취득비 {a['acquisition_amount']:,.0f} {a['acquisition_currency']} · "
                   f"가동률 {a['utilization']:.0%} · 목표 마진 {a['target_rate']:.0%}")
         self._set_checks(s, Step.ASSUMPTIONS, {"KW_PER_GPU"}, gpu_checks(s.draft.contract, a["gpu_count"]))
-        warn = [c.message for c in s.checks if c.code == "KW_PER_GPU"]
+        if s.sheet is not None:
+            self._set_checks(s, Step.ASSUMPTIONS, {"POWER_PER_GPU"}, self._power_check(s, a["gpu_count"]))
+        warn = [c.message for c in s.checks if c.code in ("KW_PER_GPU", "POWER_PER_GPU")]
         self._board(s, Step.ASSUMPTIONS, Status.WARNING if warn else Status.DONE,
                     f"{a['model_name']} {a['gpu_count']}장 · 마진 {a['target_rate']:.0%}", warn)
 
     # 4) 원가 계산 --------------------------------------------------------
     def _final_items(self, s: AgentSession) -> list[CostItemDraft]:
+        if s.sheet is not None:
+            return self._sheet_items(s)
         items = [c.model_copy() for c in s.draft.cost_items]
         have = {c.item_type for c in items}
         for rec in s.missing_answers.values():
@@ -461,15 +563,20 @@ class CostAgent:
     def _step_simulate(self, s: AgentSession) -> None:
         self._go(s, Step.MARKET if self._do_simulate(s) else Step.ASSUMPTIONS)
 
-    def _do_simulate(self, s: AgentSession) -> bool:
-        """BE 원가 계산. 실패하면 가정값을 미확정으로 돌리고 False."""
+    @staticmethod
+    def _sim_input(s: AgentSession) -> SimulationInput:
         a = s.assumptions
-        s.final_items = self._final_items(s)
-        inp = SimulationInput(
+        return SimulationInput(
             model_id=a["model_id"], gpu_count=a["gpu_count"], acquisition_amount=a["acquisition_amount"],
             acquisition_currency=Currency(a["acquisition_currency"]), depreciation_years=a["depreciation_years"],
             utilization=a["utilization"], pricing_method=a["pricing_method"], target_rate=a["target_rate"],
-            fx_krw_per_usd=a.get("fx_krw_per_usd"))
+            fx_krw_per_usd=a.get("fx_krw_per_usd"),
+            interest_rate_type=a.get("interest_rate_type", "NOT_APPLIED"), annual_interest_rate=a.get("annual_interest_rate"))
+
+    def _do_simulate(self, s: AgentSession) -> bool:
+        """BE 원가 계산. 실패하면 가정값을 미확정으로 돌리고 False."""
+        s.final_items = self._final_items(s)
+        inp = self._sim_input(s)
         self._log(s, Step.SIMULATE, "tool", "BE 원가 계산 API를 호출합니다 (계산식은 BE 한 곳에만 있음).")
         try:
             s.request = build_request(s.final_items, inp)
@@ -489,6 +596,8 @@ class CostAgent:
                     f"원가 ${float(r['hourlyCost']):.2f} · 제안가 ${float(r['candidatePrice']):.2f}",
                     [f"BE가 미반영으로 본 항목: {', '.join(missing)}"] if missing else [])
         s.sim_basis = self._sim_basis(s)
+        if s.sheet is not None:
+            self._plan_check(s)
         return True
 
     @staticmethod
@@ -496,7 +605,7 @@ class CostAgent:
         """원가 계산에 쓴 입력의 지문. 가정값·누락 답이 바뀌면 다시 계산해야 한다."""
         import json
         a = {k: v for k, v in s.assumptions.items() if k not in ("sources", "confirmed")}
-        return json.dumps([a, s.missing_answers], sort_keys=True, default=str)
+        return json.dumps([a, s.missing_answers, s.sheet_answers], sort_keys=True, default=str)
 
     # 5) 시장 비교 --------------------------------------------------------
     def _step_market(self, s: AgentSession) -> None:
@@ -584,7 +693,7 @@ class CostAgent:
     def _step_terms(self, s: AgentSession) -> None:
         if not s.goal.terms_years:
             self._board(s, Step.TERMS, Status.DONE, "요청 없음")
-            self._go(s, Step.REPORT)
+            self._go(s, Step.REVIEW)
             return
         s.question = self._q_terms(s)
 
@@ -612,7 +721,7 @@ class CostAgent:
             s.terms.append(TermPrice(years=y, discount_rate=d, price=round(cand * (1 - d), 4)))
         self._log(s, Step.TERMS, "answer", " · ".join(f"{t.years}년 할인 {t.discount_rate:.0%}" for t in s.terms))
         self._price_terms(s)
-        self._go(s, Step.REPORT)
+        self._go(s, Step.REVIEW)
 
     def _price_terms(self, s: AgentSession) -> None:
         """담당자가 정한 할인율로 기간별 가격을 (다시) 계산한다. 제안가가 바뀌면 다시 부른다."""
@@ -626,10 +735,131 @@ class CostAgent:
                     " · ".join(f"{t.years}년 ${t.price:.2f}" for t in s.terms),
                     [f"{t.years}년 가격이 원가(${cost:.2f})보다 낮습니다" for t in below])
 
-    # 7) 근거서 -----------------------------------------------------------
+    # 7) 승인 검토 --------------------------------------------------------
+    @staticmethod
+    def _review_basis(s: AgentSession) -> str:
+        import json
+        return json.dumps([s.sim_basis, s.market_basis, [(t.years, t.price) for t in s.terms], s.missing_answers],
+                          sort_keys=True, default=str)
+
+    def _review_current(self, s: AgentSession) -> bool:
+        return s.approval is not None and s.review_basis == self._review_basis(s)
+
+    @staticmethod
+    def _pending_findings(s: AgentSession) -> list:
+        return [f for f in (s.approval.findings if s.approval else []) if not f.reason]
+
+    def _step_review(self, s: AgentSession) -> None:
+        if not self._review_current(s):
+            self._do_review(s)
+        if self._pending_findings(s):
+            s.question = self._q_review(s)
+            return
+        self._go(s, Step.REPORT)
+
+    def _do_review(self, s: AgentSession) -> None:
+        from .approval import benchmark_shares, breakdown, breakeven, findings, sensitivity, verdict
+        from .models import Approval
+        r, a = s.simulation, s.assumptions
+        cost, cand = float(r["hourlyCost"]), float(r["candidatePrice"])
+        self._board(s, Step.REVIEW, Status.RUNNING)
+        self._log(s, Step.REVIEW, "tool", "원가를 항목별로 나누고, 손익분기·민감도(가정을 하나씩 바꿔 원가 서버 재계산)·업계 구성비를 봅니다.")
+        rows, ok, interest = breakdown(s.request or {}, r, a.get("fx_krw_per_usd"))
+        for row in rows:
+            row.refs = sorted({ref for it in s.final_items if it.item_type.value in row.item_types for ref in it.source_refs})
+        prices = {"candidate": cand, **{f"{t.years}y": t.price for t in s.terms}}
+        has_krw = any(c.currency == Currency.KRW for c in s.final_items if c.status == ItemStatus.USER_INPUT)
+        sens = sensitivity(self._sim_input(s), s.final_items, self.backend.simulate, a.get("grades", {}), has_krw, cand)
+        ap = Approval(breakdown=rows, breakdown_ok=ok, interest_applied=interest,
+                      breakeven=breakeven(float(a["utilization"]), cost, prices), sensitivity=sens,
+                      benchmark=benchmark_shares(rows))
+        before = {(f.code, f.message): f.reason for f in (s.approval.findings if s.approval else [])}
+        ap.findings = findings(s, ap)
+        for f in ap.findings:  # 같은 발견 사항(코드와 내용이 같음)이면 담당자가 적은 사유를 유지한다
+            f.reason = before.get((f.code, f.message), "")
+        ap.verdict, ap.reasons = verdict(ap.findings)
+        s.approval, s.review_basis = ap, self._review_basis(s)
+        codes = ", ".join(f.code for f in ap.findings) or "없음"
+        self._log(s, Step.REVIEW, "result", f"판정 {ap.verdict} · 발견 사항 {len(ap.findings)}개 ({codes})")
+        self._board(s, Step.REVIEW, Status.DONE if ap.verdict == "승인 권고" else Status.WARNING,
+                    f"판정: {ap.verdict}", [f.message for f in ap.findings][:6])
+
+    FIX_ORDER = ["MISSING", "ASSUMPTIONS", "MARKET", "TERMS"]
+
+    def _q_review(self, s: AgentSession) -> Question:
+        fields: list[FieldSpec] = []
+        for f in s.approval.findings:
+            opts = [Option(value="proceed", label="사유를 적고 진행")]
+            if f.fix_step in self.FIX_ORDER:
+                opts.insert(0, Option(value="fix", label="고치기"))
+            fields += [
+                FieldSpec(name=f"finding:{f.code}", label=f"[{f.level}] {f.message}", type="select", value="proceed",
+                          options=opts, hint=f"고치면 '{STEP_TITLES.get(Step(f.fix_step), '')}' 단계로 돌아가요"
+                          if f.fix_step in self.FIX_ORDER else "이 단계에서 고칠 수 없어 사유를 남겨요"),
+                FieldSpec(name=f"reason:{f.code}", label="진행 사유", type="text", required=False, value=f.reason or None,
+                          show_for=["proceed"]),
+            ]
+        self._board(s, Step.REVIEW, Status.WAITING, f"판정: {s.approval.verdict} · 확인 대기")
+        self._log(s, Step.REVIEW, "ask", f"승인 전에 담당자가 확인할 발견 사항 {len(s.approval.findings)}개를 보여줍니다.")
+        return Question(id=self._qid(), step=Step.REVIEW, title=f"승인 전에 확인할 점이 {len(s.approval.findings)}개 있어요",
+                        text=f"판정: {s.approval.verdict}. 항목마다 고치거나, 사유를 적고 진행하세요. 재검토 사유는 사유를 적어도 판정이 바뀌지 않아요.",
+                        fields=fields, submit_label="확인")
+
+    def _answer_review(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        v = {f.name: ans.values.get(f.name, f.value) for f in q.fields}
+        by_code = {f.code: f for f in s.approval.findings}
+        fixes, reasons = [], {}
+        for code, f in by_code.items():
+            choice = v.get(f"finding:{code}", "proceed")
+            if choice == "fix" and f.fix_step in self.FIX_ORDER:
+                fixes.append(f)
+            else:
+                text = str(v.get(f"reason:{code}") or "").strip()
+                if not text:
+                    raise AgentError("진행하려면 사유를 적어 주세요.")
+                reasons[code] = text
+        for code, text in reasons.items():
+            by_code[code].reason = text
+        for f in fixes:  # 고치기를 고르면 예전 사유는 쓰지 않는다
+            f.reason = ""
+        self._log(s, Step.REVIEW, "answer", f"고치기 {len(fixes)}개 · 사유 진행 {len(reasons)}개")
+        if not fixes:
+            return
+        steps = {f.fix_step for f in fixes}
+        if "MISSING" in steps:
+            for g in [g for g, rec in s.missing_answers.items()
+                      if rec.get("choice") == "exclude" or rec.get("source") == "예시값"]:
+                s.sheet_answers.pop(s.missing_answers[g].get("sheet_key", ""), None)
+                del s.missing_answers[g]
+        if "ASSUMPTIONS" in steps:
+            s.assumptions["confirmed"] = False
+        if "MARKET" in steps:
+            s.margin_adjusted = False
+        if "TERMS" in steps:
+            s.terms = []
+        first = next(st for st in self.FIX_ORDER if st in steps)
+        self._go(s, Step(first))
+
+    # 8) 근거서 -----------------------------------------------------------
     def _step_report(self, s: AgentSession) -> None:
         self._do_report(s)
+        if s.checks_failed:  # 막다른 길이 되지 않게 가정값부터 다시 계산할 길을 준다
+            s.question = self._q_verify(s)
+            return
         self._go(s, Step.DONE)
+
+    def _q_verify(self, s: AgentSession) -> Question:
+        return Question(id=self._qid(), step=Step.REPORT, title="보고서 자동 검증에 실패했어요",
+                        text="계산 결과와 맞지 않는 항목: " + ", ".join(s.checks_failed)
+                             + ". 원가 서버 결과가 바뀌었을 수 있어요. 가정값부터 다시 계산해 주세요.",
+                        options=[Option(value="assumptions", label="가정값부터 다시 계산")])
+
+    def _answer_report(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        if ans.choice != "assumptions":
+            raise AgentError("선택지에서 골라 주세요.")
+        s.assumptions["confirmed"] = False
+        self._log(s, Step.REPORT, "answer", "자동 검증 실패 → 가정값부터 다시 계산")
+        self._go(s, Step.ASSUMPTIONS)
 
     def _do_report(self, s: AgentSession) -> None:
         r, a, m, d = s.simulation, s.assumptions, s.market, s.draft
@@ -640,7 +870,16 @@ class CostAgent:
             f"{a['model_name']} {a['gpu_count']}장 기준 GPU·시간당 원가 ${float(r['hourlyCost']):.3f}, "
             f"제안가 ${float(r['candidatePrice']):.3f} (목표 마진 {a['target_rate']:.0%}).",
         ]
+        if s.sheet is not None:
+            lines[0] = (f"부서 문서 {len(s.docs)}개로 원가 기준표를 채웠어요 (담당자 확인 {len(s.sheet_answers)}칸). "
+                        + ("청구서 총액 대조는 " + ("일치." if d.reconciliation.matched else "불일치(담당자 확인 후 진행)."
+                                                 if d.reconciliation.matched is False else "불가.") if s.primary_bill else ""))
+            if s.plan_check:
+                lines.append(s.plan_check["message"] + ".")
         for k, v in s.missing_answers.items():
+            if s.sheet is not None and v.get("sheet_key"):
+                lines.append(f"기준표 '{k}' 칸은 담당자가 이번엔 제외했어요 (불완전 원가).")
+                continue
             lines.append(f"청구서에 없던 '{k}'는 담당자 확인: {self._missing_text(v)}.")
         if "FINANCING" in r.get("missingItems", []):
             lines.append("조달 금리는 입력하지 않아 원가에서 빠져 있습니다 (마진이 실제보다 높게 보일 수 있음).")
@@ -650,7 +889,17 @@ class CostAgent:
             lines.append("제안가가 시장 범위를 벗어나 에이전트가 마진을 조정해 다시 계산했습니다.")
         for t in s.terms:
             lines.append(f"{t.years}년 계약가 ${t.price:.3f} (할인 {t.discount_rate:.0%}).")
+        from . import verify as V
+        if s.approval:
+            lines.append(f"승인 검토 판정: {s.approval.verdict}.")
+        s.checks_passed, s.checks_failed = V.verify(s)
+        lines.append(f"자동 검증 {len(s.checks_passed)}/{len(V.CHECKS)} 통과.")
         s.summary = lines
+        if s.checks_failed:  # 계산과 맞지 않는 보고서는 내보내지 않는다
+            s.report_ready = False
+            self._board(s, Step.REPORT, Status.ERROR, "자동 검증 실패: " + ", ".join(s.checks_failed))
+            self._log(s, Step.REPORT, "warn", "보고서 자동 검증 실패: " + ", ".join(s.checks_failed))
+            return
         s.report_ready = True
         self._log(s, Step.REPORT, "result", "견적 근거서(엑셀)를 만들었습니다.")
         self._board(s, Step.REPORT, Status.DONE, "엑셀 다운로드 가능")

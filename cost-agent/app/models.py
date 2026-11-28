@@ -75,6 +75,9 @@ class ExtractedDocument(BaseModel):
     rows: list[SheetRow]
     currency_hint: Currency | None = None
     truncated: bool = False
+    source_kind: str = "xlsx"  # xlsx | csv | pdf-text | pdf-ocr | pdf-mixed
+    ocr_low_confidence: list[str] = Field(default_factory=list)  # OCR 신뢰도가 낮은 글자·숫자가 있는 행 ref
+    page_of: dict[str, int] = Field(default_factory=dict)  # PDF 행 ref → 쪽 번호
 
 
 class ContractInfo(BaseModel):
@@ -235,5 +238,7 @@ class SimulationInput(BaseModel):
     pricing_method: str = Field(default="COST_MARKUP", pattern="REVENUE_MARGIN|COST_MARKUP")
     target_rate: float = 0.3
     fx_krw_per_usd: float | None = Field(default=None, gt=0)
+    interest_rate_type: str = Field(default="NOT_APPLIED", pattern="NOT_APPLIED|ASSUMED|ACTUAL_LOAN")
+    annual_interest_rate: float | None = Field(default=None, ge=0)  # 0.05 = 연 5%
 
 BillDraft.model_rebuild()

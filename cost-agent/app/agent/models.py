@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..costsheet import CostSheet
 from ..models import BenchFinding, BillDraft, CostItemDraft
 
 
@@ -18,13 +19,16 @@ class Step(str, Enum):
     SIMULATE = "SIMULATE"  # BE 원가 계산
     MARKET = "MARKET"  # 시장 가격 비교 (+ 범위를 벗어나면 마진 조정 후 재계산)
     TERMS = "TERMS"  # 3·5년 계약 가격
+    REVIEW = "REVIEW"  # 승인 검토 (분해·손익분기·민감도·판정)
     REPORT = "REPORT"  # 견적 근거서
     DONE = "DONE"
 
 
 STEP_TITLES = {
+    # MISSING은 여러 문서 세션에서 '기준표 확인'으로 바꿔 보여 준다
     Step.ANALYZE: "청구서 분석", Step.MISSING: "누락 확인", Step.ASSUMPTIONS: "가정값 확인",
-    Step.SIMULATE: "원가 계산", Step.MARKET: "시장 비교", Step.TERMS: "기간별 가격", Step.REPORT: "견적 근거서",
+    Step.SIMULATE: "원가 계산", Step.MARKET: "시장 비교", Step.TERMS: "기간별 가격",
+    Step.REVIEW: "승인 검토", Step.REPORT: "견적 근거서",
 }
 
 
@@ -110,6 +114,39 @@ class TermPrice(BaseModel):
     price: float
 
 
+class BreakdownRow(BaseModel):
+    """원가 한 묶음의 연간·시간당 금액 (BE annualCost 기준으로 나눈 것)."""
+
+    group: str  # 공간 | 전력 | 운영 | 감가상각 | 금융비용
+    item_types: list[str] = Field(default_factory=list)
+    annual_usd: float
+    hourly_usd: float
+    share: float  # 원가 대비 비중 0~1
+    refs: list[str] = Field(default_factory=list)
+
+
+class Finding(BaseModel):
+    """승인 검토의 발견 사항. 문구는 코드 템플릿."""
+
+    code: str
+    level: str  # 재검토 | 조건부
+    message: str
+    fix_step: str | None = None  # Step 값
+    reason: str = ""  # 담당자가 적은 진행 사유
+
+
+class Approval(BaseModel):
+    breakdown: list[BreakdownRow] = Field(default_factory=list)
+    breakdown_ok: bool = False
+    interest_applied: bool = False
+    breakeven: dict[str, float] = Field(default_factory=dict)  # candidate | 3y | 5y → 손익분기 가동률
+    sensitivity: list[dict] = Field(default_factory=list)  # {key, label, price_delta, grade}
+    benchmark: list[dict] = Field(default_factory=list)  # {group, share, ref_share, ratio}
+    findings: list[Finding] = Field(default_factory=list)
+    verdict: str = ""  # 승인 권고 | 조건부 | 재검토
+    reasons: list[str] = Field(default_factory=list)
+
+
 class AgentSession(BaseModel):
     id: str
     goal: Goal
@@ -133,7 +170,20 @@ class AgentSession(BaseModel):
     engine: str = "workflow"  # workflow | graph
     mismatch_ok: bool = False  # 총액 불일치를 담당자가 알고 진행
     interpret_ok: bool = False  # 청구서 해석 확인 카드에 담당자가 답함
-    checks: list[BenchFinding] = Field(default_factory=list)  # 가정값·원가 계산 뒤의 업계 기준선 경고 (막지 않음)
+    checks: list[BenchFinding] = Field(default_factory=list)
+    approval: Approval | None = None  # 승인 검토 결과
+    review_basis: str | None = None  # 마지막 승인 검토가 기준으로 삼은 입력 지문
+    checks_passed: list[str] = Field(default_factory=list)  # 보고서 자동 검증 통과
+    checks_failed: list[str] = Field(default_factory=list)  # 가정값·원가 계산 뒤의 업계 기준선 경고 (막지 않음)
     sim_basis: str | None = None  # 마지막 원가 계산의 입력 지문
     market_basis: str | None = None  # 마지막 시장 비교가 기준으로 삼은 원가 계산
     decisions: list[dict] = Field(default_factory=list)  # 판단자 선택 기록 {tool, reason, by}
+    # 여러 부서 문서 세션 (문서가 둘 이상이거나 청구서가 아닌 문서가 있으면). 청구서 한 장이면 비어 있다
+    docs: list[dict] = Field(default_factory=list)  # {name, kind, reason}
+    sheet: CostSheet | None = None  # 원가 기준표
+    sheet_answers: dict[str, dict] = Field(default_factory=dict)  # 칸 → 담당자 답
+    sheet_hits: list[dict] = Field(default_factory=list)  # 부서 문서에서 뽑은 칸 값 (재시작해도 기준표를 다시 만들 수 있게)
+    primary_bill: str | None = None  # ANALYZE 단계가 다루는 청구서 (첫 청구서)
+    extra_bills: list[tuple[str, BillDraft]] = Field(default_factory=list)  # 두 번째부터의 청구서
+    plan_check: dict | None = None  # 사업기획팀 검산 대비 {ok, hourly_krw, plan_hourly, price_krw, plan_price, message}
+    public_fx: str | None = None  # 공개 환율 (BE 수출입은행) — 기준표 환율 칸과 차이 표시

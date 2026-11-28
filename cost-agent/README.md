@@ -132,6 +132,36 @@ pytest
 | `SENSITIVE_TERMS` | (없음) | 추가로 가릴 고객·사업자·프로젝트명 (쉼표 구분) |
 | `OPENAI_BASE_URL` | (없음) | 사내 sLLM(vLLM·Ollama 등 OpenAI 호환) 주소. 설정하면 외부 OpenAI로 보내지 않음 |
 
+## 5-1. PDF 청구서·견적서
+
+- 엑셀·CSV 외에 **PDF**도 받습니다. 문서는 밖으로 보내지 않습니다.
+- 쪽마다 글자가 있으면(20자 이상, 깨진 글자 5% 미만) **pdfplumber**로, 없으면(스캔본) 그 쪽만 **로컬 RapidOCR**(PP-OCRv5 한국어, onnxruntime CPU)로 읽습니다.
+- OCR 신뢰도가 낮은 줄(글자·숫자)은 해석 확인 카드에 "원본과 비교해 주세요"로 뜨고, 승인 검토와 보고서 리스크로 이어집니다.
+- 설치: `pip install ".[ocr]"` (Docker 이미지는 기본 포함). OCR 모델은 처음 쓸 때 RapidAI 저장소에서 한 번 내려받습니다(SHA256 확인).
+
+| 환경변수 | 기본 | 뜻 |
+|---|---|---|
+| `OCR_ENGINE` | `rapidocr` | `off`면 스캔 쪽이 있는 PDF는 "OCR이 필요해요"로 거절 |
+| `OCR_MIN_CONF` | `0.8` | 이 신뢰도 미만이면 담당자 확인 |
+
+샘플: `python scripts/make_pdf_samples.py` → `samples-detailed/pdf/` (텍스트판·스캔판·섞인 판). 채점 결과는 `samples-detailed/README.md`.
+
+## 5-2. LangSmith 추적 (선택)
+
+에이전트가 어떤 단계·도구를 어떤 순서로 불렀고 얼마나 걸렸는지 LangSmith에서 봅니다. **금액·회사명·견적번호·사업장은 가린 채로만** 나갑니다.
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `LANGSMITH_TRACING` | (꺼짐) | `true`면 켬 |
+| `LANGSMITH_API_KEY` | — | 없으면 켜지지 않음 |
+| `LANGSMITH_PROJECT` | `gpuau-cost-agent` | 기록할 프로젝트 |
+| `LANGSMITH_ENDPOINT` | — | 자체 호스팅·EU 리전 주소 |
+
+- 기록 대상: LangGraph 실행(판단 → 도구 → 대기 노드), API 요청(`cost-agent.start`·`cost-agent.answer`), OpenAI 호출(원래도 가린 프롬프트)
+- 가림: LangSmith 클라이언트가 보내기 직전에 입력·출력·메타데이터 전체를 재귀로 가린다 — 숫자 값 `#NUM`, 글자 속 숫자 `#`, 회사·견적번호·사업장·이메일·URL은 표시어 (`app/tracing.py`)
+- LangChain이 환경변수만 보고 붙이는 **가리지 않는 기본 추적기는 끈다**. 이 앱이 붙이는 가린 추적기만 쓴다
+- 검증: `tests/test_tracing.py`가 실제로 LangSmith로 나갈 요청 본문을 가로채 금액·회사·사업장이 없는지 확인 (가림을 끄면 실패)
+
 ## 6. 샘플 (가상 데이터)
 
 | 파일 | 확인하는 것 |

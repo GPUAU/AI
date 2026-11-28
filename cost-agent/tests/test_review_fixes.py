@@ -1,111 +1,131 @@
-"""최종 리뷰 지적 재현 테스트 (feat/bill-interpretation)."""
+"""최종 리뷰에서 나온 문제 (Critical 1 · Important 2~7) 재현 테스트."""
+
 import pytest
 
-from app.agent.orchestrator import CostAgent
-from app.billmeta import read_meta
-from app.columns import ColRole, column_roles
-from app.models import CorrectionRequest, ItemType, LineCorrection, LineRole
+from app.agent.models import Answer, Goal, Step
+from app.costsheet import Source
+from app.docs import DocKind, FieldHit, extract_fields
+from app.mapping.rules import RulesMapper, detect_period
+from app.mapping.templates import TemplateStore
+from app.models import (BillDraft, CostItemDraft, Currency, ItemStatus, ItemType, Period, Reconciliation)
+from app.service import BillService
+from app.sheetmerge import build_sheet
+from app.values import Value
 from tests.conftest import doc_from_rows
-from tests.test_agent import fake_backend
+from tests.test_agent import Agent, fake_backend, suggested  # noqa: F401
+from tests.test_costsheet_agent import past_analyze, start_many
 
 
-def amount(d, t):
-    return next(c.amount for c in d.cost_items if c.item_type == t)
+def _bill(ops: float, name="b") -> BillDraft:
+    return BillDraft(id=name, file_name=name, fingerprint="x", mapper="rules", lines=[], issues=[], needs_review=False,
+                     reconciliation=Reconciliation(cost_sum=0),
+                     cost_items=[CostItemDraft(item_type=ItemType.OPERATIONS, status=ItemStatus.USER_INPUT, amount=ops,
+                                               currency=Currency.KRW, period=Period.YEAR, source_refs=["s!3"])])
 
 
-# 1 (Critical) 계약기간 날짜 범위를 청구 기간으로 읽음
-def test_contract_term_range_is_not_billing_period():
-    m = read_meta(doc_from_rows([["청구월", "2026년 11월분"], ["계약기간", "2026-01-01 ~ 2026-12-31"],
-                                 ["항목", "금액(원)"], ["전력 사용료", 100]]))
-    assert m.billing_months == 1
+def _inhouse(v, doc):
+    return FieldHit("operations", Value(v, "원", "KRW", f"{v:,.0f}원"), Source(doc=doc, row=8), "table")
 
 
-# 2 (Critical) 항목명 속 '3분기'가 'n월분'을 덮어씀
-def test_quarter_word_in_line_item_does_not_override_month():
-    m = read_meta(doc_from_rows([["청구월", "2026년 10월분"], ["항목", "금액(원)"],
-                                 ["3분기 정산 회선", 100], ["전력 사용료", 200]]))
-    assert m.billing_months == 1
+# ---------------------------------------------------------------- Critical 1: 운영비 구성 요소별 충돌
+def test_operations_inhouse_conflict_is_not_overwritten_by_bill_part():
+    c = build_sheet([_inhouse(72_000_000, "05"), _inhouse(90_000_000, "05b")], [("bill", _bill(12_000_000))]).cells["operations"]
+    assert c.status == "conflict" and c.value is None
+    assert {x["part"] for x in c.candidates} == {"사내 인건비·판관비"}
+    assert [x["name"] for x in c.components] == ["청구서 운영비"]
 
 
-# 3 (Critical) 위쪽 요약 블록을 표 머리글로 잡음
-def test_summary_block_above_table_is_not_the_header(service):
-    d = service.ingest(doc_from_rows([["공급가액", "부가세", "합계금액"], [1000, 100, 1100],
-                                      ["항목", "수량", "금액(원)"], ["전력 사용료", 4, 600], ["회선료", 1, 400]]))
-    assert amount(d, ItemType.ELECTRICITY) == 600 * 12
-    assert column_roles(doc_from_rows([["공급가액", "부가세", "합계금액"], [1000, 100, 1100],
-                                       ["항목", "수량", "금액(원)"], ["전력 사용료", 4, 600],
-                                       ["회선료", 1, 400]]))["s"][2] == ColRole.SUPPLY
+def test_operations_pick_keeps_other_part():
+    from app.agent.sheetflow import _apply
+    c = build_sheet([_inhouse(72_000_000, "05"), _inhouse(90_000_000, "05b")], [("bill", _bill(12_000_000))]).cells["operations"]
+    _apply(c, {"choice": "pick", "doc": "05", "row": 8, "value": 72_000_000, "text": "72,000,000원"})
+    assert c.status == "filled" and c.value == 84_000_000
+    c2 = build_sheet([_inhouse(72_000_000, "05"), _inhouse(90_000_000, "05b")], [("bill", _bill(12_000_000))]).cells["operations"]
+    _apply(c2, {"choice": "manual", "value": 80_000_000})
+    assert c2.value == 92_000_000 and {x["name"] for x in c2.components} == {"청구서 운영비", "사내 인건비·판관비"}
 
 
-# 4 (Important) '1회선'의 '1회'를 1회성으로 봄 + 운영원가 0일 때 '영향 없음'
-def test_one_line_circuit_header_is_not_nrc():
-    roles = column_roles(doc_from_rows([["항목", "수량", "1회선 금액"], ["전력 사용료", 1, 100], ["회선료", 2, 200]]))["s"]
-    assert roles[2] == ColRole.SUPPLY
+def test_operations_bill_conflict_keeps_inhouse_part():
+    from app.agent.sheetflow import _apply
+    c = build_sheet([_inhouse(72_000_000, "05")], [("b1", _bill(12_000_000, "b1")), ("b2", _bill(20_000_000, "b2"))]).cells["operations"]
+    assert c.status == "conflict" and {x["part"] for x in c.candidates} == {"청구서 운영비"}
+    _apply(c, {"choice": "pick", "doc": "b1", "row": 3, "value": 12_000_000, "text": "12,000,000원"})
+    assert c.value == 84_000_000
 
 
-def test_unknown_impact_is_not_reported_as_no_effect():
-    assert "영향이 없어요" not in CostAgent._impact_text(None)
+# ---------------------------------------------------------------- Important 2: 연간 청구서를 월로 읽지 않음
+def test_annual_title_is_not_read_as_monthly():
+    d = doc_from_rows([["연간 이용료 청구서"], ["월 사용료", "5,000,000원 × 12개월", 60_000_000]])
+    assert detect_period(d) == Period.YEAR
 
 
-# 5 (Important) 해석이 담당자 수정을 덮어씀
-def test_user_correction_survives_non_cost_rule(service):
-    d = service.ingest(doc_from_rows([["항목", "금액(원)"], ["전력 사용료", 100], ["이월 회선료", 50], ["합계", 150]]))
-    ref = next(l.ref for l in d.lines if "이월" in l.label)
-    d = service.correct(d.id, CorrectionRequest(corrections=[LineCorrection(ref=ref, role=LineRole.COST,
-                                                                          item_type=ItemType.NETWORK_STORAGE)],
-                                                save_template=False))
-    assert next(l for l in d.lines if l.ref == ref).role == LineRole.COST
+def test_bimonthly_is_not_monthly():
+    assert detect_period(doc_from_rows([["Bimonthly invoice"], ["Power", 100]])) != Period.MONTH
 
 
-# 6 (Important) 재분류 뒤 새 해석이 카드 없이 적용됨
-def test_new_interpretations_after_redraft_reset_confirmation(tmp_path, service, detailed_doc):
-    agent = CostAgent(service, fake_backend()[0])
-    s = agent.start(detailed_doc("bill_r1_kr_metered_krw.xlsx"), __import__("app.agent.models", fromlist=["Goal"]).Goal(
-        model_id="29", gpu_count=504))
-    s.interpret_ok = True
-    other = service.ingest(detailed_doc("bill_r2_multisheet_thousand_krw.xlsx"))
-    agent._set_draft(s, other)
-    assert s.interpret_ok is False
-    agent._set_draft(s, other)  # 같은 해석이면 다시 묻지 않는다
-    s.interpret_ok = True
-    agent._set_draft(s, other)
-    assert s.interpret_ok is True
+def test_quarter_row_with_monthly_basis_stays_quarter():
+    from app.billmeta import read_meta
+    m = read_meta(doc_from_rows([["가상센터 이용료"], ["3분기 청구 (월 정액 기준)"], ["상면", 300]]))
+    assert m.billing_months == 3.0
 
 
-# 7 (Important) 요약 시트 중복 제거가 다른 곳에 없는 비용까지 지움
-def test_summary_sheet_kept_when_detail_does_not_cover_it(service):
-    rows = [["항목", "금액(원)"], ["상면 사용료", 300], ["전력 사용료", 200], ["회선료", 100], ["합계", 600]]
-    d1 = doc_from_rows(rows, sheet="요약")
-    d2 = doc_from_rows([["항목", "금액(원)"], ["전력 사용료", 200]], sheet="전력 상세")
-    doc = d1.model_copy(update={"sheets": ["요약", "전력 상세"], "rows": d1.rows + d2.rows})
-    d = service.ingest(doc)
-    assert "SUMMARY_SHEET" not in {i.code for i in d.interpretations}
-    assert amount(d, ItemType.RACK_FACILITY) == 300 * 12
+def test_monthly_title_still_beats_annual_prose(dept_docs):
+    assert detect_period(dept_docs["03"]) == Period.MONTH
 
 
-def test_two_summary_sheets_do_not_remove_each_other(service):
-    rows = [["항목", "금액(원)"], ["상면 사용료", 300], ["전력 사용료", 200], ["합계", 500]]
-    a, b = doc_from_rows(rows, sheet="요약"), doc_from_rows(rows, sheet="총괄표")
-    doc = a.model_copy(update={"sheets": ["요약", "총괄표"], "rows": a.rows + b.rows})
-    d = service.ingest(doc)
-    assert amount(d, ItemType.RACK_FACILITY) == 300 * 12
+# ---------------------------------------------------------------- Important 3: 공급가액 / 부가세 / 합계 견적
+def test_quote_supply_amount_row_is_the_total():
+    d = doc_from_rows([["장비 견적서"], ["품목", "수량", "금액(원)"], ["H100 80GB × 8장 서버", "4대", 1_000_000_000],
+                       ["설치비", "4대", 9_000_000], ["공급가액", "", 1_009_000_000], ["부가세", "", 100_900_000],
+                       ["합계", "", 1_109_900_000]])
+    acq = [h for h in extract_fields(d, DocKind.QUOTE, "q") if h.key == "acquisition" and h.role == "table"]
+    assert len(acq) == 1 and acq[0].value.number == 1_009_000_000
 
 
-# 8 (Important) '단위: 원'을 무시하고 주석의 '(천원)'을 씀
-def test_explicit_won_unit_locks_against_later_thousand_note():
-    m = read_meta(doc_from_rows([["금액 단위", "원"], ["※ 보증금 별도 (천원)"], ["전력 사용료", 100]]))
-    assert m.unit_multiplier == 1
+# ---------------------------------------------------------------- Important 4: 관리회계 문서가 없으면 사내 인건비를 묻는다
+def test_inhouse_is_asked_when_no_management_accounting_doc(Agent, tmp_path, dept_docs):
+    seen = []
+    agent, s = start_many(Agent, tmp_path, [v for k, v in dept_docs.items() if k != "05"], seen)
+    s = past_analyze(agent, s)
+    if s.question.step == Step.MISSING:  # 운영비 칸이 비면 기준표 카드에서 '포함'으로
+        s = agent.answer(s.id, Answer(question_id=s.question.id, values={"choice:operations": "excluded"}))
+    f = {x.name: x for x in s.question.fields}
+    assert "inhouse_annual" in f
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={"inhouse_annual": 72_000_000}))
+    items = {i["itemType"]: i for i in seen[-1]["items"]}
+    assert items["OPERATIONS"]["amount"] == 72_000_000
 
 
-# 9 (Important) '금액(VAT 포함)' 열을 공급가액으로 봄
-def test_vat_included_amount_column_is_divided(service):
-    d = service.ingest(doc_from_rows([["항목", "금액(VAT 포함)"], ["전력 사용료", 1100], ["회선료", 550], ["합계", 1650]]))
-    assert amount(d, ItemType.ELECTRICITY) == pytest.approx(1000 * 12)
-    assert d.reconciliation.matched is True and "GROSS_COLUMN" in {i.code for i in d.interpretations}
+# ---------------------------------------------------------------- Important 5: 시트 이름이 LLM에 가지 않음
+def test_sheet_names_are_not_sent_to_llm():
+    from app.mapping.fields_llm import map_fields_llm
+    d = doc_from_rows([["품목", "금액"], ["공급가액 합계", 1_009_000_000]], sheet="솔빛컴퓨팅 울산 SIM-261126-02")
+    sent = []
+
+    def complete(system, user, schema):
+        sent.append(user)
+        return '{"fields":[{"key":"acquisition","ref":"L1","col":1}]}'
+    out = map_fields_llm(d, d.rows, ["acquisition"], complete)
+    assert "솔빛" not in sent[0] and "울산" not in sent[0] and "SIM" not in sent[0]
+    assert out == [("acquisition", d.rows[1].ref, 1)]
 
 
-# 10 (Important) 비율로 찾은 합계 열이 실제로 바뀌지 않음
-def test_ratio_found_gross_column_moves_amounts(service):
-    d = service.ingest(doc_from_rows([["전력 사용료", 100, 110], ["회선료", 200, 220], ["운영관리비", 300, 330],
-                                      ["상면 사용료", 400, 440]]))
-    assert amount(d, ItemType.ELECTRICITY) == 100 * 12
+# ---------------------------------------------------------------- Important 6: 재시작 뒤에도 부서 문서 값 유지
+def test_sheet_survives_lost_memory(Agent, tmp_path, dept_docs):
+    agent, s = start_many(Agent, tmp_path, list(dept_docs.values()))
+    s = past_analyze(agent, s)
+    agent._hits.clear()  # 프로세스 재시작으로 메모리 값이 사라진 상황
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={}))
+    assert s.sheet.cells["operations"].value == 72_000_000
+    assert {i.item_type: i for i in s.final_items}[ItemType.OPERATIONS].amount == 72_000_000
+
+
+# ---------------------------------------------------------------- Important 7: 두 번째 청구서의 문제도 보인다
+def test_second_bill_issues_are_shown(Agent, tmp_path, doc):
+    from app.parsing import extract
+    from tests.conftest import ROOT
+    p = next((ROOT / "samples").glob("bill_e*"))  # 총액 불일치 청구서
+    agent, s = start_many(Agent, tmp_path, [doc("a"), extract(p.name, p.read_bytes())])
+    warns = [e.message for e in s.events if e.kind == "warn"]
+    assert any(w.startswith("bill_e") and "총액" in w for w in warns)
+    assert any(n.startswith("bill_e") for n in s.sheet.notices)

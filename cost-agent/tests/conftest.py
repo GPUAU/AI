@@ -68,3 +68,45 @@ def detailed_doc(detailed):
 @pytest.fixture(scope="session")
 def samples_all() -> list[ExtractedDocument]:
     return [extract(p.name, p.read_bytes()) for p in sorted((ROOT / "samples").iterdir())]
+
+
+# ---------------------------------------------------------------- PDF 샘플 (상세 샘플을 PDF로)
+_pspec = importlib.util.spec_from_file_location("make_pdf_samples", ROOT / "scripts" / "make_pdf_samples.py")
+make_pdf_samples = importlib.util.module_from_spec(_pspec)
+_pspec.loader.exec_module(make_pdf_samples)
+
+
+@pytest.fixture(scope="session")
+def pdf_samples(detailed, tmp_path_factory) -> dict[str, dict[str, Path]]:
+    d = tmp_path_factory.mktemp("pdf")
+    out = {}
+    for name, (xlsx, _) in detailed.items():
+        text, scan = d / f"{xlsx.stem}.pdf", d / f"{xlsx.stem}.scan.pdf"
+        make_pdf_samples.to_pdf(xlsx, text)
+        make_pdf_samples.to_scanned(text, scan)
+        out[name] = {"text": text, "scan": scan}
+    return out
+
+
+@pytest.fixture(scope="session")
+def mixed_pdf(pdf_samples, tmp_path_factory) -> Path:
+    r2 = pdf_samples["bill_r2_multisheet_thousand_krw.xlsx"]
+    out = tmp_path_factory.mktemp("mixed") / "mixed.pdf"
+    make_pdf_samples.to_mixed(r2["text"], r2["scan"], out)
+    return out
+
+
+# ---------------------------------------------------------------- 부서별 목데이터 (팀 제안 8종)
+DEPTS = ROOT / "samples-depts"
+
+
+@pytest.fixture(scope="session")
+def dept_docs() -> dict[str, ExtractedDocument]:
+    """'01'~'08' → 추출된 문서."""
+    return {p.name[:2]: extract(p.name, p.read_bytes()) for p in sorted(DEPTS.glob("*.pdf"))}
+
+
+@pytest.fixture(scope="session")
+def dept_key() -> dict:
+    import json
+    return json.loads((DEPTS / "answer_key.json").read_text(encoding="utf-8"))

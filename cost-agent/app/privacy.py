@@ -17,10 +17,25 @@ NUMBER_CELL = "#NUM"
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _URL = re.compile(r"https?://\S+|www\.\S+", re.I)
 _DIGITS = re.compile(r"[0-9][0-9,.\-/:]*")
+# 견적·영수증 번호 (SIM-261126-02, SIM-OPS-1026)
+_DOC_NO = re.compile(r"\b[A-Z]{2,}(?:-[A-Z]{2,})*-\d{4,}(?:-\d+)*\b")
+# 회사명: '…컴퓨팅', '(주)…'/'…(주)', '(가상 업체)'·'(가상)' 앞 단어, '… Inc./Ltd./LLC'
+_COMPANY = [
+    re.compile(r"[가-힣A-Za-z]+컴퓨팅"),
+    re.compile(r"\(주\)\s*[가-힣A-Za-z]+|[가-힣A-Za-z]+\s*\(주\)"),
+    re.compile(r"[가-힣A-Za-z]+(?=\s*\(가상(?:\s*업체)?\))"),
+    re.compile(r"(?:[A-Z][\w&-]*\s+){0,3}[A-Z][\w&-]*\s*(?:Inc\.|Ltd\.|LLC|Co\.)"),
+]
 
 
 def sensitive_terms() -> list[str]:
     raw = os.getenv("SENSITIVE_TERMS", "")
+    return sorted({t.strip() for t in raw.split(",") if t.strip()}, key=len, reverse=True)
+
+
+def site_names() -> list[str]:
+    """사업장명 (설정 SITE_NAMES, 기본 '울산'). LLM에 보낼 때 '[사업장]'으로 가린다."""
+    raw = os.getenv("SITE_NAMES", "울산")
     return sorted({t.strip() for t in raw.split(",") if t.strip()}, key=len, reverse=True)
 
 
@@ -29,6 +44,11 @@ def mask_text(text: str, terms: list[str] | None = None) -> str:
         return text
     t = _EMAIL.sub("[이메일]", text)
     t = _URL.sub("[URL]", t)
+    t = _DOC_NO.sub("[번호]", t)
+    for rx in _COMPANY:
+        t = rx.sub("[회사]", t)
+    for site in site_names():
+        t = t.replace(site, "[사업장]")
     for term in terms if terms is not None else sensitive_terms():
         t = re.sub(re.escape(term), "[가림]", t, flags=re.I)
     return _DIGITS.sub("#", t)

@@ -34,7 +34,8 @@ def _norm(s: str) -> str:
 
 def find(draft, sheet: str, label: str):
     want = _norm(label)
-    same_sheet = [l for l in draft.lines if l.ref.split("!")[0] == sheet]
+    # PDF에는 엑셀 시트 이름이 없으므로 항목명으로만 찾는다
+    same_sheet = [l for l in draft.lines if sheet is None or l.ref.split("!")[0] == sheet]
     for l in same_sheet:  # 같은 이름이 먼저 (머리글 '공급가액 부가세 합계'가 '합계' 줄을 가로채지 않게)
         if _norm(l.label) == want:
             return l
@@ -44,17 +45,18 @@ def find(draft, sheet: str, label: str):
     return None
 
 
-def score(path: Path, key: dict, service: BillService, off_all: bool = False) -> dict:
+def score(path: Path, key: dict, service: BillService, off_all: bool = False, ocr=None) -> dict:
     """청구서 한 장을 읽고 정답표와 비교한다. off_all=True면 에이전트의 청구서 해석을 모두 해제한 결과를 잰다."""
     name = path.name
-    draft = service.ingest(extract(name, path.read_bytes()))
+    is_pdf = path.suffix.lower() == ".pdf"
+    draft = service.ingest(extract(name, path.read_bytes(), ocr=ocr))
     interps = getattr(draft, "interpretations", [])
     if off_all and interps:
         draft = service.set_interpretations(draft.id, {i.code for i in interps})
     ok = wrong = 0
     errors = []
     for k in key["lines"]:
-        got = find(draft, k["sheet"], k["label"])
+        got = find(draft, None if is_pdf else k["sheet"], k["label"])
         exp = (k["role"], k["item_type"]) if k["role"] == "COST" else (k["role"], None)
         act = (got.role.value, got.item_type.value if got and got.item_type and got.role.value == "COST" else None) if got else ("없음", None)
         # 합계·소계·세금 줄은 역할만 본다

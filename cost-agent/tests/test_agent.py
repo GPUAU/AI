@@ -87,8 +87,8 @@ def test_full_flow_with_questions_market_loop_and_report(Agent, tmp_path, doc):
     s = agent.start(doc("c"), Goal(model_id="29", gpu_count=32))
 
     # 1) 분석 끝 → 2) 운영비 누락 질문
-    assert s.step == Step.MISSING and s.question.title.startswith("'운영·유지보수'")
-    assert [o.value for o in s.question.options] == ["amount", "included", "exclude"]
+    assert s.step == Step.MISSING and s.question.title == "청구서에 없는 큰 비용이 1개 있어요"
+    assert "choice:운영·유지보수" in {f.name for f in s.question.fields}
     with pytest.raises(AgentError):
         agent.answer(s.id, Answer(question_id=s.question.id, choice="amount", values={"amount": "abc"}))
     assert s.question is not None                        # 잘못된 입력이면 같은 질문 유지
@@ -114,6 +114,8 @@ def test_full_flow_with_questions_market_loop_and_report(Agent, tmp_path, doc):
     # 6) 기간별 가격 → 7) 근거서
     assert s.step == Step.TERMS
     s = agent.answer(s.id, Answer(question_id=s.question.id, values={"discount_3": 10, "discount_5": 20}))
+    assert s.step == Step.REVIEW and s.question.step == Step.REVIEW        # 8) 승인 검토 카드
+    s = agent.answer(s.id, suggested(s.question))
     assert s.step == Step.DONE and s.report_ready
     assert [round(t.price, 2) for t in s.terms] == [3.6, 3.2]
     assert all(b.status != Status.PENDING for b in s.board)
@@ -123,7 +125,8 @@ def test_full_flow_with_questions_market_loop_and_report(Agent, tmp_path, doc):
 
     from app.agent.report import build_report
     wb = load_workbook(io.BytesIO(build_report(s)))
-    assert wb.sheetnames == ["요약", "원가 항목", "가정값", "청구서 해석", "시장 비교", "진행 기록"]
+    assert wb.sheetnames == ["승인 요약", "원가 구성", "민감도", "검토 결과", "요약", "원가 항목", "가정값", "청구서 해석",
+                             "시장 비교", "진행 기록"]
 
 
 def test_remap_loop_fixes_total_with_feedback(Agent, tmp_path, doc):
@@ -175,6 +178,9 @@ def test_agent_api(tmp_path, samples):
     s = c.post(f"/v1/agent/sessions/{s['id']}/answer", json={"question_id": s["question"]["id"], "values": assumptions(gpu_count=8)}).json()
     assert s["step"] == "TERMS"                           # 시장 범위 안 → 질문 없이 통과
     s = c.post(f"/v1/agent/sessions/{s['id']}/answer", json={"question_id": s["question"]["id"], "values": {}}).json()
+    assert s["step"] == "REVIEW"                          # 승인 검토 카드: 사유를 적고 진행
+    reasons = {f["name"]: "확인" for f in s["question"]["fields"] if f["name"].startswith("reason:")}
+    s = c.post(f"/v1/agent/sessions/{s['id']}/answer", json={"question_id": s["question"]["id"], "values": reasons}).json()
     assert s["step"] == "DONE"
     r = c.get(f"/v1/agent/sessions/{s['id']}/report.xlsx")
     assert r.status_code == 200 and r.content[:2] == b"PK"
@@ -269,14 +275,21 @@ def board(s, step):
 
 
 def suggested(q):
-    """제안대로 답한다 (선택지가 있으면 첫 번째, 입력칸은 제안값)."""
+    """제안대로 답한다 (선택지가 있으면 첫 번째, 입력칸은 제안값, 승인 검토는 사유를 적고 진행)."""
+    if q.step == Step.REVIEW:
+        return Answer(question_id=q.id, values={f.name: "테스트 진행" for f in q.fields if f.name.startswith("reason:")})
     if q.step == Step.ASSUMPTIONS:
         return Answer(question_id=q.id, values=assumptions(gpu_count=256))
     if q.step == Step.ANALYZE and q.options and q.options[0].value.startswith("currency"):
         return Answer(question_id=q.id, choice="currency:KRW")
-    if q.step == Step.MISSING:
-        return Answer(question_id=q.id, choice="included",
-                      values={"parent": next((f.value for f in q.fields if f.name == "parent"), None) or "RACK_FACILITY"})
+    if q.step == Step.MISSING:  # FE가 보내는 묶음 카드 형식: 그룹마다 '다른 요금에 포함'
+        vals = {}
+        for f in q.fields:
+            if f.name.startswith("choice:"):
+                g = f.name.split(":", 1)[1]
+                parent = next((x.value for x in q.fields if x.name == f"parent:{g}"), None) or "RACK_FACILITY"
+                vals.update({f.name: "included", f"parent:{g}": parent})
+        return Answer(question_id=q.id, values=vals)
     return Answer(question_id=q.id, choice=q.options[0].value if q.options else None, values={})
 
 
@@ -408,3 +421,144 @@ def test_report_without_interpretations_says_so(Agent, tmp_path, doc):
         s = agent.answer(s.id, suggested(s.question))
     ws = load_workbook(io.BytesIO(build_report(s)))["청구서 해석"]
     assert ws.cell(2, 1).value == "해석 변경 없음"
+
+
+# ---------------------------------------------------------------- 2순위: 누락 확인 카드 한 장 (설계 §4B-1)
+def test_missing_groups_in_one_card(Agent, tmp_path, detailed_doc):  # r4: 네트워크만 빠짐 + 비고 '직접 계약'
+    agent, s = start(Agent, tmp_path, detailed_doc("bill_r4_prorated_first_month_krw.xlsx"))
+    s = run_to(agent, s, Step.MISSING)
+    f = {x.name: x for x in s.question.fields}
+    assert s.question.title == "청구서에 없는 큰 비용이 1개 있어요"
+    assert f["choice:네트워크"].value == "amount" and "직접 계약" in f["choice:네트워크"].hint
+    assert [o.value for o in f["choice:네트워크"].options] == ["amount", "included", "exclude"]
+    assert f["amount:네트워크"].value == 12_000_000  # 18억/4/12 × 0.32MW, 만원 반올림
+    assert f["amount:네트워크"].show_for == ["amount"] and f["parent:네트워크"].show_for == ["included"]
+
+
+def test_missing_card_answers_all_groups(Agent, tmp_path, doc):
+    backend, seen = fake_backend()
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    s = agent.start(doc("c"), Goal(model_id="29", gpu_count=32))
+    assert s.step == Step.MISSING and "choice:운영·유지보수" in {f.name for f in s.question.fields}
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={
+        "choice:운영·유지보수": "amount", "amount:운영·유지보수": 1_000_000, "currency:운영·유지보수": "KRW",
+        "period:운영·유지보수": "MONTH"}))
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions()))
+    ops = next(i for i in seen[0]["items"] if i["itemType"] == "OPERATIONS")
+    assert ops["amount"] == 12_000_000.0
+
+
+def test_missing_card_rejects_bad_amount(Agent, tmp_path, doc):
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend()[0])
+    s = agent.start(doc("c"), Goal(model_id="29", gpu_count=32))
+    with pytest.raises(AgentError):
+        agent.answer(s.id, Answer(question_id=s.question.id, values={"choice:운영·유지보수": "amount",
+                                                                    "amount:운영·유지보수": "abc"}))
+    assert s.question is not None and s.missing_answers == {}
+
+
+# ---------------------------------------------------------------- 2순위: 가정값 (설계 §4B-2)
+def test_acquisition_example_and_grades(Agent, tmp_path, detailed_doc):
+    agent, s, seen = r1_with_backend(Agent, tmp_path, detailed_doc)
+    s = run_to(agent, s, Step.ASSUMPTIONS)
+    f = {x.name: x for x in s.question.fields}
+    assert f["acquisition_amount"].value == 504 * 38_000 and "예시값" in f["acquisition_amount"].hint
+    assert [o.value for o in f["interest_rate_type"].options] == ["NOT_APPLIED", "ASSUMED", "ACTUAL_LOAN"]
+    assert f["annual_interest_rate"].show_for == ["ASSUMED", "ACTUAL_LOAN"]
+    vals = {k: v for k, v in assumptions(gpu_count=504).items() if k != "acquisition_amount"}
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=vals))
+    assert s.assumptions["grades"]["acquisition_amount"] == "예시값"
+    assert s.assumptions["grades"]["fx_krw_per_usd"] == "공개자료"  # 1400 == 제안값 1400.0 (숫자로 비교)
+
+
+def test_interest_requires_rate(Agent, tmp_path, doc):
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend()[0])
+    s = agent.start(doc("a"), Goal(model_id="29", gpu_count=32))
+    with pytest.raises(AgentError):
+        agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(interest_rate_type="ASSUMED")))
+
+
+def test_interest_sent_to_backend(Agent, tmp_path, doc):
+    backend, seen = fake_backend()
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    s = agent.start(doc("a"), Goal(model_id="29", gpu_count=32))
+    agent.answer(s.id, Answer(question_id=s.question.id,
+                              values=assumptions(interest_rate_type="ASSUMED", annual_interest_rate=5)))
+    assert seen[0]["assumptions"]["annualInterestRate"] == 0.05
+
+
+# ---------------------------------------------------------------- 2순위: 승인 검토 단계 (설계 §4 ⑦)
+def real_backend(seen=None, interest_supported=True):
+    """요청으로 원가를 실제로 계산하는 가짜 BE (명세의 공식: 연간 총원가 ÷ (8760 × 가동률 × GPU 수))."""
+    seen = seen if seen is not None else []
+
+    def handler(req: httpx.Request):
+        p = req.url.path
+        ok = lambda r: httpx.Response(200, json={"isSuccess": True, "result": r})
+        if p != "/api/v1/cost-simulations":
+            return fake_backend()[0]._client._transport.handle_request(req)
+        b = json.loads(req.content)
+        seen.append(b)
+        fx = b.get("inputFxKrwPerUsd") or 1400
+        a = b["assumptions"]
+        usd = lambda i: (i.get("amount") or 0) / (fx if i.get("currency") == "KRW" else 1)
+        ops = sum(usd(i) for i in b["items"] if i.get("period") == "YEAR" and i["status"] == "USER_INPUT")
+        acq = sum(usd(i) for i in b["items"] if i["itemType"] == "ACQUISITION" and i["status"] == "USER_INPUT")
+        rate = a.get("annualInterestRate") or 0
+        applied = interest_supported and any(i["itemType"] == "FINANCING" for i in b["items"]) and rate > 0
+        annual = ops + acq / a["depreciationYears"] + (acq * rate if applied else 0)
+        hours = 8760 * a["utilization"] * a["gpuCount"]
+        cost = annual / hours
+        t = b["pricing"]["targetRate"]
+        cand = cost / (1 - t) if b["pricing"]["method"] == "REVENUE_MARGIN" else cost * (1 + t)
+        return ok({"hourlyCost": str(cost), "candidatePrice": str(cand), "annualCost": str(annual),
+                   "billableGpuHoursPerYear": str(hours), "missingItems": [] if applied else ["FINANCING"],
+                   "appliedAssumptions": {"interestWasProvided": applied}, "costCompleteness": "COMPLETE", "warnings": []})
+    return BackendClient("http://be", transport=httpx.MockTransport(handler)), seen
+
+
+def to_review(Agent, tmp_path, d, **assume):
+    backend, seen = real_backend()
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), backend)
+    s = agent.start(d, Goal(model_id="29", gpu_count=504))
+    for _ in range(12):
+        if s.question is None or s.question.step == Step.REVIEW:
+            break
+        q = s.question
+        ans = (Answer(question_id=q.id, values=assumptions(gpu_count=504, **assume)) if q.step == Step.ASSUMPTIONS
+               else suggested(q))
+        s = agent.answer(s.id, ans)
+    return agent, s, seen
+
+
+def test_review_card_after_terms(Agent, tmp_path, detailed_doc):
+    agent, s, _ = to_review(Agent, tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
+    assert s.question.step == Step.REVIEW and s.question.title.startswith("승인 전에 확인할 점이")
+    names = {f.name for f in s.question.fields}
+    assert "finding:NO_FINANCING" in names and "reason:NO_FINANCING" in names
+    assert s.approval.breakdown_ok and s.approval.verdict in ("조건부", "재검토")
+    assert {r.group for r in s.approval.breakdown} >= {"공간", "전력", "운영", "감가상각"}
+
+
+def test_proceed_needs_reason(Agent, tmp_path, detailed_doc):
+    agent, s, _ = to_review(Agent, tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
+    with pytest.raises(AgentError):
+        agent.answer(s.id, Answer(question_id=s.question.id, values={}))
+    vals = {f.name: "보고서에 명시" for f in s.question.fields if f.name.startswith("reason:")}
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=vals))
+    assert s.step == Step.DONE and all(f.reason for f in s.approval.findings)
+
+
+def test_fix_reruns_review(Agent, tmp_path, detailed_doc):  # Review Focus 4
+    agent, s, _ = to_review(Agent, tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
+    vals = {f.name: "확인" for f in s.question.fields if f.name.startswith("reason:")}
+    vals["finding:NO_FINANCING"] = "fix"
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=vals))
+    assert s.question.step == Step.ASSUMPTIONS
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values=assumptions(
+        gpu_count=504, interest_rate_type="ASSUMED", annual_interest_rate=5)))
+    for _ in range(6):
+        if s.question is None or s.question.step == Step.REVIEW:
+            break
+        s = agent.answer(s.id, suggested(s.question))
+    assert s.approval.interest_applied and "NO_FINANCING" not in {f.code for f in s.approval.findings}

@@ -33,13 +33,13 @@ MAX_FAILS = 2  # 연속으로 '실행 불가'가 나오면 기본 순서로 넘�
 FINAL = (Status.DONE, Status.WARNING, Status.ERROR)
 
 TOOL_STEP = {"analyze_bill": Step.ANALYZE, "remap_bill": Step.ANALYZE, "simulate_cost": Step.SIMULATE,
-             "compare_market": Step.MARKET, "finish": Step.REPORT}
+             "compare_market": Step.MARKET, "review_price": Step.REVIEW, "finish": Step.REPORT}
 ASK_STEP = {"currency": Step.ANALYZE, "interpret": Step.ANALYZE, "mismatch": Step.ANALYZE, "missing": Step.MISSING,
-            "assumptions": Step.ASSUMPTIONS, "market": Step.MARKET, "terms": Step.TERMS}
+            "assumptions": Step.ASSUMPTIONS, "market": Step.MARKET, "terms": Step.TERMS, "review": Step.REVIEW}
 TOOL_KO = {"analyze_bill": "청구서 분석", "remap_bill": "재분류", "simulate_cost": "원가 계산",
-           "compare_market": "시장 비교", "finish": "마무리", "ask_user": "담당자 확인"}
+           "compare_market": "시장 비교", "review_price": "승인 검토", "finish": "마무리", "ask_user": "담당자 확인"}
 ASK_KO = {"currency": "통화", "interpret": "청구서 해석", "mismatch": "총액 불일치", "missing": "누락 비용", "assumptions": "가정값",
-          "market": "시장 이탈", "terms": "할인율"}
+          "market": "시장 이탈", "terms": "할인율", "review": "승인 검토"}
 
 SYSTEM_PROMPT = """너는 GPU 클라우드 사업자의 원가 분석 에이전트다.
 목표: IDC 청구서 한 장으로 GPU·시간당 원가와 제안가를 계산하고, 시장 공개가격과 비교하고, 장기계약 가격과 견적 근거서를 만든다.
@@ -70,9 +70,10 @@ TOOLS = [
     _fn("ask_user", "담당자에게 질문 카드를 띄우고 답을 기다린다. 입력칸과 선택지는 시스템이 만든다.",
         {"kind": {"type": "string", "enum": list(ASK_STEP),
                   "description": "currency=통화, interpret=청구서 해석(단위·금액 열·청구 기간) 확인, mismatch=총액 불일치 진행 여부, missing=빠진 큰 비용, assumptions=청구서 밖 가정값, "
-                                 "market=시장 범위 이탈 대응, terms=장기계약 할인율"}}),
+                                 "market=시장 범위 이탈 대응, terms=장기계약 할인율, review=승인 검토 발견 사항 처리"}}),
     _fn("simulate_cost", "확정된 원가 항목과 가정값으로 원가 서버에서 GPU·시간당 원가와 제안가를 계산한다."),
     _fn("compare_market", "같은 GPU의 시장 공개가격(사업자별 대표값)과 제안가를 비교한다."),
+    _fn("review_price", "원가 분해·손익분기·민감도·업계 구성비로 승인 검토를 하고 발견 사항과 판정(승인 권고/조건부/재검토)을 낸다."),
     _fn("finish", "모든 조건이 끝났을 때 견적 근거서를 만들고 마친다. 조건이 모자라면 이유를 돌려준다."),
 ]
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
@@ -95,7 +96,8 @@ def openai_controller(api_key: str, model: str, timeout: float = 30.0, base_url:
     """OpenAI(또는 호환 sLLM) tool calling 판단자. 실패하면 None을 돌려 기본 순서로 넘어간다."""
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key or "not-needed", timeout=timeout, base_url=base_url or None)
+    from .. import tracing
+    client = tracing.wrap_openai(OpenAI(api_key=api_key or "not-needed", timeout=timeout, base_url=base_url or None))
 
     def decide(messages: list[dict], tools: list[dict]) -> dict | None:
         try:
@@ -125,11 +127,13 @@ class GraphCostAgent(CostAgent):
         self.graph = self._build(checkpointer or MemorySaver())
 
     # ------------------------------------------------------------------ 진입점
-    def start(self, doc: ExtractedDocument, goal: Goal) -> AgentSession:
+    def start_many(self, docs: list[ExtractedDocument], goal: Goal) -> AgentSession:
+        if not docs:
+            raise AgentError("문서를 하나 이상 올려 주세요.")
         s = AgentSession(id=uuid.uuid4().hex[:12], goal=goal, engine="graph",
                          board=[BoardStep(key=k, title=t) for k, t in STEP_TITLES.items()])
-        self._docs[s.id] = doc
         self._log(s, Step.ANALYZE, "think", f"목표: 청구서로 원가·제안가·{'/'.join(map(str, goal.terms_years))}년 가격과 근거서를 만든다.")
+        self._prepare_docs(s, docs)
         goal_text = (f"목표 GPU 모델 {'지정됨' if goal.model_id else '미정'}, GPU 수 {'지정됨' if goal.gpu_count else '미정'}, "
                      f"장기계약 {'/'.join(map(str, goal.terms_years)) or '없음'}년 가격 필요.")
         state: GState = {"session": s.model_dump(mode="json"), "fails": 0, "action": None,
@@ -172,7 +176,13 @@ class GraphCostAgent(CostAgent):
 
     @staticmethod
     def _cfg(session_id: str) -> dict:
-        return {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
+        from .. import tracing
+        cfg = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
+        if (t := tracing.current()) is not None:  # LangSmith: 가린 추적기만 붙인다 (tracing.py)
+            cfg["callbacks"] = t.callbacks()
+            cfg["run_name"] = "cost-agent"
+            cfg["metadata"] = {"engine": "graph"}
+        return cfg
 
     def _invoke(self, session_id: str, payload) -> AgentSession:
         out = self.graph.invoke(payload, self._cfg(session_id))
@@ -264,6 +274,10 @@ class GraphCostAgent(CostAgent):
             return "ask_user", {"kind": "market"}
         if s.goal.terms_years and not s.terms:
             return "ask_user", {"kind": "terms"}
+        if not self._review_current(s):
+            return "review_price", {}
+        if self._pending_findings(s):
+            return "ask_user", {"kind": "review"}
         return "finish", {}
 
     def _unmet(self, s: AgentSession) -> list[str]:
@@ -289,6 +303,10 @@ class GraphCostAgent(CostAgent):
             out.append("제안가가 시장 범위 밖인데 담당자 결정 없음 → ask_user(market)")
         if s.goal.terms_years and not s.terms:
             out.append("장기계약 할인율 미정 → ask_user(terms)")
+        elif s.simulation is not None and not self._review_current(s):
+            out.append("승인 검토가 최신 입력을 반영하지 않음 → review_price")
+        elif self._pending_findings(s):
+            out.append(f"발견 사항 미처리 {len(self._pending_findings(s))}개 → ask_user(review)")
         return out
 
     # ------------------------------------------------------------------ 도구
@@ -334,7 +352,7 @@ class GraphCostAgent(CostAgent):
             groups = self._missing_groups(s)
             if not groups:
                 raise _Refused("처리할 누락 비용이 없다")
-            q = self._q_missing(s, groups[0][0])
+            q = self._q_missing(s, [name for name, _ in groups])
         elif kind == "assumptions":
             if d.currency is None or self._needs_interpret(s) or self._missing_groups(s):
                 raise _Refused("통화·청구서 해석 확인과 누락 비용 처리를 먼저 끝낸다")
@@ -343,6 +361,10 @@ class GraphCostAgent(CostAgent):
             if not self._market_current(s) or not self._market_out(s):
                 raise _Refused("최신 시장 비교에서 제안가가 범위를 벗어났을 때만 묻는다")
             q = self._q_market(s)
+        elif kind == "review":
+            if not self._sim_current(s) or not self._review_current(s) or not self._pending_findings(s):
+                raise _Refused("최신 승인 검토에 처리할 발견 사항이 있을 때만 묻는다 → review_price")
+            q = self._q_review(s)
         elif kind == "terms":
             if not s.goal.terms_years or s.simulation is None:
                 raise _Refused("원가 계산을 먼저 끝낸다 (장기계약 요청이 없으면 묻지 않는다)")
@@ -386,6 +408,16 @@ class GraphCostAgent(CostAgent):
                 + ("마진 조정으로 시장 중앙값에 맞출 수 있다." if need_ok else "원가가 시장 중앙값보다 높아 마진 조정만으로는 맞출 수 없다.")
                 + (" 담당자가 이미 대응을 정했다." if s.margin_adjusted else " 담당자 결정이 필요하다."))
 
+    def _tool_review_price(self, s: AgentSession) -> str:
+        if not self._sim_current(s) or not self._market_current(s):
+            raise _Refused("최신 원가 계산과 시장 비교를 먼저 끝낸다")
+        if s.goal.terms_years and not s.terms:
+            raise _Refused("장기계약 할인율을 먼저 정한다 → ask_user(terms)")
+        self._do_review(s)
+        ap = s.approval
+        return (f"판정 {ap.verdict} · 발견 사항 {', '.join(f.code for f in ap.findings) or '없음'} "
+                f"({len(ap.findings)}개, 미처리 {len(self._pending_findings(s))}개)")
+
     def _tool_finish(self, s: AgentSession) -> str:
         unmet = self._unmet(s)
         if unmet:
@@ -395,6 +427,10 @@ class GraphCostAgent(CostAgent):
         if not any(b.key == Step.MARKET and b.status in FINAL for b in s.board):
             self._finish_market(s)
         self._do_report(s)
+        if s.checks_failed:
+            s.question = self._q_verify(s)
+            s.step = Step.REPORT
+            return f"보고서 자동 검증 실패 ({len(s.checks_failed)}개) — 담당자에게 다시 계산을 묻는다"
         s.step = Step.DONE
         return "견적 근거서를 만들고 마쳤다."
 
@@ -458,7 +494,9 @@ class GraphCostAgent(CostAgent):
                 f"통화: {d.currency.value if d.currency else '미확인'}. 청구 기간: {d.period.value if d.period else '미확인'}. "
                 f"총액 대조: {total}.{tries} 빠진 큰 비용: {', '.join(missing) or '없음'}. "
                 f"해석 제안: {', '.join(i.code for i in d.interpretations) or '없음'} ({len(d.interpretations)}개, "
-                f"{'담당자 확인됨' if s.interpret_ok else '미확인'}). 기준선 경고 {len(d.bench)}개.")
+                f"{'담당자 확인됨' if s.interpret_ok else '미확인'}). 기준선 경고 {len(d.bench)}개."
+                + (f" 승인 검토: 판정 {s.approval.verdict} · 발견 {', '.join(f.code for f in s.approval.findings) or '없음'} "
+                   f"(미처리 {len(self._pending_findings(s))}개)." if s.approval else ""))
 
     def _status(self, s: AgentSession) -> str:
         unmet = self._unmet(s)
@@ -477,9 +515,19 @@ class GraphCostAgent(CostAgent):
                         + (" · 담당자가 청구서 다시 보기를 골라 중단" if stop else ""))
             return "총액 차이를 알고 그대로 진행" if ans.choice == "proceed" else "중단 (분류표 수정)"
         if q.step == Step.MISSING:
-            name = q.title.split("'")[1]
-            return {"amount": f"'{name}'는 별도 계약 금액을 입력함 (금액 기록됨)",
-                    "included": f"'{name}'는 다른 요금에 포함됨", "exclude": f"'{name}'는 이번엔 제외 (불완전 원가)"}.get(ans.choice, "")
+            ko = {"amount": "별도 계약 금액 입력 (금액 기록됨)", "included": "다른 요금에 포함됨", "exclude": "이번엔 제외 (불완전 원가)",
+                  "excluded": "이번엔 제외 (불완전 원가)"}
+            parts = []
+            for f in q.fields:
+                if f.name.startswith("choice:"):
+                    g = f.name.split(":", 1)[1]
+                    c = ans.choice if ans.choice and not any(k.startswith("choice:") for k in ans.values) \
+                        else ans.values.get(f.name, f.value)
+                    parts.append(f"'{g}' {ko.get(c, c)}")
+                elif f.name.startswith("cell:") and f.type == "select":  # 기준표 충돌 칸
+                    c = ans.values.get(f.name, f.value)
+                    parts.append(f"'{f.name.split(':', 1)[1]}' {'담당자 직접 입력' if c == 'manual' else '문서 값 선택'}")
+            return " · ".join(parts)
         if q.step == Step.ASSUMPTIONS:
             return "가정값 확정 (GPU 모델·수, 취득비, 감가상각, 가동률, 마진 기록됨). 원가를 다시 계산해야 한다."
         if q.step == Step.MARKET:
@@ -488,6 +536,12 @@ class GraphCostAgent(CostAgent):
                     "keep": "제안가 유지 (시장 범위 밖으로 표시)"}.get(ans.choice or "keep", "제안가 유지")
         if q.step == Step.TERMS:
             return "장기계약 할인율 확정, 기간별 가격 계산됨"
+        if q.step == Step.REPORT:
+            return "자동 검증 실패 → 가정값부터 다시 계산하기로 함 → ask_user(assumptions)"
+        if q.step == Step.REVIEW:
+            fixes = [f.name.split(":", 1)[1] for f in q.fields
+                     if f.name.startswith("finding:") and ans.values.get(f.name, f.value) == "fix"]
+            return ("승인 검토: 고치기 " + ", ".join(fixes)) if fixes else "승인 검토: 모든 발견 사항에 사유를 적고 진행"
         return ""
 
     @staticmethod
