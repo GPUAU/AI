@@ -161,6 +161,7 @@ def findings(s, ap) -> list:
         add("PRICE_BELOW_COST", "재검토",
             f"{', '.join(below)}: 원가 ${cost:.2f}보다 낮아 가정 가동률 {util:.0%}에서는 손실이에요 (손익분기 가동률 {be:.0%})",
             "TERMS")
+        out[-1].suggestion = discount_suggestion(s.terms, cand, cost)
     pc = getattr(s, "plan_check", None)
     if pc and not pc.get("ok"):
         add("PLAN_MISMATCH", "조건부", pc["message"], "ASSUMPTIONS")
@@ -202,6 +203,20 @@ def findings(s, ap) -> list:
     if bench:
         add("BENCH_WARN", "조건부", f"업계 기준선과 크게 다른 값이 {len(bench)}개 있어요", "ANALYZE")
     return out
+
+
+def discount_suggestion(terms, cand: float, cost: float) -> dict | None:
+    """원가 아래인 기간별 가격마다, 원가 이상이 되는 가장 큰 할인율(1% 단위 내림)을 제안한다. 제안가 자체가 원가 아래면 없음."""
+    import math
+    if cand <= cost or cand <= 0:
+        return None
+    best = math.floor((1 - cost / cand) * 100 + 1e-9) / 100
+    fix = [t for t in terms if t.price < cost and t.discount_rate > best]
+    if not fix:
+        return None
+    label = " · ".join(f"{t.years}년 할인 {t.discount_rate:.0%} → {best:.0%}" for t in fix)
+    effect = " · ".join(f"{t.years}년가 ${cand * (1 - best):.2f}" for t in fix) + f" ≥ 원가 ${cost:.2f}"
+    return {"label": label, "effect": effect, "terms": {str(t.years): best for t in fix}}
 
 
 def verdict(fs: list) -> tuple[str, list[str]]:

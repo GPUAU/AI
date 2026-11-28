@@ -105,9 +105,12 @@ def build_report_html(s: AgentSession, verified: tuple[list[str], list[str]] | N
     rs = V.risks(s)
     parts.append("<h2>리스크</h2>" + ("<ul>" + "".join(f"<li>{e(x)}</li>" for x in rs) + "</ul>" if rs else "<p>남은 리스크 없음</p>"))
 
-    if ap and any(f.reason for f in ap.findings):
-        parts.append("<h2>담당자 사유</h2><ul>" + "".join(
-            f"<li>[{e(f.level)}] {e(f.message)} — {e(f.reason)}</li>" for f in ap.findings if f.reason) + "</ul>")
+    if ap and (ap.applied or any(f.reason for f in ap.findings)):
+        from .report import DECISION_KO
+        items = [f"<li>[제안대로 고침] {e(x['message'])} — {e(x['label'])} → {e(x['effect'])}</li>" for x in ap.applied]
+        items += [f"<li>[{e(DECISION_KO.get(f.decision, f.level))}] {e(f.message)} — {e(f.reason)}</li>"
+                  for f in ap.findings if f.reason]
+        parts.append("<h2>담당자 결정</h2><ul>" + "".join(items) + "</ul>")
 
     passed, failed = verified if verified is not None else V.verify(s)
     parts.append(f"<p class=\"foot\">자동 검증 {len(passed)}/{len(V.CHECKS)} 통과"

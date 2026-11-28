@@ -533,20 +533,19 @@ def to_review(Agent, tmp_path, d, **assume):
 
 def test_review_card_after_terms(Agent, tmp_path, detailed_doc):
     agent, s, _ = to_review(Agent, tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
-    assert s.question.step == Step.REVIEW and s.question.title.startswith("승인 전에 확인할 점이")
-    names = {f.name for f in s.question.fields}
-    assert "finding:NO_FINANCING" in names and "reason:NO_FINANCING" in names
+    assert s.question.step == Step.REVIEW and s.question.title.startswith("승인 전 확인 — 막는 것")
+    f = {x.name: x for x in s.question.fields}
+    assert f["finding:NO_FINANCING"].meta["kind"] == "note" and "reason:NO_FINANCING" not in f  # 참고는 확인만
+    assert {o.value for o in f["finding:NO_FINANCING"].options} == {"ack", "fix"}
     assert s.approval.breakdown_ok and s.approval.verdict in ("조건부", "재검토")
     assert {r.group for r in s.approval.breakdown} >= {"공간", "전력", "운영", "감가상각"}
 
 
-def test_proceed_needs_reason(Agent, tmp_path, detailed_doc):
+def test_reference_only_review_needs_no_typing(Agent, tmp_path, detailed_doc):
     agent, s, _ = to_review(Agent, tmp_path, detailed_doc("bill_r1_kr_metered_krw.xlsx"))
-    with pytest.raises(AgentError):
-        agent.answer(s.id, Answer(question_id=s.question.id, values={}))
-    vals = {f.name: "보고서에 명시" for f in s.question.fields if f.name.startswith("reason:")}
-    s = agent.answer(s.id, Answer(question_id=s.question.id, values=vals))
-    assert s.step == Step.DONE and all(f.reason for f in s.approval.findings)
+    assert all(f.kind == "note" for f in s.approval.findings)  # 이 샘플은 참고만 있다
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={}))  # 아무것도 적지 않고 진행
+    assert s.step == Step.DONE and all(f.reason == "참고 확인" and f.decision == "ack" for f in s.approval.findings)
 
 
 def test_fix_reruns_review(Agent, tmp_path, detailed_doc):  # Review Focus 4
