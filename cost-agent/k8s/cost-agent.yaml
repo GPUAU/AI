@@ -39,7 +39,7 @@ spec:
             - name: MAPPER
               value: auto
             - name: OPENAI_MODEL
-              value: gpt-4o-mini
+              value: gpt-6.2-sol
             - name: SPRING_URL
               value: http://backend.u1-3.svc.cluster.local
             - name: TEMPLATE_DIR
