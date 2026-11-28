@@ -61,6 +61,15 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
     def svc() -> BillService:
         return service
 
+    ocr_holder: dict = {}
+
+    def get_ocr():
+        """스캔 PDF용 로컬 OCR 엔진. 모델을 읽는 데 시간이 들어 처음 쓸 때 만든다."""
+        if "engine" not in ocr_holder:
+            from .ocr import engine_from_settings
+            ocr_holder["engine"] = engine_from_settings(settings.ocr_engine)
+        return ocr_holder["engine"]
+
     @app.get("/health")
     def health():
         return {"status": "ok", "mapper": service.mapper.name,
@@ -73,7 +82,7 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
         if len(data) > settings.max_upload_bytes:
             raise HTTPException(413, "파일이 너무 큽니다.")
         try:
-            doc = extract(file.filename or "upload.xlsx", data)
+            doc = extract(file.filename or "upload.xlsx", data, ocr=get_ocr() if (file.filename or "").lower().endswith(".pdf") else None, ocr_min_conf=settings.ocr_min_conf)
         except UnsupportedFile as exc:
             raise HTTPException(400, str(exc)) from exc
         return s.ingest(doc)
@@ -123,7 +132,7 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
         if len(data) > settings.max_upload_bytes:
             raise HTTPException(413, "파일이 너무 큽니다.")
         try:
-            doc = extract(file.filename or "upload.xlsx", data)
+            doc = extract(file.filename or "upload.xlsx", data, ocr=get_ocr() if (file.filename or "").lower().endswith(".pdf") else None, ocr_min_conf=settings.ocr_min_conf)
             years = [int(x) for x in terms.split(",") if x.strip()]
         except UnsupportedFile as exc:
             raise HTTPException(400, str(exc)) from exc

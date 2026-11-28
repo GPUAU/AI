@@ -12,10 +12,12 @@ dependencies = [
   "httpx>=0.27",
   "openai>=1.40",
   "langgraph>=1.2,<2",
+  "pdfplumber>=0.11",  # 텍스트가 있는 PDF 청구서 (MIT)
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "reportlab>=4"]  # reportlab: 샘플 PDF 생성
+ocr = ["rapidocr>=3", "onnxruntime>=1.18"]  # 스캔 PDF를 서버 안에서 읽는 OCR (Apache-2.0)
 sqlite = ["langgraph-checkpoint-sqlite>=3"]  # CHECKPOINT_DB로 세션을 SQLite에 저장할 때
 
 [tool.pytest.ini_options]

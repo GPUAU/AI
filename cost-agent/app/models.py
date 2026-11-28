@@ -75,6 +75,9 @@ class ExtractedDocument(BaseModel):
     rows: list[SheetRow]
     currency_hint: Currency | None = None
     truncated: bool = False
+    source_kind: str = "xlsx"  # xlsx | csv | pdf-text | pdf-ocr | pdf-mixed
+    ocr_low_confidence: list[str] = Field(default_factory=list)  # OCR 신뢰도가 낮은 글자·숫자가 있는 행 ref
+    page_of: dict[str, int] = Field(default_factory=dict)  # PDF 행 ref → 쪽 번호
 
 
 class ContractInfo(BaseModel):
