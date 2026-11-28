@@ -60,6 +60,41 @@ set -a; source .env; set +a   # .env 값을 환경 변수로 읽기
 
 uv 없이 할 때: `python3.12 -m venv .venv && source .venv/bin/activate && pip install -e '.[dev]'`
 
+## 미국 도매 전력가격 적재
+
+[EIA 도매 전력시장 자료](https://www.eia.gov/electricity/wholesale/index.php)에서 받은 ICE 연도별 Excel 파일을
+`public.us_wholesale_power_price`에 적재한다. 현재 연도 파일은 `ice_electric-YYYY.xlsx`,
+확정된 연도 파일은 `ice_electric-YYYYfinal.xlsx` 이름을 그대로 사용한다. 첫 실행에서 전력가격 테이블을 생성하므로
+기존 GPU 테이블에 대한 초기화 절차와 별도로 적용할 수 있다. 최초 실행은 대상 DB의 `public` 스키마에 테이블을
+만들 권한으로 실행한다. 원본 파일과 DB 접속 정보는 각 팀원 환경에서 관리한다.
+
+```bash
+cd collector
+uv pip install -e '.[power]'
+python -m gpu_collector.erd.power --check \
+  ~/Downloads/ice_electric-2024final.xlsx ~/Downloads/ice_electric-2025final.xlsx ~/Downloads/ice_electric-2026.xlsx
+# 적재할 PostgreSQL의 DATABASE_URL을 설정한 뒤 실행한다.
+python -m gpu_collector.erd.power \
+  ~/Downloads/ice_electric-2024final.xlsx ~/Downloads/ice_electric-2025final.xlsx ~/Downloads/ice_electric-2026.xlsx
+```
+
+고유 키는 허브·거래일·인도 시작일·인도 종료일이다. 처음 적재한 파일 이름·공식 URL·SHA-256·시트 행 번호를 보관한다.
+같은 값의 관측을 다시 적재하면 기존 행과 출처를 유지한다. 값이 수정된 관측은 입력 파일의 값과 출처로 갱신하므로
+정정본을 적용할 때는 최신 공식 파일을 사용한다. 한 번의 실행에 서로 다른 값의 같은 키가 들어오면 파일 검증에서 중단한다.
+날짜는 `DATE`, 단가는 반올림 없이 `USD/MWh`로 저장한다. 누락된 최고가는 `NULL`로 남긴다.
+
+다음 SQL로 허브별 관측 수와 거래일 범위를 확인할 수 있다.
+
+```sql
+SELECT hub, count(*) AS rows, min(trade_date) AS first_trade, max(trade_date) AS last_trade
+FROM public.us_wholesale_power_price
+GROUP BY hub
+ORDER BY hub;
+```
+
+후속 임대료 분석에서는 허브 하나와 거래일 기준을 정한 뒤 주별 단가를 계산한다. 허브별 원천 관측일 수를 함께 사용하고,
+거래가 없는 날은 결측으로 둔다. 수치는 해당 허브의 도매 전력 지표이며 데이터센터 전기 계약 단가를 반영하지 않는다.
+
 ## 명령
 
 ```bash
