@@ -540,9 +540,12 @@ class GraphCostAgent(CostAgent):
         if q.step == Step.REPORT:
             return "자동 검증 실패 → 가정값부터 다시 계산하기로 함 → ask_user(assumptions)"
         if q.step == Step.REVIEW:
-            fixes = [f.name.split(":", 1)[1] for f in q.fields
-                     if f.name.startswith("finding:") and ans.values.get(f.name, f.value) == "fix"]
-            return ("승인 검토: 고치기 " + ", ".join(fixes)) if fixes else "승인 검토: 모든 발견 사항에 사유를 적고 진행"
+            pick = {f.name.split(":", 1)[1]: ans.values.get(f.name, f.value) for f in q.fields if f.name.startswith("finding:")}
+            applied = [c for c, v in pick.items() if v == "apply"]
+            fixes = [c for c, v in pick.items() if v == "fix"]
+            parts = ([f"제안대로 고침 {', '.join(applied)} (기간별 가격이 바뀜 → review_price로 다시 검토)"] if applied else []) + \
+                    ([f"돌아가서 고치기 {', '.join(fixes)}"] if fixes else [])
+            return "승인 검토: " + (" · ".join(parts) if parts else "막는 것은 사유를 골라 진행, 참고는 확인")
         return ""
 
     @staticmethod
