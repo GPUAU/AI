@@ -11,6 +11,17 @@ from typing import Protocol
 from .pdfread import Word
 
 RENDER_DPI = 200
+DARK_MEAN = 0.45  # 회색조 평균 밝기(0~1)가 이보다 낮으면 짙은 배경으로 보고 반전
+
+
+def preprocess(image):
+    """짙은 배경(흰 글자) 스캔본은 인식률이 떨어진다 → 반전해 밝은 배경·어두운 글자로, 이어서 명암 늘리기."""
+    from PIL import ImageOps, ImageStat
+
+    gray = image.convert("L")
+    if ImageStat.Stat(gray).mean[0] / 255 < DARK_MEAN:
+        gray = ImageOps.invert(gray)
+    return ImageOps.autocontrast(gray).convert("RGB")
 
 
 class OcrEngine(Protocol):
@@ -29,6 +40,10 @@ class RapidOcrEngine:
                                      "Rec.model_type": ModelType.MOBILE, "Global.log_level": "warning"})
 
     def words(self, image) -> list[Word]:
+        """전처리(짙은 배경 반전·명암) 뒤 인식."""
+        return self.words_raw(preprocess(image))
+
+    def words_raw(self, image) -> list[Word]:
         res = self._ocr(image)
         out = []
         for box, text, score in zip(res.boxes if res.boxes is not None else [], res.txts or [], res.scores or []):
