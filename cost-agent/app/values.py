@@ -79,7 +79,7 @@ def same_value(a: Value, b: Value, tol: float = 0.005) -> bool:
     """단위를 맞춘 뒤 상대 차이 ≤ tol(기본 0.5%)면 같은 값. 모델명은 글자 비교."""
     if a is None or b is None:
         return False
-    if a.unit == "model" or b.unit == "model":
+    if a.unit in ("model", "method") or b.unit in ("model", "method"):  # 글자 값 (모델명·마진 방식)
         norm = lambda s: re.sub(r"[\s·]", "", s).upper()
         return a.unit == b.unit and norm(a.text) == norm(b.text)
     (x, ux), (y, uy) = _canon(a), _canon(b)
