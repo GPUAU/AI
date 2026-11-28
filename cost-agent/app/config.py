@@ -33,6 +33,7 @@ class Settings:
     spring_url: str
     template_dir: str
     max_upload_bytes: int
+    max_total_upload_bytes: int = 20 * 1024 * 1024  # 한 번에 올리는 파일 합계 (FE nginx·ingress 한도보다 작게)
     agent_engine: str = "graph"  # graph(LangGraph 에이전트) | workflow(고정 순서)
     controller_model: str | None = None  # 다음 행동을 고르는 판단자 모델. 없으면 openai_model
     agent_controller: bool = True  # False면 그래프는 쓰되 판단은 기본 순서로
@@ -53,6 +54,7 @@ class Settings:
             spring_url=os.getenv("SPRING_URL", "http://backend"),
             template_dir=os.getenv("TEMPLATE_DIR", "./data/templates"),
             max_upload_bytes=int(float(os.getenv("MAX_UPLOAD_MB", "5")) * 1024 * 1024),
+            max_total_upload_bytes=int(float(os.getenv("MAX_TOTAL_UPLOAD_MB", "20")) * 1024 * 1024),
             agent_engine=os.getenv("AGENT_ENGINE", "graph").lower(),
             controller_model=os.getenv("CONTROLLER_MODEL") or None,
             agent_controller=os.getenv("AGENT_CONTROLLER", "on").lower() not in ("0", "false", "off", "no"),
