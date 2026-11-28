@@ -11,6 +11,7 @@ from datetime import date
 
 from pydantic import BaseModel, Field
 
+from .mapping.rules import MONTHLY_DOC as _MONTHLY
 from .mapping.rules import YEAR_WORDS
 from .models import ContractInfo, ExtractedDocument, SheetRow
 
@@ -30,6 +31,7 @@ _START = re.compile(r"(?:개시일|개통일|start date)\D{0,10}" + _DATE, re.I)
 _BILL_MONTH = re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월분")
 _QUARTER = re.compile(r"\d\s*분기|quarter|\bQ[1-4]\b", re.I)
 _HALF = re.compile(r"반기")
+
 # '계약전력 40kW × 720h'처럼 계산식 안의 값은 계약 정보가 아니다
 _POWER = re.compile(r"(?:계약\s*전력|committed\s+power)\s*[:：]?\s*([\d,]+(?:\.\d+)?)\s*kW(?!h)(?!\s*[×x*])", re.I)
 _RACKS = [re.compile(r"(\d+)\s*랙"), re.compile(r"cabinets?\s*(\d+)", re.I)]
@@ -126,7 +128,9 @@ def read_meta(doc: ExtractedDocument) -> BillMeta:
                 continue
             t = _text(r)
             low = t.lower()
-            if _QUARTER.search(t):
+            if _MONTHLY.search(t):
+                m.billing_months, m.months_text, m.months_ref = 1.0, t, r.ref
+            elif _QUARTER.search(t):
                 m.billing_months, m.months_text, m.months_ref = 3.0, t, r.ref
             elif _HALF.search(t):
                 m.billing_months, m.months_text, m.months_ref = 6.0, t, r.ref

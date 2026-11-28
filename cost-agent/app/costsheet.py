@@ -40,6 +40,7 @@ class Cell(BaseModel):
 class CostSheet(BaseModel):
     cells: dict[str, Cell]
     notices: list[str] = Field(default_factory=list)  # 문서 종류 확인 등 기준표 전체 알림
+    checks: dict[str, dict] = Field(default_factory=dict)  # 교차 확인용 값 (기준표 칸 아님): {"value", "source"}
 
 
 @dataclass(frozen=True)
