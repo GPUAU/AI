@@ -42,6 +42,9 @@ def build_request(items: list[CostItemDraft], inp: SimulationInput) -> dict:
         out.append({"itemType": ItemType.ACQUISITION.value, "status": ItemStatus.USER_INPUT.value,
                     "amount": inp.acquisition_amount, "currency": inp.acquisition_currency.value,
                     "period": Period.ONE_TIME.value})
+    interest = inp.interest_rate_type != "NOT_APPLIED"
+    if interest:  # 금융비용은 금액이 아니라 금리로 받는다 (BE가 취득비에 이자를 얹어 계산)
+        out.append({"itemType": ItemType.FINANCING.value, "status": ItemStatus.USER_INPUT.value})
     req: dict = {
         "modelId": inp.model_id,
         "items": out,
@@ -49,10 +52,12 @@ def build_request(items: list[CostItemDraft], inp: SimulationInput) -> dict:
             "gpuCount": inp.gpu_count,
             "depreciationYears": inp.depreciation_years,
             "utilization": inp.utilization,
-            "interestRateType": "NOT_APPLIED",
+            "interestRateType": inp.interest_rate_type,
         },
         "pricing": {"method": inp.pricing_method, "targetRate": inp.target_rate},
     }
+    if interest:
+        req["assumptions"]["annualInterestRate"] = inp.annual_interest_rate
     if inp.fx_krw_per_usd:
         req["inputFxKrwPerUsd"] = inp.fx_krw_per_usd
     return req

@@ -235,5 +235,7 @@ class SimulationInput(BaseModel):
     pricing_method: str = Field(default="COST_MARKUP", pattern="REVENUE_MARGIN|COST_MARKUP")
     target_rate: float = 0.3
     fx_krw_per_usd: float | None = Field(default=None, gt=0)
+    interest_rate_type: str = Field(default="NOT_APPLIED", pattern="NOT_APPLIED|ASSUMED|ACTUAL_LOAN")
+    annual_interest_rate: float | None = Field(default=None, ge=0)  # 0.05 = 연 5%
 
 BillDraft.model_rebuild()
