@@ -125,8 +125,7 @@ def test_full_flow_with_questions_market_loop_and_report(Agent, tmp_path, doc):
 
     from app.agent.report import build_report
     wb = load_workbook(io.BytesIO(build_report(s)))
-    assert wb.sheetnames == ["승인 요약", "원가 구성", "민감도", "검토 결과", "요약", "원가 항목", "가정값", "청구서 해석",
-                             "시장 비교", "진행 기록"]
+    assert wb.sheetnames == ["요약", "원가 근거", "원가 구성·민감도", "시장 비교", "부록"]
 
 
 def test_remap_loop_fixes_total_with_feedback(Agent, tmp_path, doc):
@@ -403,12 +402,11 @@ def test_report_has_bill_interpretation_sheet(Agent, tmp_path, detailed_doc):
             break
         s = agent.answer(s.id, suggested(s.question))
     assert s.step == Step.DONE
-    ws = load_workbook(io.BytesIO(build_report(s)))["청구서 해석"]
-    rows = [[c.value for c in r] for r in ws.iter_rows(min_row=2)]
-    unit = next(r for r in rows if r[1] and "천원" in r[1])
+    wb = load_workbook(io.BytesIO(build_report(s)))
+    rows = [[c.value for c in r] for r in wb["부록"].iter_rows(min_row=6)]
+    unit = next(r for r in rows if isinstance(r[1], str) and "천원" in r[1])
     assert unit[0] == "해석" and unit[2] == "적용" and unit[3] == "0.001배"
-    gpu = load_workbook(io.BytesIO(build_report(s)))["가정값"]
-    assert any(r[0].value == "사내 인건비·판관비 (연간)" for r in gpu.iter_rows(min_row=2))
+    assert any(r[0].value == "사내 인건비·판관비 (연간)" for r in wb["원가 근거"].iter_rows())
 
 
 def test_report_without_interpretations_says_so(Agent, tmp_path, doc):
@@ -419,8 +417,8 @@ def test_report_without_interpretations_says_so(Agent, tmp_path, doc):
         if s.question is None:
             break
         s = agent.answer(s.id, suggested(s.question))
-    ws = load_workbook(io.BytesIO(build_report(s)))["청구서 해석"]
-    assert ws.cell(2, 1).value == "해석 변경 없음"
+    ws = load_workbook(io.BytesIO(build_report(s)))["부록"]
+    assert ws.cell(5, 1).value == "구분" and ws.cell(6, 1).value == "해석 변경 없음"
 
 
 # ---------------------------------------------------------------- 2순위: 누락 확인 카드 한 장 (설계 §4B-1)
