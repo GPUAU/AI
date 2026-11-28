@@ -36,9 +36,14 @@ def is_text_page(text: str) -> bool:
     return garbled / len(t) < MAX_GARBLED
 
 
+def _clean(text: str) -> str:
+    """일부 PDF는 띄어쓰기를 제어 문자(\x01)로 넣는다 → 공백, 연속 공백은 하나로."""
+    return re.sub(r"\s+", " ", text.replace("\x01", " ")).strip()
+
+
 def text_page_words(page) -> list[Word]:
     """pdfplumber 페이지 → 단어 목록."""
-    return [Word(text=w["text"], x0=float(w["x0"]), x1=float(w["x1"]), top=float(w["top"]), bottom=float(w["bottom"]))
+    return [Word(text=_clean(w["text"]), x0=float(w["x0"]), x1=float(w["x1"]), top=float(w["top"]), bottom=float(w["bottom"]))
             for w in page.extract_words(keep_blank_chars=False, use_text_flow=False)]
 
 
