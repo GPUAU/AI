@@ -184,4 +184,5 @@ class AgentSession(BaseModel):
     sheet_answers: dict[str, dict] = Field(default_factory=dict)  # 칸 → 담당자 답
     primary_bill: str | None = None  # ANALYZE 단계가 다루는 청구서 (첫 청구서)
     extra_bills: list[tuple[str, BillDraft]] = Field(default_factory=list)  # 두 번째부터의 청구서
+    plan_check: dict | None = None  # 사업기획팀 검산 대비 {ok, hourly_krw, plan_hourly, price_krw, plan_price, message}
     public_fx: str | None = None  # 공개 환율 (BE 수출입은행) — 기준표 환율 칸과 차이 표시

@@ -151,3 +151,49 @@ def test_bill_only_warnings_are_not_shown_when_sheet_covers_them(Agent, tmp_path
     analyze = next(b for b in s.board if b.key == Step.ANALYZE)
     assert not any("운영·유지보수" in d for d in analyze.details)  # 운영비는 관리회계팀 문서로 채워짐
     assert next(b for b in s.board if b.key == Step.MISSING).title == "기준표 확인"
+
+
+# ---------------------------------------------------------------- 검산 대비 · GPU당 전력량 (Task 9)
+PLAN_COST_USD = 369_800_000 / 196_224 / 1350  # 08 검산과 같은 원가를 돌려주는 가짜 BE
+
+
+def _run_to_end(agent, s):
+    for _ in range(15):
+        if s.question is None:
+            break
+        q = s.question
+        s = agent.answer(s.id, Answer(question_id=q.id, values={}) if q.step == Step.ASSUMPTIONS else suggested(q))
+    return s
+
+
+def test_plan_arithmetic_matches(Agent, tmp_path, dept_docs):
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend(sim_cost=PLAN_COST_USD)[0])
+    s = past_analyze(agent, agent.start_many(list(dept_docs.values()), Goal(terms_years=[])))
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={}))
+    assert s.plan_check["ok"] is True and abs(s.plan_check["hourly_krw"] - 1885) <= 1885 * 0.01
+    assert any("사업기획팀 검산과 일치 (산술 검증 — 원가 누락 여부는 보장하지 않음)" in e.message for e in s.events)
+    s = _run_to_end(agent, s)
+    assert any("사업기획팀 검산과 일치 (산술 검증" in line for line in s.summary)
+
+
+def test_plan_arithmetic_mismatch_is_a_finding(Agent, tmp_path, dept_docs):
+    agent = Agent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend(sim_cost=PLAN_COST_USD * 1.2)[0])
+    s = past_analyze(agent, agent.start_many(list(dept_docs.values()), Goal(terms_years=[])))
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={}))
+    assert s.plan_check["ok"] is False
+    s = _run_to_end(agent, s)
+    assert "PLAN_MISMATCH" in {f.code for f in s.approval.findings}
+
+
+def test_low_kwh_per_gpu_warns():
+    from app.benchmarks import power_per_gpu_check
+    f = power_per_gpu_check(24_000, 32)  # 03의 24,000kWh ÷ 32장 = 750
+    assert [x.code for x in f] == ["POWER_PER_GPU"] and f[0].value == 750
+    assert power_per_gpu_check(32_000, 32) == []
+
+
+def test_dept_flow_flags_power_per_gpu(Agent, tmp_path, dept_docs):
+    agent, s = start_many(Agent, tmp_path, list(dept_docs.values()))
+    s = past_analyze(agent, s)
+    s = agent.answer(s.id, Answer(question_id=s.question.id, values={}))
+    assert "POWER_PER_GPU" in {c.code for c in s.checks}

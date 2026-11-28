@@ -5,12 +5,15 @@ CostAgent(워크플로)와 GraphCostAgent(LangGraph)가 함께 쓴다. 청구서
 
 from __future__ import annotations
 
+import re
 import uuid
 
+from ..benchmarks import power_per_gpu_check
 from ..costsheet import SPEC, Source, assumption_values, to_cost_items
 from ..docs import UNKNOWN_NOTICE, DocKind, classify_doc, extract_fields
 from ..models import BillDraft, CostItemDraft, Currency, ExtractedDocument, ItemType, Reconciliation
 from ..sheetmerge import build_sheet, cross_checks
+
 from ..values import Value, same_value
 from .models import AgentSession, Answer, FieldSpec, Option, Question, Status, Step
 
@@ -192,12 +195,53 @@ class SheetFlow:
                                  hint=src("fx_krw_per_usd")))
         return out
 
+    def _plan_check(self, s: AgentSession) -> None:
+        """원가 계산 결과(달러)를 원화로 바꿔 사업기획팀 검산(시간당 원가·판매가)과 대조한다 (±1%). 흐름은 막지 않는다."""
+        c = s.sheet.cells if s.sheet else {}
+        plan_cost = c["plan_hourly_cost"].value if c and c["plan_hourly_cost"].status == "filled" else None
+        fx = (s.assumptions or {}).get("fx_krw_per_usd")
+        if plan_cost is None or not fx or not s.simulation:
+            s.plan_check = None
+            return
+        cost = float(s.simulation["hourlyCost"]) * fx
+        price = float(s.simulation["candidatePrice"]) * fx
+        plan_price = c["plan_price"].value if c["plan_price"].status == "filled" else None
+        plan_rate = c["target_rate"].value if c["target_rate"].status == "filled" else None
+        if plan_rate is None or abs(float(s.assumptions.get("target_rate", -1)) - float(plan_rate)) > 1e-9:
+            plan_price = None  # 마진을 바꿨으면 판매가는 검산과 비교하지 않는다 (원가만)
+        ok = abs(cost - plan_cost) <= 0.01 * plan_cost and (plan_price is None or abs(price - plan_price) <= 0.01 * plan_price)
+        if ok:
+            msg = "사업기획팀 검산과 일치 (산술 검증 — 원가 누락 여부는 보장하지 않음)"
+        else:
+            msg = (f"사업기획팀 검산과 차이: 시간당 원가 {cost:,.0f}원 · 검산 {plan_cost:,.0f}원 ({(cost / plan_cost - 1) * 100:+.1f}%)"
+                   + (f", 판매가 {price:,.0f}원 · 검산 {plan_price:,.0f}원" if plan_price else "")
+                   + " — 가정값(가동률·마진·환율)이나 원가 칸이 검산과 다른지 확인해 주세요")
+        s.plan_check = {"ok": ok, "hourly_krw": round(cost, 2), "plan_hourly": plan_cost, "price_krw": round(price, 2),
+                        "plan_price": plan_price, "message": msg}
+        self._log(s, Step.SIMULATE, "result" if ok else "warn", msg)
+
+    def _power_check(self, s: AgentSession, gpu_count: int) -> list:
+        """전기료 칸의 원문 줄에 kWh가 있으면 월 kWh ÷ GPU 수를 기준과 비교한다."""
+        cell = s.sheet.cells["electricity"] if s.sheet else None
+        doc = self._docs.get(s.id)
+        if not cell or cell.status != "filled" or doc is None:
+            return []
+        months = (s.draft.billing_months or 1.0) if s.draft else 1.0
+        rows = {r.row: r for r in doc.rows}
+        kwh = 0.0
+        for src in cell.sources:
+            r = rows.get(src.row) if src.doc == doc.file_name else None
+            m = _KWH.search(" ".join(r.cells)) if r else None
+            kwh += float(m.group(1).replace(",", "")) if m else 0
+        return power_per_gpu_check(kwh / months, gpu_count) if kwh else []
+
     def _sheet_items(self, s: AgentSession) -> list[CostItemDraft]:
         """기준표 → BE 원가 항목. 취득비는 가정값 카드의 값 하나만 쓴다 (be_client가 붙인다)."""
         self._refresh_sheet(s)
         return [i for i in to_cost_items(s.sheet) if i.item_type != ItemType.ACQUISITION]
 
 
+_KWH = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*kWh", re.I)
 _KIND_KO = {DocKind.QUOTE: "견적서", DocKind.BILL: "청구서", DocKind.MEMO: "부서 명세", DocKind.PLAN: "검산안"}
 
 

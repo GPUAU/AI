@@ -515,7 +515,9 @@ class CostAgent(SheetFlow):
                   f"{a['model_name']} {a['gpu_count']}장 · 취득비 {a['acquisition_amount']:,.0f} {a['acquisition_currency']} · "
                   f"가동률 {a['utilization']:.0%} · 목표 마진 {a['target_rate']:.0%}")
         self._set_checks(s, Step.ASSUMPTIONS, {"KW_PER_GPU"}, gpu_checks(s.draft.contract, a["gpu_count"]))
-        warn = [c.message for c in s.checks if c.code == "KW_PER_GPU"]
+        if s.sheet is not None:
+            self._set_checks(s, Step.ASSUMPTIONS, {"POWER_PER_GPU"}, self._power_check(s, a["gpu_count"]))
+        warn = [c.message for c in s.checks if c.code in ("KW_PER_GPU", "POWER_PER_GPU")]
         self._board(s, Step.ASSUMPTIONS, Status.WARNING if warn else Status.DONE,
                     f"{a['model_name']} {a['gpu_count']}장 · 마진 {a['target_rate']:.0%}", warn)
 
@@ -594,6 +596,8 @@ class CostAgent(SheetFlow):
                     f"원가 ${float(r['hourlyCost']):.2f} · 제안가 ${float(r['candidatePrice']):.2f}",
                     [f"BE가 미반영으로 본 항목: {', '.join(missing)}"] if missing else [])
         s.sim_basis = self._sim_basis(s)
+        if s.sheet is not None:
+            self._plan_check(s)
         return True
 
     @staticmethod
@@ -866,7 +870,16 @@ class CostAgent(SheetFlow):
             f"{a['model_name']} {a['gpu_count']}장 기준 GPU·시간당 원가 ${float(r['hourlyCost']):.3f}, "
             f"제안가 ${float(r['candidatePrice']):.3f} (목표 마진 {a['target_rate']:.0%}).",
         ]
+        if s.sheet is not None:
+            lines[0] = (f"부서 문서 {len(s.docs)}개로 원가 기준표를 채웠어요 (담당자 확인 {len(s.sheet_answers)}칸). "
+                        + ("청구서 총액 대조는 " + ("일치." if d.reconciliation.matched else "불일치(담당자 확인 후 진행)."
+                                                 if d.reconciliation.matched is False else "불가.") if s.primary_bill else ""))
+            if s.plan_check:
+                lines.append(s.plan_check["message"] + ".")
         for k, v in s.missing_answers.items():
+            if s.sheet is not None and v.get("sheet_key"):
+                lines.append(f"기준표 '{k}' 칸은 담당자가 이번엔 제외했어요 (불완전 원가).")
+                continue
             lines.append(f"청구서에 없던 '{k}'는 담당자 확인: {self._missing_text(v)}.")
         if "FINANCING" in r.get("missingItems", []):
             lines.append("조달 금리는 입력하지 않아 원가에서 빠져 있습니다 (마진이 실제보다 높게 보일 수 있음).")
