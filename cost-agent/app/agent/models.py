@@ -182,6 +182,7 @@ class AgentSession(BaseModel):
     docs: list[dict] = Field(default_factory=list)  # {name, kind, reason}
     sheet: CostSheet | None = None  # 원가 기준표
     sheet_answers: dict[str, dict] = Field(default_factory=dict)  # 칸 → 담당자 답
+    sheet_hits: list[dict] = Field(default_factory=list)  # 부서 문서에서 뽑은 칸 값 (재시작해도 기준표를 다시 만들 수 있게)
     primary_bill: str | None = None  # ANALYZE 단계가 다루는 청구서 (첫 청구서)
     extra_bills: list[tuple[str, BillDraft]] = Field(default_factory=list)  # 두 번째부터의 청구서
     plan_check: dict | None = None  # 사업기획팀 검산 대비 {ok, hourly_krw, plan_hourly, price_krw, plan_price, message}

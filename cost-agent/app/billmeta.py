@@ -11,7 +11,7 @@ from datetime import date
 
 from pydantic import BaseModel, Field
 
-from .mapping.rules import MONTHLY_DOC as _MONTHLY
+from .mapping.rules import monthly_title, title_text
 from .mapping.rules import YEAR_WORDS
 from .models import ContractInfo, ExtractedDocument, SheetRow
 
@@ -123,19 +123,20 @@ def read_meta(doc: ExtractedDocument) -> BillMeta:
                 m.billing_months = 1.0
                 break
     if m.billing_months is None and bill_month is None:
+        title = title_text(doc)
         for r in rows:
             if r.numbers:  # 항목 줄('3분기 정산 회선')의 표현은 청구 기간이 아니다
                 continue
             t = _text(r)
             low = t.lower()
-            if _MONTHLY.search(t):
-                m.billing_months, m.months_text, m.months_ref = 1.0, t, r.ref
-            elif _QUARTER.search(t):
+            if _QUARTER.search(t):
                 m.billing_months, m.months_text, m.months_ref = 3.0, t, r.ref
             elif _HALF.search(t):
                 m.billing_months, m.months_text, m.months_ref = 6.0, t, r.ref
             elif any(w in low for w in YEAR_WORDS):
                 m.billing_months, m.months_text, m.months_ref = 12.0, t, r.ref
+            elif t == title and monthly_title(t):  # 제목이 '월 시설비 명세'처럼 월 단위 문서
+                m.billing_months, m.months_text, m.months_ref = 1.0, t, r.ref
             if m.billing_months:
                 break
     if m.billing_months is None and bill_month:

@@ -173,13 +173,29 @@ MONTH_WORDS = ["월분", "월 청구", "월간", "월 이용", "매월", "monthl
 
 
 # 월 단위 문서 표현 ('월 시설비 명세', '월 합계', '월 정액', 'Monthly Invoice') — 본문 문장의 '연간'보다 앞선다
-MONTHLY_DOC = re.compile(r"(?:^|\s)월\s*(?:시설비|합계|정액|청구|이용료|사용료)|monthly", re.I)
+MONTHLY_DOC = re.compile(r"(?:^|\s)월\s*(?:시설비|합계|정액|청구|이용료|사용료)|\bmonthly\b", re.I)
+_NOT_MONTHLY = re.compile(r"\d\s*분기|분기|반기|quarter", re.I)
+
+
+def title_text(doc: ExtractedDocument, head: int = 8) -> str:
+    """앞 줄 중 글자 칸이 하나뿐인 첫 줄 (문서 제목)."""
+    for r in doc.rows[:head]:
+        texts = [c for c in r.cells if str(c).strip()]
+        if len(texts) == 1 and not r.numbers:
+            return str(texts[0]).strip()
+    return ""
+
+
+def monthly_title(text: str) -> bool:
+    """제목이 월 단위 문서인가 ('월 시설비 명세'). 제목에 연간·분기·반기가 함께 있으면 아니다."""
+    low = _norm(text)
+    return bool(MONTHLY_DOC.search(text)) and not _NOT_MONTHLY.search(text) and not any(w in low for w in YEAR_WORDS)
 
 
 def detect_period(doc: ExtractedDocument) -> Period | None:
     """청구 기간을 원문(가리기 전)에서 판단한다. 'n월분'·'Oct 2026'처럼 월 단위 표현이 있으면 MONTH."""
-    text = _norm(" ".join(" ".join(r.cells) for r in doc.rows[:20]))
-    if MONTHLY_DOC.search(text):
+    text = _norm(" ".join(" ".join(r.cells) for r in doc.rows[:20])).replace("bimonthly", "")
+    if monthly_title(title_text(doc)):  # 제목만 본다 (본문 표·문장의 '월 사용료 × 12개월'은 아님)
         return Period.MONTH
     if any(w in text for w in YEAR_WORDS):
         return Period.YEAR

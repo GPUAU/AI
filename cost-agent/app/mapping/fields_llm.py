@@ -36,25 +36,29 @@ RESPONSE_SCHEMA = {
 }
 
 
+def line_id(i: int) -> str:
+    """LLM에 보내는 줄 id. 시트 이름(회사·사업장·견적번호가 들어갈 수 있음)을 보내지 않으려고 순번만 쓴다."""
+    return f"L{i}"
+
+
 def build_prompt(doc: ExtractedDocument, rows: list[SheetRow], keys: list[str]) -> str:
     terms = sensitive_terms()
     fields = [{"key": k, "뜻": SPEC[k].label} for k in keys if k in SPEC]
-    lines = [json.dumps({"id": r.ref, "cells": mask_cells(r.cells, set(r.numbers), terms),
-                         "number_cols": sorted(r.numbers)}, ensure_ascii=False) for r in rows]
-    return ("찾을 칸:\n" + json.dumps(fields, ensure_ascii=False) + f"\n쪽: {', '.join(doc.sheets)}"
-            + "\n줄 목록(JSON Lines):\n" + "\n".join(lines))
+    lines = [json.dumps({"id": line_id(i), "cells": mask_cells(r.cells, set(r.numbers), terms),
+                         "number_cols": sorted(r.numbers)}, ensure_ascii=False) for i, r in enumerate(rows)]
+    return "찾을 칸:\n" + json.dumps(fields, ensure_ascii=False) + "\n줄 목록(JSON Lines):\n" + "\n".join(lines)
 
 
 def map_fields_llm(doc: ExtractedDocument, rows: list[SheetRow], keys: list[str],
                    complete: Completion) -> list[tuple[str, str, int]]:
-    """(칸 키, 줄 ref, 열 번호). 문서에 없는 줄·요청하지 않은 칸·숫자 없는 칸은 버린다. 호출·형식 오류면 빈 목록."""
+    """(칸 키, 줄 ref, 열 번호). LLM은 순번 id(L0, L1…)로 답하고 여기서 원래 줄로 바꾼다. 문서에 없는 줄·요청하지 않은 칸·숫자 없는 칸은 버린다. 호출·형식 오류면 빈 목록."""
     try:
         raw = complete(SYSTEM_PROMPT, build_prompt(doc, rows, keys), RESPONSE_SCHEMA)
         data = json.loads(raw)
         answers = data.get("fields", []) if isinstance(data, dict) else []
     except Exception:  # noqa: BLE001 - LLM이 안 되면 규칙 결과만 쓴다
         return []
-    known = {r.ref: r for r in rows}
+    known = {line_id(i): r for i, r in enumerate(rows)}
     out = []
     for a in answers:
         if not isinstance(a, dict):
@@ -65,5 +69,5 @@ def map_fields_llm(doc: ExtractedDocument, rows: list[SheetRow], keys: list[str]
             continue
         if not any(ch.isdigit() for ch in r.cells[col]):
             continue
-        out.append((key, ref, col))
+        out.append((key, r.ref, col))  # 순번 id → 원래 줄
     return out

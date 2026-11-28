@@ -195,6 +195,7 @@ def _quote_hits(doc: ExtractedDocument, doc_name: str) -> list[FieldHit]:
     out: list[FieldHit] = []
     items: list[tuple[SheetRow, int, Value]] = []
     total = None
+    seen_vat = False
     for r in doc.rows:
         f = _filled(r)
         if len(f) < 2 or f[0] != 0 or not r.numbers:
@@ -205,9 +206,13 @@ def _quote_hits(doc: ExtractedDocument, doc_name: str) -> list[FieldHit]:
             continue
         v = _with_currency(v, doc)
         if re.search(r"부가세|VAT", label, re.I):
+            seen_vat = True
+            continue
+        if re.search(r"공급가액", label):  # '공급가액'·'공급가액 합계' = 부가세 제외 합계
+            total = total or FieldHit("acquisition", v, _src(doc_name, r, last), "table")
             continue
         if re.search(r"합계|총액|소계", label):
-            if total is None and re.search(r"공급가액|합계", label):
+            if total is None and not seen_vat:  # 부가세 줄 뒤의 '합계'는 부가세 포함
                 total = FieldHit("acquisition", v, _src(doc_name, r, last), "table")
             continue
         items.append((r, last, v))

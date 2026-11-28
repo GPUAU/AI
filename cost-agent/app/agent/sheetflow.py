@@ -11,8 +11,8 @@ import uuid
 from ..benchmarks import power_per_gpu_check
 from ..costsheet import SPEC, Source, assumption_values, to_cost_items
 from ..docs import UNKNOWN_NOTICE, DocKind, classify_doc, extract_fields
-from ..models import BillDraft, CostItemDraft, Currency, ExtractedDocument, ItemType, Reconciliation
-from ..sheetmerge import build_sheet, cross_checks
+from ..models import BillDraft, CostItemDraft, Currency, ExtractedDocument, IssueLevel, ItemStatus, ItemType, Period, Reconciliation
+from ..sheetmerge import INHOUSE, build_sheet, cross_checks
 
 from ..values import Value, same_value
 from .models import AgentSession, Answer, FieldSpec, Option, Question, Status, Step
@@ -43,11 +43,21 @@ class SheetFlow:
             if UNKNOWN_NOTICE in why:
                 self._log(s, Step.ANALYZE, "warn", f"{d.file_name}: {UNKNOWN_NOTICE} — 청구서로 읽었어요")
         self._hits[s.id] = hits
+        s.sheet_hits = [_dump_hit(h) for h in hits]
         if bills:
             s.primary_bill = bills[0].file_name
             self._docs[s.id] = bills[0]
             for d in bills[1:]:
-                s.extra_bills.append((d.file_name, self.bills.ingest(d)))
+                draft = self.bills.ingest(d)
+                s.extra_bills.append((d.file_name, draft))
+                # 두 번째부터의 청구서는 해석 카드를 따로 띄우지 않으므로, 문제는 경고로 보이고 기준표 알림에 남긴다
+                problems = [i.message for i in draft.issues
+                            if i.level != IssueLevel.INFO and i.code not in ("MISSING_CORE_ITEM", "ACQUISITION_OUTSIDE_BILL")]
+                problems += [f"해석 확인 필요: {x.message}" for x in draft.interpretations] + [b.message for b in draft.bench]
+                entry = next(x for x in s.docs if x["name"] == d.file_name)
+                entry["issues"] = problems
+                for msg in problems:
+                    self._log(s, Step.ANALYZE, "warn", f"{d.file_name}: {msg}")
         else:  # 청구서가 없으면 빈 초안 (분석 단계 질문 없이 기준표로)
             self._docs[s.id] = docs[0]
             s.draft = BillDraft(id=uuid.uuid4().hex[:12], file_name="", fingerprint="", mapper="rules",
@@ -70,8 +80,11 @@ class SheetFlow:
         if s.public_fx:
             rate, _, src = s.public_fx.partition("|")
             public["fx_krw_per_usd"] = Source(doc=src, text=rate)
-        sheet = build_sheet(self._hits.get(s.id, []), bills, public)
+        if s.id not in self._hits:  # 프로세스 재시작 등으로 메모리 값이 없으면 세션에 저장한 값으로
+            self._hits[s.id] = [_load_hit(x) for x in s.sheet_hits]
+        sheet = build_sheet(self._hits[s.id], bills, public)
         sheet.notices = [f"{d['name']}: {UNKNOWN_NOTICE}" for d in s.docs if UNKNOWN_NOTICE in d["reason"]]
+        sheet.notices += [f"{d['name']}: {m}" for d in s.docs for m in d.get("issues", [])]
         for key, a in s.sheet_answers.items():
             _apply(sheet.cells[key], a)
         s.sheet = sheet
@@ -97,8 +110,13 @@ class SheetFlow:
             owner = f"담당 {cell.owner}" if cell.owner else "담당 부서 확인"
             if cell.status == "conflict":
                 opts = [Option(value=_opt_value(x), label=f"{x['text']} ({x['doc']})") for x in cell.candidates]
+                part = next((x.get("part") for x in cell.candidates if x.get("part")), None)
+                kept = [x["name"] for x in cell.components]
+                label = f"{spec.label} · {part}" if part else spec.label
+                if kept:
+                    owner += f" · 고른 값에 {'·'.join(kept)}를 더해 계산해요"
                 fields += [
-                    FieldSpec(name=f"cell:{key}", label=f"{spec.label} — 문서마다 값이 달라요", type="select",
+                    FieldSpec(name=f"cell:{key}", label=f"{label} — 문서마다 값이 달라요", type="select",
                               value=opts[0].value if opts else None, hint=f"{owner} · 자동으로 고르거나 더하지 않았어요",
                               options=opts + [Option(value="manual", label="직접 입력")]),
                     FieldSpec(name=f"amount:{key}", label="직접 입력", required=False, show_for=["manual"],
@@ -176,7 +194,9 @@ class SheetFlow:
         out = []
         for f in fields:
             if f.name == "inhouse_annual":
-                continue  # 사내 인건비·판관비는 기준표 운영비에 들어 있다
+                if _has_inhouse(c["operations"]):
+                    continue  # 사내 인건비·판관비는 기준표 운영비에 들어 있다
+                f.hint = "올린 문서에 사내 인건비·판관비(관리회계팀)가 없어요 — 넣으면 운영비에 더해요 · " + f.hint
             if f.name == "model_id" and "model_name" in av:
                 match = _match_model(av["model_name"], f.options)
                 if match:
@@ -238,7 +258,35 @@ class SheetFlow:
     def _sheet_items(self, s: AgentSession) -> list[CostItemDraft]:
         """기준표 → BE 원가 항목. 취득비는 가정값 카드의 값 하나만 쓴다 (be_client가 붙인다)."""
         self._refresh_sheet(s)
-        return [i for i in to_cost_items(s.sheet) if i.item_type != ItemType.ACQUISITION]
+        items = [i for i in to_cost_items(s.sheet) if i.item_type != ItemType.ACQUISITION]
+        inhouse = float((s.assumptions or {}).get("inhouse_annual") or 0)
+        if inhouse > 0 and not _has_inhouse(s.sheet.cells["operations"]):  # 가정값 카드에서 받은 사내 인건비
+            ops = next(i for i in items if i.item_type == ItemType.OPERATIONS)
+            if ops.status == ItemStatus.USER_INPUT and ops.currency == Currency.KRW:
+                ops.amount = round((ops.amount or 0) + inhouse, 2)
+            else:
+                items = [i for i in items if i.item_type != ItemType.OPERATIONS] + [CostItemDraft(
+                    item_type=ItemType.OPERATIONS, status=ItemStatus.USER_INPUT, amount=round(inhouse, 2),
+                    currency=Currency.KRW, period=Period.YEAR)]
+        return items
+
+
+def _dump_hit(h) -> dict:
+    v = h.value
+    return {"key": h.key, "role": h.role, "via": h.via, "source": h.source.model_dump(),
+            "value": {"number": None if v.number != v.number else v.number, "unit": v.unit, "currency": v.currency, "text": v.text}}
+
+
+def _load_hit(d: dict):
+    from ..docs import FieldHit
+    v = d["value"]
+    num = float("nan") if v["number"] is None else v["number"]
+    return FieldHit(d["key"], Value(num, v["unit"], v["currency"], v["text"]), Source(**d["source"]), d["role"], d.get("via", "rule"))
+
+
+def _has_inhouse(cell) -> bool:
+    return any(x["name"] in (INHOUSE, MANUAL) for x in cell.components) or (
+        cell.status == "conflict" and any(x.get("part") == INHOUSE for x in cell.candidates))
 
 
 _KWH = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*kWh", re.I)
@@ -286,24 +334,37 @@ def _apply(cell, rec: dict) -> None:
         cell.status, cell.value = rec["choice"], None
         cell.grade = MANUAL
         return
+    part = next((x.get("part") for x in cell.candidates if x.get("part")), None)
     if rec["choice"] == "pick":
         chosen = next((x for x in cell.sources if x.doc == rec["doc"]), Source(doc=rec["doc"], row=rec.get("row", 0)))
-        cell.value, cell.status, cell.sources = rec["value"], "filled", [chosen]
-        cell.grade = "사내 문서 · 담당자 선택"
-        cell.note = f"후보 {len(cell.candidates)}개 중 {rec['doc']} 값 선택"
         cand = next((x for x in cell.candidates if x["doc"] == rec["doc"]), {})
+        cell.status, cell.grade = "filled", "사내 문서 · 담당자 선택"
+        cell.note = f"후보 {len(cell.candidates)}개 중 {rec['doc']} 값 선택"
         cell.unit, cell.currency = cand.get("unit") or cell.unit, cand.get("currency") or cell.currency
+        if part:  # 운영비: 충돌한 구성 요소만 바꾸고 나머지 구성 요소와 더한다
+            _set_part(cell, part, float(rec["value"]), [chosen])
+        else:
+            cell.value, cell.sources = rec["value"], [chosen]
         return
     v = float(rec["value"])
-    cell.value, cell.status, cell.grade = v, "filled", MANUAL
-    cell.unit, cell.currency = cell.unit or "원", cell.currency or "KRW"
-    cell.sources = [Source(doc=MANUAL, text=f"{v:,.0f}")]
-    if cell.components:
-        cell.components = [{"name": MANUAL, "value": v, "sources": []}]
     mine = Value(v, "원", "KRW", "")
     differ = [t for t in originals if not _same_text(mine, t)]
+    cell.status, cell.grade = "filled", MANUAL
+    cell.unit, cell.currency = cell.unit or "원", cell.currency or "KRW"
+    manual = Source(doc=MANUAL, text=f"{v:,.0f}")
+    if part or cell.components:
+        _set_part(cell, part or MANUAL, v, [manual], replace_all=not part)
+    else:
+        cell.value, cell.sources = v, [manual]
     if differ:
         cell.note = f"원본 {' · '.join(differ)}과 다름"
+
+
+def _set_part(cell, name: str, value: float, sources: list, replace_all: bool = False) -> None:
+    keep = [] if replace_all else [x for x in cell.components if x["name"] != name]
+    cell.components = keep + [{"name": name, "value": value, "sources": [s.model_dump() for s in sources]}]
+    cell.value = sum(x["value"] for x in cell.components)
+    cell.sources = [s for s in cell.sources if s.doc not in {x["doc"] for x in cell.candidates}] + sources
 
 
 def _same_text(mine: Value, text: str) -> bool:

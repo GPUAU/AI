@@ -91,23 +91,24 @@ def build_sheet(hits: list[FieldHit], bills: list[tuple[str, BillDraft]],
 
     for key, group in groups.items():
         cell = sheet.cells[key]
-        if key == "operations":  # 구성 요소별로 같은 규칙, 구성 요소끼리는 더한다
+        if key == "operations":  # 구성 요소별로 같은 규칙, 구성 요소끼리는 더한다. 한 구성 요소가 충돌이면 칸 전체가 충돌
             parts = {INHOUSE: [h for h in group if h.role != "bill"], BILL_OPS: [h for h in group if h.role == "bill"]}
+            conflict = False
             for name, g in parts.items():
                 if not g:
                     continue
                 tmp = Cell(key=key)
                 _set(tmp, g, "사내 문서")
-                if tmp.status == "conflict":
-                    cell.status, cell.value, cell.candidates = "conflict", None, cell.candidates + tmp.candidates
-                    cell.sources += tmp.sources
-                    continue
-                add_component(sheet, key, name, float(tmp.value), tmp.sources)
                 cell.sources += tmp.sources
-            if cell.status == "conflict":
-                cell.value, cell.components = None, cell.components
-            else:
-                cell.grade = "사내 문서"
+                if tmp.status == "conflict":
+                    conflict = True
+                    cell.candidates += [{**x, "part": name} for x in tmp.candidates]
+                else:
+                    add_component(sheet, key, name, float(tmp.value), tmp.sources)
+            cell.grade = "사내 문서"
+            if conflict:  # 충돌이 아닌 구성 요소는 남겨 두고, 고른 값과 다시 더한다 (sheetflow._apply)
+                cell.status, cell.value = "conflict", None
+                cell.unit, cell.currency = "원", "KRW"
             continue
         _set(cell, group, "사내 문서")
 
