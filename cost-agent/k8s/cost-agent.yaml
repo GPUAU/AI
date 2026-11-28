@@ -2,6 +2,7 @@
 # 이미지: IMAGE_PLACEHOLDER 를 실제 이미지로 바꿔 적용한다.
 #   sed "s|IMAGE_PLACEHOLDER|harbor.skala-us.com/u1-3/cost-agent:<sha>|" k8s/cost-agent.yaml | kubectl apply -f -
 # Secret cost-agent-openai(키: OPENAI_API_KEY)는 미리 만들어 둔다. 값은 Git에 넣지 않는다.
+# Secret cost-agent-langsmith(키: LANGSMITH_API_KEY)는 선택. 없으면 LangSmith 추적만 꺼진다.
 # Harbor pull 인증은 기본 ServiceAccount에 연결된 harbor-cred를 쓴다.
 apiVersion: apps/v1
 kind: Deployment
@@ -51,6 +52,18 @@ spec:
                 secretKeyRef:
                   name: cost-agent-openai
                   key: OPENAI_API_KEY
+            # LangSmith 추적 (선택, app/tracing.py): 금액·회사명·견적번호·사업장은 가린 채로만 나간다.
+            # Secret cost-agent-langsmith(키: LANGSMITH_API_KEY)가 없으면 추적만 꺼진 채로 뜬다.
+            - name: LANGSMITH_TRACING
+              value: "true"
+            - name: LANGSMITH_PROJECT
+              value: gpuau-cost-agent
+            - name: LANGSMITH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cost-agent-langsmith
+                  key: LANGSMITH_API_KEY
+                  optional: true
           volumeMounts:
             # MVP: 확정 템플릿은 Pod 재시작 시 사라진다. 유지하려면 PVC 또는 DB로 옮긴다.
             - name: templates
