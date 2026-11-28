@@ -90,7 +90,7 @@ flowchart LR
 | 같은 결론 (질문 순서 · 최종 단계 · 제안가) | **9/9** |
 | 판단 주체 | 전부 LLM (기본 순서로 넘어간 경우 0, 실행 불가 0) |
 | 다르게 판단한 곳 | `bill_e`(표에 없는 비용 45만 원): v1은 재분류 2회 후 질문, v2는 **재분류 1회 후 "여전히 불일치"를 보고 바로 질문** |
-| 시간 | 판단 호출이 6~11회 늘어 세션당 약 +10초 (gpt-4o-mini 기준) |
+| 시간 | 판단 호출이 6~11회 늘어 세션당 약 +10초 (gpt-4o-mini 기준 측정) |
 
 `POST /v1/agent/sessions`(file, model_id, gpu_count, terms) → `POST /v1/agent/sessions/{id}/answer`(question_id, choice, values) 반복
 → `GET /v1/agent/sessions/{id}/report.xlsx`. 응답 형식은 v1과 같아 화면(FE)은 바꾸지 않았다.
@@ -123,7 +123,7 @@ pytest
 | 환경변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `OPENAI_API_KEY` | (없음) | 있으면 LLM 매퍼 사용 |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Structured Outputs(json_schema) 지원 모델 |
+| `OPENAI_MODEL` | `gpt-6.2-sol` | Structured Outputs(json_schema) 지원 모델 |
 | `MAPPER` | `auto` | `auto` / `openai` / `rules` |
 | `SPRING_URL` | `http://backend` | BE 서비스 주소 (클러스터 안) |
 | `TEMPLATE_DIR` | `./data/templates` | 확정 템플릿 저장 위치 |
