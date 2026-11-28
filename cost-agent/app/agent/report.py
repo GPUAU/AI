@@ -69,6 +69,29 @@ def _approval_sheets(wb, s: AgentSession) -> None:
         ws.column_dimensions[col].width = w
 
 
+STATUS_KO = {"filled": "채움", "included": "다른 요금에 포함", "excluded": "제외", "empty": "빈칸", "conflict": "충돌"}
+
+
+def _cost_sheet(wb, s: AgentSession) -> None:
+    """여러 부서 문서 세션: 맨 앞에 '원가 기준표' — 칸마다 값·출처·교차 확인·담당자 수정."""
+    from ..costsheet import FIELDS
+    ws = wb.create_sheet("원가 기준표", 0)
+    _header(ws, 1, ["칸", "값", "단위", "상태", "출처(문서·쪽·행·열)", "교차 확인 수", "담당자 수정", "메모"])
+    for f in FIELDS:
+        c = s.sheet.cells[f.key]
+        if c.status == "empty" and f.kind != "cost":
+            continue
+        where = " / ".join(f"{x.doc} · {x.page or '-'}쪽 · {x.row}행 · {x.col}열" if x.doc != "담당자 입력" else x.doc
+                           for x in c.sources)
+        docs = {x.doc for x in c.sources if x.doc != "담당자 입력"}
+        ws.append([f.label, c.value, c.unit, STATUS_KO.get(c.status, c.status), where, len(docs) if len(docs) > 1 else None,
+                   "예" if f.key in s.sheet_answers else "", c.note])
+    for n in s.sheet.notices:
+        ws.append(["알림", n])
+    for w, col in zip((34, 16, 8, 14, 70, 12, 10, 60), "ABCDEFGH"):
+        ws.column_dimensions[col].width = w
+
+
 def build_report(s: AgentSession) -> bytes:
     wb = Workbook()
     ws = wb.active
@@ -148,6 +171,8 @@ def build_report(s: AgentSession) -> bytes:
         ws.column_dimensions["E"].width = 26
 
     _approval_sheets(wb, s)
+    if s.sheet is not None:
+        _cost_sheet(wb, s)
 
     ws = wb.create_sheet("진행 기록")
     _header(ws, 1, ["시각", "단계", "구분", "내용"])
