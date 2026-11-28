@@ -146,6 +146,22 @@ pytest
 
 샘플: `python scripts/make_pdf_samples.py` → `samples-detailed/pdf/` (텍스트판·스캔판·섞인 판). 채점 결과는 `samples-detailed/README.md`.
 
+## 5-2. LangSmith 추적 (선택)
+
+에이전트가 어떤 단계·도구를 어떤 순서로 불렀고 얼마나 걸렸는지 LangSmith에서 봅니다. **금액·회사명·견적번호·사업장은 가린 채로만** 나갑니다.
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `LANGSMITH_TRACING` | (꺼짐) | `true`면 켬 |
+| `LANGSMITH_API_KEY` | — | 없으면 켜지지 않음 |
+| `LANGSMITH_PROJECT` | `gpuau-cost-agent` | 기록할 프로젝트 |
+| `LANGSMITH_ENDPOINT` | — | 자체 호스팅·EU 리전 주소 |
+
+- 기록 대상: LangGraph 실행(판단 → 도구 → 대기 노드), API 요청(`cost-agent.start`·`cost-agent.answer`), OpenAI 호출(원래도 가린 프롬프트)
+- 가림: LangSmith 클라이언트가 보내기 직전에 입력·출력·메타데이터 전체를 재귀로 가린다 — 숫자 값 `#NUM`, 글자 속 숫자 `#`, 회사·견적번호·사업장·이메일·URL은 표시어 (`app/tracing.py`)
+- LangChain이 환경변수만 보고 붙이는 **가리지 않는 기본 추적기는 끈다**. 이 앱이 붙이는 가린 추적기만 쓴다
+- 검증: `tests/test_tracing.py`가 실제로 LangSmith로 나갈 요청 본문을 가로채 금액·회사·사업장이 없는지 확인 (가림을 끄면 실패)
+
 ## 6. 샘플 (가상 데이터)
 
 | 파일 | 확인하는 것 |

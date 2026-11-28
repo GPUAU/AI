@@ -94,7 +94,8 @@ def openai_completion(api_key: str, model: str, timeout: float = 60.0, base_url:
     """OpenAI 또는 OpenAI 호환 서버(사내 sLLM: vLLM·Ollama 등)를 부른다. base_url이 있으면 그 서버로만 보낸다."""
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key or "not-needed", timeout=timeout, base_url=base_url or None)
+    from .. import tracing
+    client = tracing.wrap_openai(OpenAI(api_key=api_key or "not-needed", timeout=timeout, base_url=base_url or None))
 
     def complete(system: str, user: str, schema: dict) -> str:
         resp = client.chat.completions.create(

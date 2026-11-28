@@ -96,7 +96,8 @@ def openai_controller(api_key: str, model: str, timeout: float = 30.0, base_url:
     """OpenAI(또는 호환 sLLM) tool calling 판단자. 실패하면 None을 돌려 기본 순서로 넘어간다."""
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key or "not-needed", timeout=timeout, base_url=base_url or None)
+    from .. import tracing
+    client = tracing.wrap_openai(OpenAI(api_key=api_key or "not-needed", timeout=timeout, base_url=base_url or None))
 
     def decide(messages: list[dict], tools: list[dict]) -> dict | None:
         try:
@@ -175,7 +176,13 @@ class GraphCostAgent(CostAgent):
 
     @staticmethod
     def _cfg(session_id: str) -> dict:
-        return {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
+        from .. import tracing
+        cfg = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
+        if (t := tracing.current()) is not None:  # LangSmith: 가린 추적기만 붙인다 (tracing.py)
+            cfg["callbacks"] = t.callbacks()
+            cfg["run_name"] = "cost-agent"
+            cfg["metadata"] = {"engine": "graph"}
+        return cfg
 
     def _invoke(self, session_id: str, payload) -> AgentSession:
         out = self.graph.invoke(payload, self._cfg(session_id))

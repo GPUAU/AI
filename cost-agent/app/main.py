@@ -55,6 +55,8 @@ def build_controller(settings: Settings, service: BillService):
 def create_app(settings: Settings | None = None, service: BillService | None = None,
                backend: BackendClient | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
+    from . import tracing
+    tracing.init()  # LangSmith (선택): 키가 있으면 가린 추적만, 가리지 않는 자동 추적은 끔
     service = service or build_service(settings)
     backend = backend or BackendClient(settings.spring_url)
     app = FastAPI(title="GPU AU Cost Agent", version="0.2.0")
@@ -154,7 +156,8 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
         except ValueError as exc:
             raise HTTPException(400, "계약 기간은 '3,5'처럼 숫자로 입력하세요.") from exc
         try:
-            return agent.start_many(docs, Goal(model_id=model_id or None, gpu_count=gpu_count, terms_years=years))
+            with tracing.span("cost-agent.start", {"files": len(docs), "engine": settings.agent_engine}):
+                return agent.start_many(docs, Goal(model_id=model_id or None, gpu_count=gpu_count, terms_years=years))
         except AgentError as exc:
             raise HTTPException(422, str(exc)) from exc
 
@@ -168,7 +171,8 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
     @app.post("/v1/agent/sessions/{session_id}/answer", response_model=AgentSession)
     def agent_answer(session_id: str, ans: Answer):
         try:
-            return agent.answer(session_id, ans)
+            with tracing.span("cost-agent.answer", {"session": session_id, "engine": settings.agent_engine}):
+                return agent.answer(session_id, ans)
         except KeyError as exc:
             raise HTTPException(404, "세션을 찾을 수 없습니다.") from exc
         except AgentError as exc:
