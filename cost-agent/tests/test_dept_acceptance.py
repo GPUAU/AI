@@ -36,10 +36,13 @@ def test_report_first_sheet_is_cost_sheet(dept_docs, tmp_path):
         q = s.question
         s = agent.answer(s.id, Answer(question_id=q.id, values={}) if q.step == Step.ASSUMPTIONS else suggested(q))
     wb = load_workbook(io.BytesIO(build_report(s)))
-    assert wb.sheetnames[0] == "원가 기준표"
-    ws = wb["원가 기준표"]
-    assert [c.value for c in ws[1]] == ["칸", "값", "단위", "상태", "출처(문서·쪽·행·열)", "교차 확인 수", "담당자 수정", "메모"]
-    rows = {r[0].value: r for r in ws.iter_rows(min_row=2)}
+    assert wb.sheetnames[:2] == ["요약", "원가 근거"]
+    ws = wb["원가 근거"]
+    assert ws["A4"].value == "원가 기준표"
+    assert [c.value for c in ws[5]] == ["칸", "값", "단위", "상태", "출처 (문서 · 쪽 · 행 · 열)", "교차 확인 수", "담당자 수정", "메모"]
+    rows = {}
+    for r in ws.iter_rows(min_row=6):
+        rows.setdefault(r[0].value, r)  # 같은 이름이 아래 '가정값' 표에도 있다 — 기준표 줄을 쓴다
     acq = rows["서버·GPU 취득비"]
     assert acq[1].value == 1_009_000_000 and acq[5].value == 2 and "01_구매팀" in acq[4].value
     assert rows["운영비 (청구서 운영비 + 사내 인건비·판관비)"][1].value == 72_000_000
@@ -49,4 +52,4 @@ def test_single_bill_report_has_no_cost_sheet(tmp_path, doc):
     from app.agent.report import build_report
     agent = CostAgent(BillService(RulesMapper(), TemplateStore(tmp_path)), fake_backend()[0])
     s = agent.start(doc("c"), Goal(model_id="29", gpu_count=256, terms_years=[]))
-    assert "원가 기준표" not in load_workbook(io.BytesIO(build_report(s))).sheetnames
+    assert load_workbook(io.BytesIO(build_report(s)))["원가 근거"]["A4"].value == "청구서 원가 항목"
