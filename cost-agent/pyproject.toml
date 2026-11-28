@@ -13,6 +13,7 @@ dependencies = [
   "openai>=1.40",
   "langgraph>=1.2,<2",
   "pdfplumber>=0.11",  # 텍스트가 있는 PDF 청구서 (MIT)
+  "langsmith>=0.3",  # 선택: LangSmith 추적 (가린 데이터만, app/tracing.py)
 ]
 
 [project.optional-dependencies]

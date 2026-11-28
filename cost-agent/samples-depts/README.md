@@ -3,6 +3,10 @@
 팀에서 제안한 H100 32장 사업 검토용 부서 문서 8종(텍스트 PDF)과 기준표 정답(`answer_key.json`).
 모두 가상 업체·가상 수치이며 내부 검토용 모의 자료입니다.
 
+- 글꼴 Pretendard, 머리글에 SKT 로고, 표 테두리 — `scripts/make_dept_samples.py`로 다시 만든다
+  (`PRETENDARD_DIR=<Pretendard TTF 폴더> python scripts/make_dept_samples.py`; OTF는 reportlab이 넣지 못해 TTF 필요)
+- `variants/04_…(수정본).pdf`: 재무회계팀 취득비를 1,100,000,000원으로 바꾼 **충돌 시연용** 변형 (01 구매팀 1,009,000,000원과 다름)
+
 | 문서 | 종류(판별) | 기준표에 들어가는 값 |
 |---|---|---|
 | 01 구매팀 장비 도입 견적 명세 | 견적서 | 취득비 1,009,000,000원(공급가액 합계, 부가세 제외) · GPU H100 80GB × 32장 |
