@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..costsheet import CostSheet
 from ..models import BenchFinding, BillDraft, CostItemDraft
 
 
@@ -24,6 +25,7 @@ class Step(str, Enum):
 
 
 STEP_TITLES = {
+    # MISSING은 여러 문서 세션에서 '기준표 확인'으로 바꿔 보여 준다
     Step.ANALYZE: "청구서 분석", Step.MISSING: "누락 확인", Step.ASSUMPTIONS: "가정값 확인",
     Step.SIMULATE: "원가 계산", Step.MARKET: "시장 비교", Step.TERMS: "기간별 가격",
     Step.REVIEW: "승인 검토", Step.REPORT: "견적 근거서",
@@ -176,3 +178,12 @@ class AgentSession(BaseModel):
     sim_basis: str | None = None  # 마지막 원가 계산의 입력 지문
     market_basis: str | None = None  # 마지막 시장 비교가 기준으로 삼은 원가 계산
     decisions: list[dict] = Field(default_factory=list)  # 판단자 선택 기록 {tool, reason, by}
+    # 여러 부서 문서 세션 (문서가 둘 이상이거나 청구서가 아닌 문서가 있으면). 청구서 한 장이면 비어 있다
+    docs: list[dict] = Field(default_factory=list)  # {name, kind, reason}
+    sheet: CostSheet | None = None  # 원가 기준표
+    sheet_answers: dict[str, dict] = Field(default_factory=dict)  # 칸 → 담당자 답
+    sheet_hits: list[dict] = Field(default_factory=list)  # 부서 문서에서 뽑은 칸 값 (재시작해도 기준표를 다시 만들 수 있게)
+    primary_bill: str | None = None  # ANALYZE 단계가 다루는 청구서 (첫 청구서)
+    extra_bills: list[tuple[str, BillDraft]] = Field(default_factory=list)  # 두 번째부터의 청구서
+    plan_check: dict | None = None  # 사업기획팀 검산 대비 {ok, hourly_krw, plan_hourly, price_krw, plan_price, message}
+    public_fx: str | None = None  # 공개 환율 (BE 수출입은행) — 기준표 환율 칸과 차이 표시

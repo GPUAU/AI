@@ -94,3 +94,19 @@ def mixed_pdf(pdf_samples, tmp_path_factory) -> Path:
     out = tmp_path_factory.mktemp("mixed") / "mixed.pdf"
     make_pdf_samples.to_mixed(r2["text"], r2["scan"], out)
     return out
+
+
+# ---------------------------------------------------------------- 부서별 목데이터 (팀 제안 8종)
+DEPTS = ROOT / "samples-depts"
+
+
+@pytest.fixture(scope="session")
+def dept_docs() -> dict[str, ExtractedDocument]:
+    """'01'~'08' → 추출된 문서."""
+    return {p.name[:2]: extract(p.name, p.read_bytes()) for p in sorted(DEPTS.glob("*.pdf"))}
+
+
+@pytest.fixture(scope="session")
+def dept_key() -> dict:
+    import json
+    return json.loads((DEPTS / "answer_key.json").read_text(encoding="utf-8"))

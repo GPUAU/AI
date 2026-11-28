@@ -161,6 +161,9 @@ def findings(s, ap) -> list:
         add("PRICE_BELOW_COST", "재검토",
             f"{', '.join(below)}: 원가 ${cost:.2f}보다 낮아 가정 가동률 {util:.0%}에서는 손실이에요 (손익분기 가동률 {be:.0%})",
             "TERMS")
+    pc = getattr(s, "plan_check", None)
+    if pc and not pc.get("ok"):
+        add("PLAN_MISMATCH", "조건부", pc["message"], "ASSUMPTIONS")
     examples = [g for g, rec in s.missing_answers.items() if rec.get("choice") == "amount" and rec.get("source") == "예시값"]
     if examples:
         add("MISSING_EXAMPLE", "조건부", f"{', '.join(examples)} 금액이 리포트 예시값 그대로예요 — 실제 계약 금액으로 바꿔야 해요", "MISSING")

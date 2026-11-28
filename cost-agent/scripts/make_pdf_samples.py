@@ -96,13 +96,20 @@ def to_pdf(xlsx_path: Path, pdf_path: Path) -> None:
     c.save()
 
 
-def to_scanned(pdf_path: Path, out_path: Path, dpi: int = 150) -> None:
-    """각 쪽을 이미지로 바꿔 이미지만 든 PDF로 (글자 층 없음 = 스캔본)."""
+DARK_BG, DARK_FG = "#1F2937", "#4B5563"  # 짙은 배경 + 흐린 회색 글자 (흰 글자는 PP-OCRv5가 그대로도 잘 읽어 시험이 안 됨)
+
+
+def to_scanned(pdf_path: Path, out_path: Path, dpi: int = 150, dark: bool = False) -> None:
+    """각 쪽을 이미지로 바꿔 이미지만 든 PDF로 (글자 층 없음 = 스캔본). dark=True면 짙은 배경·흐린 글자 + 살짝 번짐."""
+    from PIL import ImageFilter, ImageOps
+
     src = pdfium.PdfDocument(str(pdf_path))
     c = None
     for page in src:
         pw, ph = page.get_size()
         img = page.render(scale=dpi / 72).to_pil().convert("L")
+        if dark:
+            img = ImageOps.colorize(img, black=DARK_FG, white=DARK_BG).filter(ImageFilter.GaussianBlur(0.6)).convert("L")
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         buf.seek(0)
@@ -112,6 +119,11 @@ def to_scanned(pdf_path: Path, out_path: Path, dpi: int = 150) -> None:
         c.drawImage(ImageReader(buf), 0, 0, width=pw, height=ph)
         c.showPage()
     c.save()
+
+
+def to_dark_scanned(pdf_path: Path, out_path: Path, dpi: int = 150) -> None:
+    """짙은 배경 스캔판 (OCR 전처리 확인용)."""
+    to_scanned(pdf_path, out_path, dpi, dark=True)
 
 
 def to_mixed(text_pdf: Path, scanned_pdf: Path, out_path: Path) -> None:

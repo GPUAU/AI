@@ -26,6 +26,9 @@ from .parsing import UnsupportedFile, extract
 from .service import BillService
 
 
+MAX_FILES = 20  # 한 세션에 올릴 수 있는 문서 수
+
+
 def build_service(settings: Settings) -> BillService:
     has_llm = bool(settings.openai_api_key or settings.openai_base_url)
     use_llm = settings.mapper == "openai" or (settings.mapper == "auto" and has_llm)
@@ -57,6 +60,8 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
     app = FastAPI(title="GPU AU Cost Agent", version="0.2.0")
     controller = build_controller(settings, service)
     agent = build_agent(settings.agent_engine, service, backend, controller, checkpointer_from(settings.checkpoint_db))
+    if hasattr(service.mapper, "_complete"):  # 부서 문서 칸 위치 매핑도 같은 LLM으로 (늘 가린 사본만 보낸다)
+        agent.fields_completion = service.mapper._complete
 
     def svc() -> BillService:
         return service
@@ -126,20 +131,30 @@ def create_app(settings: Settings | None = None, service: BillService | None = N
 
     # ------------------------------------------------------------ 원가 에이전트 (대화형)
     @app.post("/v1/agent/sessions", response_model=AgentSession)
-    async def agent_start(file: UploadFile = File(...), model_id: str | None = Form(None),
-                          gpu_count: int | None = Form(None), terms: str = Form("3,5")):
-        data = await file.read(settings.max_upload_bytes + 1)
-        if len(data) > settings.max_upload_bytes:
-            raise HTTPException(413, "파일이 너무 큽니다.")
+    async def agent_start(file: UploadFile | None = File(None), files: list[UploadFile] | None = File(None),
+                          model_id: str | None = Form(None), gpu_count: int | None = Form(None), terms: str = Form("3,5")):
+        """청구서 하나(file) 또는 부서 문서 여러 개(files). 하나면 지금과 같은 흐름."""
+        uploads = [*(files or []), *([file] if file else [])]
+        if not uploads:
+            raise HTTPException(400, "파일을 하나 이상 올려 주세요.")
+        if len(uploads) > MAX_FILES:
+            raise HTTPException(400, f"한 번에 {MAX_FILES}개까지 올릴 수 있어요.")
+        docs = []
         try:
-            doc = extract(file.filename or "upload.xlsx", data, ocr=get_ocr() if (file.filename or "").lower().endswith(".pdf") else None, ocr_min_conf=settings.ocr_min_conf)
+            for up in uploads:
+                data = await up.read(settings.max_upload_bytes + 1)
+                if len(data) > settings.max_upload_bytes:
+                    raise HTTPException(413, f"파일이 너무 큽니다: {up.filename}")
+                name = up.filename or "upload.xlsx"
+                docs.append(extract(name, data, ocr=get_ocr() if name.lower().endswith(".pdf") else None,
+                                    ocr_min_conf=settings.ocr_min_conf))
             years = [int(x) for x in terms.split(",") if x.strip()]
         except UnsupportedFile as exc:
             raise HTTPException(400, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, "계약 기간은 '3,5'처럼 숫자로 입력하세요.") from exc
         try:
-            return agent.start(doc, Goal(model_id=model_id or None, gpu_count=gpu_count, terms_years=years))
+            return agent.start_many(docs, Goal(model_id=model_id or None, gpu_count=gpu_count, terms_years=years))
         except AgentError as exc:
             raise HTTPException(422, str(exc)) from exc
 

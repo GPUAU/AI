@@ -18,6 +18,8 @@ OTHER_OPEX_PER_MW_YEAR = 1_800_000_000.0  # 원/MW/년, 인건비·네트워크�
 GPU_UNIT_PRICE_USD = 38_000.0  # $/GPU, H100~B300 믹스 (표 18 B) — 취득비 예시값
 
 SRC_HD = "현대차증권 2026-09 표 16·18"
+# GPU 한 장의 월 전력량 (서버·냉각 포함): 약 1.2~2kW × 730h × PUE → 900~1,500kWh/월
+POWER_KWH_PER_GPU_MONTH = (900.0, 1500.0)
 
 RENT_BAND = (RENT_PER_KW_MONTH[0] * 0.5, RENT_PER_KW_MONTH[1] * 2)
 POWER_BAND = (POWER_PER_KW_MONTH * 0.3, POWER_PER_KW_MONTH * 1.5)
@@ -106,3 +108,17 @@ def inhouse_suggestion(items: list[CostItemDraft], currency: Currency | None, co
     rest = max(0.0, total - _annual(items, ItemType.NETWORK_STORAGE, ItemType.OPERATIONS))
     step = 1_000 if usd else 1_000_000
     return float(round(rest / step) * step)
+
+
+def power_per_gpu_check(kwh_month: float, gpu_count: int) -> list[BenchFinding]:
+    """전기료 원문의 월 kWh ÷ GPU 수가 기준(900~1,500kWh)을 벗어나면 짚는다."""
+    if not kwh_month or not gpu_count:
+        return []
+    v = kwh_month / gpu_count
+    lo, hi = POWER_KWH_PER_GPU_MONTH
+    if lo <= v <= hi:
+        return []
+    return [BenchFinding(
+        code="POWER_PER_GPU", value=round(v, 1), low=lo, high=hi, source="현대차증권 표 18 A·G (GPU당 약 2kW, PUE 1.3)",
+        message=f"월 전력 사용량 ÷ GPU 수가 {v:,.0f}kWh예요. GPU 한 장은 서버·냉각 포함 월 900~1,500kWh가 보통이라, "
+                "전력량이 일부 장비만의 값인지·GPU 수가 맞는지 확인해 주세요.")]

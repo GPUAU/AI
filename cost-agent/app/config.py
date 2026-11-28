@@ -39,6 +39,7 @@ class Settings:
     checkpoint_db: str | None = None  # 세션 저장 SQLite 경로. 없으면 메모리
     ocr_engine: str = "rapidocr"  # 스캔 PDF용 로컬 OCR (rapidocr | off)
     ocr_min_conf: float = 0.8  # 이 신뢰도 미만인 숫자는 담당자 확인으로
+    site_names: tuple[str, ...] = ("울산",)  # LLM에 보낼 때 가리는 사업장명 (privacy.site_names가 같은 SITE_NAMES를 읽음)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -58,4 +59,5 @@ class Settings:
             checkpoint_db=os.getenv("CHECKPOINT_DB") or None,
             ocr_engine=os.getenv("OCR_ENGINE", "rapidocr").lower(),
             ocr_min_conf=float(os.getenv("OCR_MIN_CONF", "0.8")),
+            site_names=tuple(t.strip() for t in os.getenv("SITE_NAMES", "울산").split(",") if t.strip()),
         )

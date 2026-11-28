@@ -28,6 +28,7 @@ from ..models import (
 from ..service import BillService
 from ..validation import BILL_CORE_ITEMS
 from .market import margin_for_price, market_view, offer_prices
+from .sheetflow import SheetFlow
 from .models import (
     STEP_TITLES,
     AgentSession,
@@ -60,20 +61,28 @@ class AgentError(RuntimeError):
     pass
 
 
-class CostAgent:
-    def __init__(self, bills: BillService, backend: BackendClient):
+class CostAgent(SheetFlow):
+    def __init__(self, bills: BillService, backend: BackendClient, fields_completion=None):
         self.bills = bills
         self.backend = backend
         self.sessions: dict[str, AgentSession] = {}
         self._docs: dict[str, ExtractedDocument] = {}
+        self._hits: dict[str, list] = {}  # 세션 → 부서 문서에서 뽑은 칸 값 (기준표 재구성용)
+        self.fields_completion = fields_completion  # 부서 문서 칸 위치 매핑용 LLM (없으면 규칙만)
 
     # ------------------------------------------------------------------ 진입점
     def start(self, doc: ExtractedDocument, goal: Goal) -> AgentSession:
+        return self.start_many([doc], goal)
+
+    def start_many(self, docs: list[ExtractedDocument], goal: Goal) -> AgentSession:
+        """문서 여러 개(부서 문서·청구서). 청구서 한 장이면 기존 흐름 그대로."""
+        if not docs:
+            raise AgentError("문서를 하나 이상 올려 주세요.")
         s = AgentSession(id=uuid.uuid4().hex[:12], goal=goal,
                          board=[BoardStep(key=k, title=t) for k, t in STEP_TITLES.items()])
         self.sessions[s.id] = s
-        self._docs[s.id] = doc
         self._log(s, Step.ANALYZE, "think", f"목표: 청구서로 원가·제안가·{'/'.join(map(str, goal.terms_years))}년 가격과 근거서를 만든다.")
+        self._prepare_docs(s, docs)
         return self._run(s)
 
     def answer(self, session_id: str, ans: Answer) -> AgentSession:
@@ -163,7 +172,10 @@ class CostAgent:
         errors = [i for i in d.issues if i.level == IssueLevel.ERROR]
         status = Status.WARNING if errors or rec.matched is None else Status.DONE
         summary = ("총액 대조 일치" if rec.matched else "총액 줄 없음") + (f" · 재분류 {s.remap_tries}회" if s.remap_tries else "")
-        self._board(s, Step.ANALYZE, status, summary, [i.message for i in d.issues if i.level != IssueLevel.INFO][:5])
+        # 여러 문서 세션: 청구서 밖 비용(누락 핵심 항목·취득비)은 기준표 단계가 문서 전체로 판단한다
+        sheet_only = {"MISSING_CORE_ITEM", "ACQUISITION_OUTSIDE_BILL"} if s.sheet is not None else set()
+        self._board(s, Step.ANALYZE, status, summary,
+                    [i.message for i in d.issues if i.level != IssueLevel.INFO and i.code not in sheet_only][:5])
 
     def _q_currency(self, s: AgentSession) -> Question:
         self._board(s, Step.ANALYZE, Status.WAITING, "통화 확인 대기")
@@ -265,6 +277,8 @@ class CostAgent:
 
     # 2) 누락 확인 --------------------------------------------------------
     def _missing_groups(self, s: AgentSession) -> list[tuple[str, tuple[ItemType, ...]]]:
+        if s.sheet is not None:  # 여러 문서 세션: 기준표의 빈 핵심 칸·충돌 칸
+            return self._sheet_missing(s)
         missing = set(s.draft.missing_items) if s.draft else set()
         return [(name, types) for name, types in BILL_CORE_ITEMS.items()
                 if missing.intersection(types) and name not in s.missing_answers]
@@ -294,6 +308,8 @@ class CostAgent:
 
     def _q_missing(self, s: AgentSession, names: list[str]) -> Question:
         """빠진 핵심 항목을 카드 한 장에 모아 묻는다. 입력칸 이름은 '역할:그룹'."""
+        if s.sheet is not None:
+            return self._q_sheet(s, names)
         d = s.draft
         present = sorted({c.item_type.value for c in d.cost_items if c.status == ItemStatus.USER_INPUT
                           and c.item_type != ItemType.ACQUISITION})
@@ -326,12 +342,18 @@ class CostAgent:
                         fields=fields, submit_label="이대로 계속")
 
     def _finish_missing(self, s: AgentSession) -> None:
+        if s.sheet is not None:
+            self._finish_sheet(s)
+            return
         n = len(s.missing_answers)
         self._board(s, Step.MISSING, Status.DONE if not n else Status.WARNING,
                     "빠진 큰 비용 없음" if not n else f"{n}건 담당자 확인 완료",
                     [f"{k}: {self._missing_text(v)}" for k, v in s.missing_answers.items()])
 
     def _answer_missing(self, s: AgentSession, q: Question, ans: Answer) -> None:
+        if s.sheet is not None:
+            self._answer_sheet(s, q, ans)
+            return
         groups = [f.name.split(":", 1)[1] for f in q.fields if f.name.startswith("choice:")]
         defaults = {f.name: f.value for f in q.fields}
         recs: dict[str, dict] = {}
@@ -419,6 +441,8 @@ class CostAgent:
         ]
         if needs_fx:
             fields.append(FieldSpec(name="fx_krw_per_usd", label="환율 (원/달러)", value=fx_value, hint=fx_hint))
+        if s.sheet is not None:  # 기준표 값으로 미리 채우고 출처 문서를 근거로 보인다
+            fields = self._sheet_prefill(s, fields)
         prev = s.assumptions or {}
         if prev:  # 다시 묻는 경우: 담당자가 넣었던 값을 그대로 채워 둔다
             back = {"utilization": lambda x: round(x * 100, 4), "target_rate": lambda x: round(x * 100, 4)}
@@ -491,12 +515,16 @@ class CostAgent:
                   f"{a['model_name']} {a['gpu_count']}장 · 취득비 {a['acquisition_amount']:,.0f} {a['acquisition_currency']} · "
                   f"가동률 {a['utilization']:.0%} · 목표 마진 {a['target_rate']:.0%}")
         self._set_checks(s, Step.ASSUMPTIONS, {"KW_PER_GPU"}, gpu_checks(s.draft.contract, a["gpu_count"]))
-        warn = [c.message for c in s.checks if c.code == "KW_PER_GPU"]
+        if s.sheet is not None:
+            self._set_checks(s, Step.ASSUMPTIONS, {"POWER_PER_GPU"}, self._power_check(s, a["gpu_count"]))
+        warn = [c.message for c in s.checks if c.code in ("KW_PER_GPU", "POWER_PER_GPU")]
         self._board(s, Step.ASSUMPTIONS, Status.WARNING if warn else Status.DONE,
                     f"{a['model_name']} {a['gpu_count']}장 · 마진 {a['target_rate']:.0%}", warn)
 
     # 4) 원가 계산 --------------------------------------------------------
     def _final_items(self, s: AgentSession) -> list[CostItemDraft]:
+        if s.sheet is not None:
+            return self._sheet_items(s)
         items = [c.model_copy() for c in s.draft.cost_items]
         have = {c.item_type for c in items}
         for rec in s.missing_answers.values():
@@ -568,6 +596,8 @@ class CostAgent:
                     f"원가 ${float(r['hourlyCost']):.2f} · 제안가 ${float(r['candidatePrice']):.2f}",
                     [f"BE가 미반영으로 본 항목: {', '.join(missing)}"] if missing else [])
         s.sim_basis = self._sim_basis(s)
+        if s.sheet is not None:
+            self._plan_check(s)
         return True
 
     @staticmethod
@@ -575,7 +605,7 @@ class CostAgent:
         """원가 계산에 쓴 입력의 지문. 가정값·누락 답이 바뀌면 다시 계산해야 한다."""
         import json
         a = {k: v for k, v in s.assumptions.items() if k not in ("sources", "confirmed")}
-        return json.dumps([a, s.missing_answers], sort_keys=True, default=str)
+        return json.dumps([a, s.missing_answers, s.sheet_answers], sort_keys=True, default=str)
 
     # 5) 시장 비교 --------------------------------------------------------
     def _step_market(self, s: AgentSession) -> None:
@@ -799,6 +829,7 @@ class CostAgent:
         if "MISSING" in steps:
             for g in [g for g, rec in s.missing_answers.items()
                       if rec.get("choice") == "exclude" or rec.get("source") == "예시값"]:
+                s.sheet_answers.pop(s.missing_answers[g].get("sheet_key", ""), None)
                 del s.missing_answers[g]
         if "ASSUMPTIONS" in steps:
             s.assumptions["confirmed"] = False
@@ -839,7 +870,16 @@ class CostAgent:
             f"{a['model_name']} {a['gpu_count']}장 기준 GPU·시간당 원가 ${float(r['hourlyCost']):.3f}, "
             f"제안가 ${float(r['candidatePrice']):.3f} (목표 마진 {a['target_rate']:.0%}).",
         ]
+        if s.sheet is not None:
+            lines[0] = (f"부서 문서 {len(s.docs)}개로 원가 기준표를 채웠어요 (담당자 확인 {len(s.sheet_answers)}칸). "
+                        + ("청구서 총액 대조는 " + ("일치." if d.reconciliation.matched else "불일치(담당자 확인 후 진행)."
+                                                 if d.reconciliation.matched is False else "불가.") if s.primary_bill else ""))
+            if s.plan_check:
+                lines.append(s.plan_check["message"] + ".")
         for k, v in s.missing_answers.items():
+            if s.sheet is not None and v.get("sheet_key"):
+                lines.append(f"기준표 '{k}' 칸은 담당자가 이번엔 제외했어요 (불완전 원가).")
+                continue
             lines.append(f"청구서에 없던 '{k}'는 담당자 확인: {self._missing_text(v)}.")
         if "FINANCING" in r.get("missingItems", []):
             lines.append("조달 금리는 입력하지 않아 원가에서 빠져 있습니다 (마진이 실제보다 높게 보일 수 있음).")

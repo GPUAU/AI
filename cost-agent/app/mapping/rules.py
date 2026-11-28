@@ -40,7 +40,7 @@ ITEM_KEYWORDS: list[tuple[ItemType, list[str]]] = [
 ROLE_KEYWORDS: list[tuple[LineRole, list[str]]] = [
     (LineRole.TAX, ["부가세", "부가가치세", "세액", "vat", "tax"]),
     (LineRole.SUBTOTAL, ["소계", "공급가액", "subtotal", "sub-total", "sub total"]),
-    (LineRole.TOTAL, ["합계", "총액", "총 청구", "청구금액", "청구 금액", "납부", "total", "amount due", "balance due",
+    (LineRole.TOTAL, ["합계", "총액", "총 청구", "청구금액", "청구 금액", "납부", "수납액", "수납 금액", "total", "amount due", "balance due",
                       "grand total"]),
     (LineRole.DISCOUNT, ["할인", "감면", "discount", "credit", "rebate"]),
 ]
@@ -148,7 +148,7 @@ def map_row(row: SheetRow, preferred_col: int | None) -> RowMapping:
             return RowMapping(ref=row.ref, role=role, amount_col=col, confidence=0.8, reason=f"'{role.value}' 표현")
     main_text, included_text = split_included(label)
     item = _find_item(main_text)
-    period = Period.ONE_TIME if any(w in text for w in ONE_TIME_WORDS) else None
+    period = Period.ONE_TIME if any(w in text.replace("회선", "") for w in ONE_TIME_WORDS) else None  # '1회선'은 1회성 아님
     if item is None:
         if not label:
             return RowMapping(ref=row.ref, role=LineRole.IGNORE, confidence=0.6, reason="항목명이 없는 숫자 줄")
@@ -172,9 +172,31 @@ YEAR_WORDS = ["연간", "년간", "연 청구", "annual", "yearly", "per year", 
 MONTH_WORDS = ["월분", "월 청구", "월간", "월 이용", "매월", "monthly", "per month", "/mo", "invoice period"]
 
 
+# 월 단위 문서 표현 ('월 시설비 명세', '월 합계', '월 정액', 'Monthly Invoice') — 본문 문장의 '연간'보다 앞선다
+MONTHLY_DOC = re.compile(r"(?:^|\s)월\s*(?:시설비|합계|정액|청구|이용료|사용료)|\bmonthly\b", re.I)
+_NOT_MONTHLY = re.compile(r"\d\s*분기|분기|반기|quarter", re.I)
+
+
+def title_text(doc: ExtractedDocument, head: int = 8) -> str:
+    """앞 줄 중 글자 칸이 하나뿐인 첫 줄 (문서 제목)."""
+    for r in doc.rows[:head]:
+        texts = [c for c in r.cells if str(c).strip()]
+        if len(texts) == 1 and not r.numbers:
+            return str(texts[0]).strip()
+    return ""
+
+
+def monthly_title(text: str) -> bool:
+    """제목이 월 단위 문서인가 ('월 시설비 명세'). 제목에 연간·분기·반기가 함께 있으면 아니다."""
+    low = _norm(text)
+    return bool(MONTHLY_DOC.search(text)) and not _NOT_MONTHLY.search(text) and not any(w in low for w in YEAR_WORDS)
+
+
 def detect_period(doc: ExtractedDocument) -> Period | None:
     """청구 기간을 원문(가리기 전)에서 판단한다. 'n월분'·'Oct 2026'처럼 월 단위 표현이 있으면 MONTH."""
-    text = _norm(" ".join(" ".join(r.cells) for r in doc.rows[:20]))
+    text = _norm(" ".join(" ".join(r.cells) for r in doc.rows[:20])).replace("bimonthly", "")
+    if monthly_title(title_text(doc)):  # 제목만 본다 (본문 표·문장의 '월 사용료 × 12개월'은 아님)
+        return Period.MONTH
     if any(w in text for w in YEAR_WORDS):
         return Period.YEAR
     if any(w in text for w in MONTH_WORDS) or re.search(r"[0-9]{1,2}\s*월분|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+20[0-9]{2}|20[0-9]{2}-[01][0-9](?![0-9-])", text):
